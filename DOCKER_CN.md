@@ -1,6 +1,6 @@
 # AutoResearchClaw 本地 Docker 部署（V100 单机版）
 
-三个镜像、分工明确：**control**（研究流水线本体）只吃 API；**experiment / sandbox-rs** 是实验沙箱，由流水线在 `experiment.mode: docker` 下动态 `docker run` 到 V100 上。控制面不跑任何本地大模型，agent 推理全部走百炼 API（`config.rc-remote-sensing.yaml` 已配好 OpenAI 兼容端点）。
+三个镜像、分工明确：**control**（研究流水线本体）只吃 API；**experiment / sandbox-rs** 是实验沙箱（前者通用，后者预装遥感库），由流水线在 `experiment.mode: docker` 下动态 `docker run` 到 V100 上。控制面不跑任何本地大模型，agent 推理全部走百炼 API（`config.arc.yaml`→`config.template.yaml` 通用模板已配好 OpenAI 兼容端点）。
 
 ## 一次性准备
 
@@ -16,14 +16,19 @@ cp .env.example .env              # 填入百炼 DASHSCOPE_API_KEY
 bash scripts/build-images.sh
 ```
 
-## 跑研究
+## 跑研究（任意领域）
 
 ```bash
-# 编辑 config.rc-remote-sensing.yaml 的 research.topic，或直接在命令行给：
+# 通用：编辑 config.arc.yaml（默认软链到 config.template.yaml）的 research.topic，或命令行直接给
 docker compose run --rm control run \
-  --config config.rc-remote-sensing.yaml \
-  --topic "用边缘保持先验改进小样本遥感地物分割" --mode co-pilot
+  --config config.arc.yaml --topic "任何领域的研究问题" --mode co-pilot
+
+# 遥感等特定领域：用对应预设（换 metric_key/沙箱镜像/domains，见下）
+docker compose run --rm control run \
+  --config config.rc-remote-sensing.yaml --topic "..." --mode co-pilot
 ```
+
+流水线本身领域无关——接入新领域只动四个旋钮：`research.topic/domains`（语境）、`experiment.metric_key/direction`（评分）、`docker.image`（依赖栈，通用镜像 `experiment:latest` 之外可自建领域镜像如 `sandbox-rs`）、以及可选的领域 SKILL.md（写作/辩论规范）。
 
 co-pilot 模式会在 Stage 5（文献）、7-8（假设）、9（实验设计）、15（去留）、20（质量门）停下来等你：批准/拒绝/编辑/协作对话。中途离开终端后：
 
@@ -50,7 +55,8 @@ docker compose up -d dashboard      # 常驻，改代码/配置后 docker compos
 | `docker/Dockerfile.control` | 控制面镜像（python3.11 + researchclaw + docker CLI，uid=1000 对齐宿主） |
 | `researchclaw/docker/Dockerfile.remote-sensing` | 遥感实验沙箱：官方 GPU 镜像之上加 rasterio/geopandas/torchgeo/segmentation_models_pytorch |
 | `docker-compose.yml` | 控制面编排（源码热挂载 + artifacts 落宿主 + docker.sock 调度沙箱） |
-| `config.rc-remote-sensing.yaml` | 遥感配置模板：百炼端点、900s 实验预算、val_miou 指标、V100 显存限额、HITL+成本护栏全开 |
+| `config.template.yaml` | **通用配置模板（领域无关）**：`config.arc.yaml` 默认指向它；改 topic 即跑 |
+| `config.rc-remote-sensing.yaml` | 遥感领域预设：百炼端点、900s 实验预算、val_miou 指标、V100 显存限额、HITL+成本护栏全开（可复制此文件改成其他领域预设） |
 | `.env.example` | key 模板 |
 | `scripts/docker-setup.sh` / `scripts/build-images.sh` | 安装与构建 |
 

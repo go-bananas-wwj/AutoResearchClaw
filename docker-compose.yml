@@ -22,7 +22,9 @@ services:
     stdin_open: true
     tty: true
     # 交互示例：
-    #   docker compose run --rm control run --config config.rc-remote-sensing.yaml --topic "..." --mode co-pilot
+    #   docker compose run --rm control run --config config.arc.yaml --topic "..." --mode co-pilot
+    #   （config.arc.yaml 默认软链到 config.template.yaml 通用模板；
+    #     特定领域可用预设，如 --config config.rc-remote-sensing.yaml）
     #   docker compose run --rm control status artifacts/rc-xxxx
     command: --help
 
@@ -40,4 +42,4 @@ services:
     group_add: ["${DOCKER_GID:-999}"]
     ports:
       - "8088:8088"
-    command: dashboard --host 0.0.0.0 --port 8088 --config config.rc-remote-sensing.yaml
+    command: dashboard --host 0.0.0.0 --port 8088 --config config.arc.yaml

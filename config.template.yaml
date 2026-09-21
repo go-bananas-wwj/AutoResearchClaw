@@ -1,0 +1,91 @@
+# AutoResearchClaw 通用配置模板（领域无关）
+# 用法：cp config.template.yaml config.arc.yaml，改 research.topic 与 experiment 指标即可。
+# 领域预设示例：config.rc-remote-sensing.yaml（遥感）；换领域 = 换 topic + domains +
+# metric_key + 沙箱镜像（sandbox-rs 只是预装了遥感库，通用任务用 experiment:latest 足够）。
+project:
+  name: "my-autoresearch"
+  mode: "full-auto"
+
+research:
+  topic: "任何领域的研究问题"
+  domains:
+    - "machine-learning"        # 决定文献检索与假设生成的语境，可多个
+  daily_paper_count: 10
+  quality_threshold: 4.0
+
+runtime:
+  timezone: "Asia/Shanghai"
+  max_parallel_tasks: 1         # 按 GPU 数调整
+  approval_timeout_hours: 24
+  retry_limit: 2
+
+notifications:
+  channel: "console"
+  target: ""
+  on_stage_start: true
+  on_stage_fail: true
+  on_gate_required: true
+
+llm:
+  provider: "openai-compatible"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"   # 百炼；换 OpenAI/Claude 只改这里
+  api_key_env: "DASHSCOPE_API_KEY"
+  primary_model: "qwen3-coder-plus"
+  fallback_models:
+    - "qwen-plus"
+
+literature_search:
+  sources: ["openalex", "semantic_scholar", "arxiv"]
+  max_results_per_query: 40
+
+experiment:
+  mode: "docker"
+  time_budget_sec: 300          # 按任务量级调：轻量 ML 300s 起步，训练类 900s+
+  max_iterations: 10
+  metric_key: "val_loss"        # 与评分脚本输出一致的单一标量指标
+  metric_direction: "minimize"
+  docker:
+    image: "researchclaw/experiment:latest"   # 通用 GPU 栈；特定领域可换专属镜像
+    network_policy: "setup_only"
+    gpu_enabled: true
+    memory_limit_mb: 24576
+    auto_install_deps: true
+  sandbox:
+    python_path: "python3"
+    gpu_required: true
+    allowed_imports: [math, random, json, csv, numpy, scipy, torch, torchvision,
+                      sklearn, pandas, matplotlib, yaml, seaborn]
+    max_memory_mb: 24576
+  repair:
+    enabled: true
+    max_cycles: 3
+    min_completion_rate: 0.5
+    min_conditions: 2
+
+hitl:
+  enabled: true
+  mode: co-pilot
+  cost_budget_usd: 50.0
+  notifications:
+    on_pause: true
+    on_quality_drop: true
+    channels: ["terminal"]
+  timeouts:
+    default_human_timeout_sec: 86400
+    auto_proceed_on_timeout: false
+
+security:
+  hitl_required_stages: [5, 9, 20]
+  allow_publish_without_approval: false
+  redact_sensitive_logs: true
+
+knowledge_base:
+  backend: "markdown"
+  root: "docs/kb"
+
+export:
+  target_conference: "iclr_2026"   # neurips_2025 / iclr_2026 / icml_2026
+  authors: "Anonymous"
+
+metaclaw_bridge:
+  enabled: true
