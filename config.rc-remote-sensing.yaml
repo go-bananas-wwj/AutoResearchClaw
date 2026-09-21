@@ -1,0 +1,87 @@
+# AutoResearchClaw × 遥感：本地 V100 部署用配置模板
+# 用法：复制为 config.rc-remote-sensing.yaml，填好 API key 环境变量后：
+#   researchclaw run --config config.rc-remote-sensing.yaml --topic "..." --mode co-pilot
+project:
+  name: "rs-autoresearch"
+  mode: "full-auto"            # HITL 由下方 hitl 段控制
+
+research:
+  topic: "在这里写你的研究问题（粒度示例：用 XX 先验改进小样本遥感地物分割）"
+  domains:
+    - "remote-sensing"
+    - "computer-vision"
+  daily_paper_count: 12
+  quality_threshold: 4.0
+
+runtime:
+  timezone: "Asia/Shanghai"
+  max_parallel_tasks: 1        # 单张 V100：串行跑实验，防显存互踩；多卡再调大
+  approval_timeout_hours: 24
+  retry_limit: 2
+
+llm:
+  provider: "openai-compatible"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"   # 百炼 OpenAI 兼容端点
+  api_key_env: "DASHSCOPE_API_KEY"
+  primary_model: "qwen3-coder-plus"        # 规划/写作主链，按你账号可用型号调整
+  fallback_models:
+    - "qwen-plus"                          # 摘要/压缩等便宜档
+
+literature_search:
+  sources: ["openalex", "semantic_scholar", "arxiv"]
+  max_results_per_query: 40
+  # 强烈建议申请 Semantic Scholar 免费 key（提速 Stage 4 数倍）：
+  # s2_api_key_env: "S2_API_KEY"
+
+experiment:
+  mode: "docker"               # V100 走沙箱容器隔离；改 "sandbox" 可直用宿主 venv
+  time_budget_sec: 900         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
+  max_iterations: 10
+  metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致
+  metric_direction: "maximize"
+  docker:
+    image: "researchclaw/sandbox-rs:latest"   # 见 Dockerfile.remote-sensing
+    network_policy: "setup_only"
+    gpu_enabled: true
+    memory_limit_mb: 24576                    # V100 32GB，留余量给系统与宿主
+    auto_install_deps: true
+  sandbox:
+    python_path: ".venv/bin/python"
+    gpu_required: true
+    allowed_imports: [math, random, json, csv, numpy, scipy, torch, torchvision,
+                      sklearn, cv2, rasterio, geopandas, torchgeo, segmentation_models_pytorch,
+                      timm, albumentations, kornia, matplotlib, yaml]
+    max_memory_mb: 24576
+  repair:
+    enabled: true
+    max_cycles: 3
+    min_completion_rate: 0.5
+    min_conditions: 2
+
+hitl:
+  enabled: true
+  mode: co-pilot               # 官方消融实验里效果最好的模式
+  cost_budget_usd: 50.0        # API 花费护栏，超限自动暂停
+  notifications:
+    on_pause: true
+    on_quality_drop: true
+    channels: ["terminal"]
+  timeouts:
+    default_human_timeout_sec: 86400
+    auto_proceed_on_timeout: false
+
+security:
+  hitl_required_stages: [5, 9, 20]
+  allow_publish_without_approval: false
+  redact_sensitive_logs: true
+
+knowledge_base:
+  backend: "markdown"
+  root: "docs/kb"
+
+export:
+  target_conference: "iclr_2026"   # 或 neurips_2025 / icml_2026
+  authors: "Anonymous"             # 定稿前替换；AI 辅助按会议政策如实披露
+
+metaclaw_bridge:
+  enabled: true                    # 跨 run 教训沉淀，第一周建议开着

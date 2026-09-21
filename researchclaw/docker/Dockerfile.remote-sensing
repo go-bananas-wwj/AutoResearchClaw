@@ -1,0 +1,31 @@
+# 遥感实验沙箱镜像：在官方 GPU 实验镜像（torch/timm/albumentations/kornia 全栈）之上
+# 追加遥感地理栈。先构建官方镜像：
+#   docker build -t researchclaw/experiment:latest researchclaw/docker/
+# 再构建本镜像：
+#   docker build -f researchclaw/docker/Dockerfile.remote-sensing -t researchclaw/sandbox-rs:latest researchclaw/docker/
+FROM researchclaw/experiment:latest
+
+USER root
+
+# rasterio/geopandas 走 manylinux 轮子（自带 GDAL），torchgeo 依赖 torch 已在底层镜像
+RUN python3 -m pip install \
+        rasterio>=1.3 \
+        geopandas \
+        shapely \
+        pyproj \
+        torchgeo \
+        segmentation-models-pytorch \
+        opencv-python-headless \
+        scikit-image \
+        netCDF4 \
+        zarr
+
+# 常见遥感数据缓存挂载点（Sentinel/Landsat 瓦片、预训练权重）
+RUN mkdir -p /data/rs && chmod 777 /data/rs
+ENV TORCHHOME=/opt/conda  \
+    RASTERIO_ENABLED_DRIVER_OVERVIEW_HANDLER=TRUE
+
+WORKDIR /workspace
+USER researcher
+ENTRYPOINT ["/usr/local/bin/rc-entrypoint.sh"]
+CMD ["main.py"]

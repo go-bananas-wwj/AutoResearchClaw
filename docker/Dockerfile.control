@@ -1,0 +1,30 @@
+# AutoResearchClaw 控制面容器（研究流水线本体：CLI + 23-stage 编排 + 文献检索 + 写作）。
+# 实验沙箱镜像另用官方 researchclaw/docker/Dockerfile(.remote-sensing) 构建，
+# 由本容器通过 docker socket 调度（见 docker-compose.yml 注释）。
+# Build: docker build -f docker/Dockerfile.control -t researchclaw/control:latest .
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+
+# docker CLI（容器内调度实验沙箱用）+ git/curl（literature & ACP 后端）
+# 注：刻意不装 texlive —— 导出的 paper.tex 建议直接在 Overleaf 编译（用户工作流）。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+COPY researchclaw/ ./researchclaw/
+COPY prompts.default.yaml ./
+RUN pip install -e .
+
+# 非 root；uid/gid 对齐宿主用户（bind mount 写 artifacts 不踩权限）
+RUN groupadd -r -g 1000 claw && useradd -r -u 1000 -g 1000 -m -s /bin/bash claw && chown -R claw /app
+USER claw
+
+ENTRYPOINT ["researchclaw"]
+CMD ["--help"]
