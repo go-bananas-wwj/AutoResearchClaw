@@ -46,7 +46,7 @@ experiment:
     memory_limit_mb: 24576                    # V100 32GB，留余量给系统与宿主
     auto_install_deps: true
   sandbox:
-    python_path: ".venv/bin/python"
+    python_path: "python3"   # 容器内解释器（仅 simulated/回退用；实验走 docker 模式）
     gpu_required: true
     allowed_imports: [math, random, json, csv, numpy, scipy, torch, torchvision,
                       sklearn, cv2, rasterio, geopandas, torchgeo, segmentation_models_pytorch,
@@ -74,6 +74,13 @@ security:
   hitl_required_stages: [5, 9, 20]
   allow_publish_without_approval: false
   redact_sensitive_logs: true
+
+notifications:
+  channel: "console"
+  target: ""
+  on_stage_start: true
+  on_stage_fail: true
+  on_gate_required: true
 
 knowledge_base:
   backend: "markdown"

@@ -17,6 +17,7 @@ services:
       - ./artifacts:/app/artifacts # 所有 run 产物落在宿主机
       - /var/run/docker.sock:/var/run/docker.sock  # 容器内 docker CLI 调度实验沙箱
     working_dir: /app
+    group_add: ["${DOCKER_GID:-999}"]  # 宿主 docker 组 GID，容器内可写 docker.sock
     stdin_open: true
     tty: true
     # 交互示例：
