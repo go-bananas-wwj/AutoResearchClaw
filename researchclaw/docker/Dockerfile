@@ -41,15 +41,21 @@ RUN python3 -m pip install \
         sentencepiece protobuf tokenizers safetensors \
         evaluate rouge-score
 
-# Pre-cache standard datasets for offline use
-RUN mkdir -p /opt/datasets && \
+# Pre-cache standard datasets for offline use.
+# 国内直连 cs.toronto.edu / 境外源实测仅 ~60-120 kB/s（单 CIFAR10 即需 30+ 分钟、
+# 整层 2GB+ 需数小时），且均为玩具基准数据集，对遥感等工作流无用——默认跳过，
+# 数据集由实验运行时下载；需要离线烘焙时：docker build --build-arg EMBED_DATASETS=true
+ARG EMBED_DATASETS=false
+RUN mkdir -p /opt/datasets && chmod -R a+r /opt/datasets && \
+    if [ "$EMBED_DATASETS" = "true" ]; then \
     python3 -c "import torchvision; torchvision.datasets.CIFAR10(root='/opt/datasets', train=True, download=True); torchvision.datasets.CIFAR10(root='/opt/datasets', train=False, download=True)" && \
     python3 -c "import torchvision; torchvision.datasets.CIFAR100(root='/opt/datasets', train=True, download=True); torchvision.datasets.CIFAR100(root='/opt/datasets', train=False, download=True)" && \
     python3 -c "import torchvision; torchvision.datasets.FashionMNIST(root='/opt/datasets', train=True, download=True); torchvision.datasets.FashionMNIST(root='/opt/datasets', train=False, download=True)" && \
     python3 -c "import torchvision; torchvision.datasets.MNIST(root='/opt/datasets', train=True, download=True); torchvision.datasets.MNIST(root='/opt/datasets', train=False, download=True)" && \
     python3 -c "import torchvision; torchvision.datasets.STL10(root='/opt/datasets', split='train', download=True); torchvision.datasets.STL10(root='/opt/datasets', split='test', download=True)" && \
     python3 -c "import torchvision; torchvision.datasets.SVHN(root='/opt/datasets', split='train', download=True); torchvision.datasets.SVHN(root='/opt/datasets', split='test', download=True)" && \
-    chmod -R a+r /opt/datasets
+    chmod -R a+r /opt/datasets; \
+    else echo "EMBED_DATASETS=false: skip baked datasets (fetched at runtime)"; fi
 
 # Non-root user for security
 RUN groupadd -r researcher && useradd -r -g researcher -m -s /bin/bash researcher
