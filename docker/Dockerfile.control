@@ -21,8 +21,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY researchclaw/ ./researchclaw/
 COPY frontend-legacy/ ./frontend/
 COPY prompts.default.yaml ./
-# 注：pyproject 的 [web] extra 不含 fastapi（上游错误提示有误），dashboard/server 实际需要：
-RUN pip install -e . fastapi "uvicorn[standard]"
+RUN pip install -e . fastapi "uvicorn[standard]" wsproto
 
 # 非 root；uid/gid 对齐宿主用户（bind mount 写 artifacts 不踩权限）
 RUN groupadd -r -g 1000 claw && useradd -r -u 1000 -g 1000 -m -s /bin/bash claw && chown -R claw /app

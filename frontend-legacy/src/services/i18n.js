@@ -67,6 +67,12 @@
     'Back': '上一步', 'Next': '下一步', 'Finish': '完成',
     'Configuration Generated': '配置已生成',
     'Copy this to your config.yaml or use the CLI:': '将以下内容复制到 config.yaml，或使用命令行：',
+    /* SettingsView */
+    'Settings': '设置',
+    'Reload': '重新加载', 'Save': '保存',
+    'Saving validates YAML and writes an automatic .bak backup next to the file. Changes to a running pipeline require a restart of the run to take effect.':
+      '保存时会校验 YAML，并在文件旁自动生成 .bak 备份；对正在运行的流水线，改动需重新启动该 run 才生效。',
+    'Select a config file': '选择一个配置文件',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */
@@ -90,6 +96,7 @@
   var STATUS = {
     'idle': '空闲', 'running': '运行中', 'completed': '已完成', 'failed': '失败',
     'pending': '等待中', 'unknown': '未知', 'paused': '已暂停', 'gate': '待审批',
+    'set': '已设置', 'missing': '未设置',
   };
 
   /* ---------- 模式规则（含动态数字的短语） ---------- */

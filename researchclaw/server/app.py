@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -86,9 +86,11 @@ def create_app(
     # --- Routes ---
     from researchclaw.server.routes.pipeline import router as pipeline_router
     from researchclaw.server.routes.projects import router as projects_router
+    from researchclaw.server.routes.settings import router as settings_router
 
     app.include_router(pipeline_router)
     app.include_router(projects_router)
+    app.include_router(settings_router)
 
     if not dashboard_only:
         from researchclaw.server.routes.chat import router as chat_router, set_chat_manager
@@ -102,7 +104,8 @@ def create_app(
             app.include_router(voice_router)
 
     # --- WebSocket events endpoint ---
-    from fastapi import WebSocket, WebSocketDisconnect
+    # （WebSocket/WebSocketDisconnect 已移至模块顶层导入——PEP 563 延迟注解
+    #   要求类型在模块命名空间可见，否则 FastAPI 会把参数误判为 query 字段，close 1008）
     import uuid
 
     @app.websocket("/ws/events")

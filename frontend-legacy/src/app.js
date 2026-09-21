@@ -12,6 +12,7 @@
     experiments: ExperimentMonitor,
     paper: PaperPreview,
     projects: ProjectList,
+    settings: SettingsView,
     wizard: WizardFlow,
   };
 

@@ -721,7 +721,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 1
 
     app = create_app(config, monitor_dir=args.monitor_dir)
-    uvicorn.run(app, host=host, port=port)
+    # ws="wsproto": websockets>=14 起对浏览器握手强制 Origin 校验且 uvicorn 未暴露放行参数，
+    # 本地单用户工具改用 wsproto 实现（无该检查）；多用户部署请自行加 auth_token。
+    uvicorn.run(app, host=host, port=port, ws="wsproto")
     return 0
 
 
@@ -747,7 +749,9 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         return 1
 
     app = create_app(config, dashboard_only=True, monitor_dir=args.monitor_dir)
-    uvicorn.run(app, host=host, port=port)
+    # ws="wsproto": websockets>=14 起对浏览器握手强制 Origin 校验且 uvicorn 未暴露放行参数，
+    # 本地单用户工具改用 wsproto 实现（无该检查）；多用户部署请自行加 auth_token。
+    uvicorn.run(app, host=host, port=port, ws="wsproto")
     return 0
 
 

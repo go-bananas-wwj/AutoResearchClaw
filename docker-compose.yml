@@ -42,4 +42,4 @@ services:
     group_add: ["${DOCKER_GID:-999}"]
     ports:
       - "8088:8088"
-    command: dashboard --host 0.0.0.0 --port 8088 --config config.arc.yaml
+    command: serve --host 0.0.0.0 --port 8088 --config config.arc.yaml   # 完整模式：chat/启停/设置页全开
