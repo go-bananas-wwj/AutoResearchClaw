@@ -15,6 +15,7 @@
       <span id="connection-badge" class="status-badge idle">Connecting...</span>
       <div style="flex:1"></div>
       <span style="font-size:13px;color:var(--text-secondary)">Autonomous Research Pipeline</span>
+      <button id="lang-toggle" style="margin-left:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;font-size:13px" title="Switch language / 切换语言">中文</button>
     </header>
 
     <!-- Sidebar -->
@@ -58,6 +59,7 @@
   </div>
 
   <!-- Scripts (no build step needed) -->
+  <script src="/static/src/services/i18n.js"></script>
   <script src="/static/src/services/api.js"></script>
   <script src="/static/src/services/websocket.js"></script>
   <script src="/static/src/components/Dashboard.js"></script>

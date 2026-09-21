@@ -46,7 +46,7 @@ docker compose run --rm control guide   artifacts/rc-xxxx --stage 9 --message "�
 docker compose up -d dashboard      # 常驻，改代码/配置后 docker compose build control 再 up
 ```
 
-浏览器打开 **http://localhost:8088**（若你是 SSH 远程连这台机器：`ssh -L 8088:localhost:8088 用户@这台机器` 后本地开同款地址）。可看各 run 的 23 阶段进度、实验曲线/图表、论文预览与成本；面板内含 ChatPanel，可在关键节点与流水线对话协作。终端仍是主交互面（co-pilot 提示与 approve/reject/guide）。
+浏览器打开 **http://localhost:8088**（若你是 SSH 远程连这台机器：`ssh -L 8088:localhost:8088 用户@这台机器` 后本地开同款地址）。可看各 run 的 23 阶段进度、实验曲线/图表、论文预览与成本；面板内含 ChatPanel，可在关键节点与流水线对话协作。终端仍是主交互面（co-pilot 提示与 approve/reject/guide）。**右上角"中文/EN"按钮切换界面语言**（默认跟随浏览器，AI 对话内容不翻译）。
 
 ## 本目录新增文件
 

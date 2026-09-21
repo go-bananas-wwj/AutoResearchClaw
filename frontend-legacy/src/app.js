@@ -17,6 +17,9 @@
 
   let currentView = 'dashboard';
 
+  // 语言切换时重渲染当前视图（i18n.js 派发事件）
+  window.addEventListener('rc-lang', () => navigateTo(currentView));
+
   function navigateTo(viewName) {
     if (!views[viewName]) return;
     currentView = viewName;
@@ -73,9 +76,9 @@
       // Browser notifications
       if (Notification.permission === 'granted') {
         if (data.type === 'pipeline_completed') {
-          new Notification('ResearchClaw', { body: 'Pipeline completed!' });
+          new Notification('ResearchClaw', { body: I18N.t('Pipeline completed!') });
         } else if (data.type === 'stage_fail') {
-          new Notification('ResearchClaw', { body: `Stage failed: ${data.data?.current_stage_name || ''}` });
+          new Notification('ResearchClaw', { body: I18N.t(`Stage failed: ${data.data?.current_stage_name || ''}`) });
         }
       }
     });
