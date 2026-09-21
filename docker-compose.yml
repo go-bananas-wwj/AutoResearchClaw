@@ -14,6 +14,7 @@ services:
     env_file: .env
     volumes:
       - ./:/app                    # 源码热挂载：本地改配置/skill 无需重建镜像
+      - ./frontend-legacy:/app/frontend   # 仪表盘前端（server 按 /app/frontend 查找）
       - ./artifacts:/app/artifacts # 所有 run 产物落在宿主机
       - /var/run/docker.sock:/var/run/docker.sock  # 容器内 docker CLI 调度实验沙箱
     working_dir: /app
@@ -25,8 +26,18 @@ services:
     #   docker compose run --rm control status artifacts/rc-xxxx
     command: --help
 
-  # 可选：常驻跑长任务时用 run 起服务而非 compose
-  # sentinel:
-  #   image: researchclaw/control:latest
-  #   depends_on: [control]
-  #   command: --help
+  # Web 仪表盘：浏览器开 http://localhost:8088
+  # 监控各 run 的阶段进度/实验曲线/论文预览，HITL 聊天面板也在其中（ChatPanel）
+  dashboard:
+    image: researchclaw/control:latest
+    container_name: rc-dashboard
+    env_file: .env
+    volumes:
+      - ./:/app
+      - ./frontend-legacy:/app/frontend
+      - ./artifacts:/app/artifacts
+    working_dir: /app
+    group_add: ["${DOCKER_GID:-999}"]
+    ports:
+      - "8088:8088"
+    command: dashboard --host 0.0.0.0 --port 8088 --config config.rc-remote-sensing.yaml

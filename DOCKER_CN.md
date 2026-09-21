@@ -35,6 +35,14 @@ docker compose run --rm control guide   artifacts/rc-xxxx --stage 9 --message "�
 
 产物在 `./artifacts/rc-xxxx/deliverables/`（宿主机可见），`paper.tex` 直接传 Overleaf 编译。
 
+## Web 仪表盘
+
+```bash
+docker compose up -d dashboard      # 常驻，改代码/配置后 docker compose build control 再 up
+```
+
+浏览器打开 **http://localhost:8088**（若你是 SSH 远程连这台机器：`ssh -L 8088:localhost:8088 用户@这台机器` 后本地开同款地址）。可看各 run 的 23 阶段进度、实验曲线/图表、论文预览与成本；面板内含 ChatPanel，可在关键节点与流水线对话协作。终端仍是主交互面（co-pilot 提示与 approve/reject/guide）。
+
 ## 本目录新增文件
 
 | 文件 | 作用 |
