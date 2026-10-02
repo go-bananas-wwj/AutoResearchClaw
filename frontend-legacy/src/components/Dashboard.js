@@ -6,6 +6,7 @@ const Dashboard = {
 
   async render(container) {
     container.innerHTML = `
+      <div id="gate-banner" style="display:none"></div>
       <div class="stats-grid" id="stats-grid"></div>
       <div class="card">
         <h2>Pipeline Progress</h2>
@@ -31,8 +32,45 @@ const Dashboard = {
       this._renderStats(status);
       this._renderStages(stages.stages, status);
       this._renderRuns(runs.runs);
+      this._refreshGate(status);
     } catch (e) {
       console.warn('Dashboard refresh failed:', e);
+    }
+  },
+
+  async _refreshGate(status) {
+    const banner = document.getElementById('gate-banner');
+    if (!banner) return;
+    const runId = status.run_id;
+    if (!runId || status.status !== 'running') { banner.style.display = 'none'; return; }
+    let w;
+    try { w = await API.get(`/runs/${runId}/hitl/waiting`); } catch (e) { banner.style.display = 'none'; return; }
+    if (!w.waiting) { banner.style.display = 'none'; return; }
+    banner.style.display = 'block';
+    banner.innerHTML = `
+      <div class="card" style="border:2px solid var(--warning,#d29922);background:rgba(210,153,34,0.08)">
+        <h2 style="color:var(--warning,#d29922)">Gate: waiting for your decision</h2>
+        <div style="font-size:14px;margin:8px 0">
+          <b>Stage ${w.stage ?? '?'} (${w.stage_name || ''})</b> — ${w.reason || ''}
+        </div>
+        ${w.context_summary ? `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px">${String(w.context_summary).slice(0,400)}</div>` : ''}
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="wiz-btn primary" onclick="Dashboard._gateRespond('${runId}','approve')">Approve</button>
+          <button class="wiz-btn" style="border-color:var(--danger,#f85149);color:var(--danger,#f85149)" onclick="Dashboard._gateRespond('${runId}','reject')">Reject</button>
+          <input id="gate-guidance" class="wiz-input" style="flex:1;min-width:220px;margin:0" placeholder="Guidance to inject (optional)" />
+          <button class="wiz-btn" onclick="Dashboard._gateRespond('${runId}','inject')">Inject guidance</button>
+        </div>
+      </div>`;
+  },
+
+  async _gateRespond(runId, action) {
+    const g = document.getElementById('gate-guidance');
+    const guidance = g ? g.value.trim() : '';
+    try {
+      await API.post(`/runs/${runId}/hitl/respond`, { action, guidance, message: guidance });
+      this.refresh();
+    } catch (e) {
+      alert('Gate respond failed: ' + (e.message || e));
     }
   },
 

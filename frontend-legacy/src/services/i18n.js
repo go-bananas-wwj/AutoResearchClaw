@@ -81,6 +81,11 @@
     'Find Topics': '找选题', 'Stop': '停止',
     'e.g., 遥感嵌入 + 灾害预警': '例：遥感嵌入 + 灾害预警',
     'Start full pipeline with this topic': '用这个题目启动完整流水线',
+    /* Gate banner */
+    'Gate: waiting for your decision': '门控：等待你的决策',
+    'Approve': '批准', 'Reject': '拒绝',
+    'Guidance to inject (optional)': '要注入的指导意见（可选）',
+    'Inject guidance': '注入指导',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */

@@ -35,7 +35,7 @@ class PipelineStartRequest(BaseModel):
 
     topic: str | None = None
     config_overrides: dict[str, Any] | None = None
-    auto_approve: bool = True
+    auto_approve: bool = False
 
 
 class PipelineStartResponse(BaseModel):
@@ -242,3 +242,51 @@ async def get_run_metrics(run_id: str) -> dict[str, Any]:
             pass
 
     return {"run_id": run_id, "metrics": metrics}
+
+
+# ---------------------------------------------------------------- HITL gates (web)
+
+
+class HITLRespondRequest(BaseModel):
+    """门控应答：批准/拒绝/注入指导等。"""
+
+    action: str  # approve | reject | edit | skip | collaborate | inject | rollback | abort
+    message: str = ""
+    guidance: str = ""
+
+
+@router.get("/runs/{run_id}/hitl/waiting")
+async def hitl_waiting(run_id: str) -> dict[str, Any]:
+    """该 run 是否正在门控处等待人工输入（读 hitl/waiting.json）。"""
+    run_dir = _validated_run_dir(run_id)
+    p = run_dir / "hitl" / "waiting.json"
+    if not p.is_file():
+        return {"waiting": False, "run_id": run_id}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"waiting": False, "run_id": run_id}
+    data["waiting"] = True
+    data["run_id"] = run_id
+    return data
+
+
+@router.post("/runs/{run_id}/hitl/respond")
+async def hitl_respond(run_id: str, req: HITLRespondRequest) -> dict[str, Any]:
+    """向等待中的门控写入人工决策（hitl/response.json，pipeline 轮询自取）。"""
+    from researchclaw.hitl.file_wait import write_response
+    from researchclaw.hitl.intervention import HumanAction, HumanInput
+
+    run_dir = _validated_run_dir(run_id)
+    if not (run_dir / "hitl" / "waiting.json").is_file():
+        raise HTTPException(status_code=409, detail="该 run 当前没有在等待人工输入")
+    try:
+        action = HumanAction(req.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"非法 action: {req.action}") from exc
+
+    write_response(
+        run_dir / "hitl",
+        HumanInput(action=action, message=req.message, guidance=req.guidance),
+    )
+    return {"ok": True, "run_id": run_id, "action": req.action}
