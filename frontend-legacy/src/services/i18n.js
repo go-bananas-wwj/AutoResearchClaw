@@ -31,8 +31,8 @@
     'Each stage is executed sequentially. Gate stages require approval.':
       '各阶段顺序执行；门控阶段需要审批。',
     /* ChatPanel */
-    'Welcome to ResearchClaw! I can help you with research topics, running experiments, monitoring progress, and editing papers. Just type your question below.':
-      '欢迎使用 ResearchClaw！我可以帮你确定研究主题、跑实验、监控进度、编辑论文。直接在下方输入问题即可。',
+    'Welcome! Two ways to work: (1) give me a research topic directly ("start research: XXX") and I\'ll launch the 23-stage pipeline for you; (2) just chat about your insight and I\'ll help sharpen it into a topic. You can also ask "what stage are we at?", "how are the results?", "stop", or "switch the primary model to xxx".':
+      '欢迎！两条通道随你选：① 直接给我研究题目（「开始研究：XXX」），我替你启动 23 阶段自动科研流水线；② 随便聊你的 insight，我帮你聊成题目再启动。还可以问「到哪一步了」「结果怎么样」「停止」，或说「把主模型换成 xxx」。',
     'Ask about your research...': '问问你的研究…',
     'Send': '发送', 'Voice input': '语音输入',
     /* ExperimentMonitor */

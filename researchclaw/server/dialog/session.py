@@ -33,6 +33,8 @@ class ChatSession:
     current_project: str = ""
     current_run: str = ""
     created_at: float = field(default_factory=time.time)
+    # 对话中等待用户补充的上下文（如 awaiting="topic" 表示刚问过研究题目）
+    pending: dict[str, Any] = field(default_factory=dict)
 
     MAX_HISTORY: int = 50
 

@@ -12,6 +12,7 @@ class Intent(str, Enum):
 
     TOPIC_SELECTION = "topic_selection"
     START_PIPELINE = "start_pipeline"
+    STOP_PIPELINE = "stop_pipeline"
     CHECK_STATUS = "check_status"
     MODIFY_CONFIG = "modify_config"
     DISCUSS_RESULTS = "discuss_results"
@@ -25,8 +26,12 @@ _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
     (Intent.HELP, re.compile(
         r"(?:^\s*help\s*$|\bhow\s+to\b|\busage\b|帮助|怎么用)", re.IGNORECASE
     )),
+    (Intent.STOP_PIPELINE, re.compile(
+        r"(?:\b(?:stop|abort|cancel|halt)\b|停止|终止|取消|停下来)",
+        re.IGNORECASE,
+    )),
     (Intent.START_PIPELINE, re.compile(
-        r"(?:\b(?:start|run|begin|launch)\b|开始|启动|跑|运行)",
+        r"(?:\b(?:start|begin|launch)\b|\brun\s+(?:a|an|the|new|experiment|pipeline)|开始|启动|开跑|跑一个|跑起来|运行)",
         re.IGNORECASE,
     )),
     (Intent.CHECK_STATUS, re.compile(

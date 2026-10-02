@@ -10,9 +10,11 @@ const ChatPanel = {
         <div class="chat-messages" id="chat-messages">
           <div class="chat-msg assistant">
             <div class="bubble">
-              Welcome to ResearchClaw! I can help you with research topics,
-              running experiments, monitoring progress, and editing papers.
-              Just type your question below.
+              Welcome! Two ways to work: (1) give me a research topic directly
+              ("start research: XXX") and I'll launch the 23-stage pipeline for you;
+              (2) just chat about your insight and I'll help sharpen it into a topic.
+              You can also ask "what stage are we at?", "how are the results?",
+              "stop", or "switch the primary model to xxx".
             </div>
           </div>
         </div>
