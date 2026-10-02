@@ -147,6 +147,51 @@ def _execute_paper_outline(
     )
 
 
+def _build_scale_block(run_dir: Path, config: RCConfig) -> str:
+    """实验规模强制声明块：让论文如实交代预算/模式/规模，并附收据指纹。"""
+    receipts: list[dict] = []
+    for p in sorted(run_dir.glob("stage-12*/runs/*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and d.get("receipt"):
+                receipts.append(d["receipt"])
+        except (json.JSONDecodeError, OSError):
+            continue
+    try:
+        rl = run_dir / "stage-13" / "refinement_log.json"
+        if rl.is_file():
+            rld = json.loads(rl.read_text(encoding="utf-8"))
+            if isinstance(rld, dict) and rld.get("receipt"):
+                receipts.append(rld["receipt"])
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    exp = config.experiment
+    lines = [
+        "\n\n## EXPERIMENT SCALE — MANDATORY DISCLOSURE (include verbatim facts in paper)",
+        f"- Declared scale: **{exp.scale}** (smoke ≤5min / pilot minutes-to-hours / full full-size)",
+        f"- Execution mode: {exp.mode} | time budget per run: {exp.time_budget_sec}s "
+        f"| primary metric: {exp.metric_key} ({exp.metric_direction})",
+    ]
+    for r in receipts[:3]:
+        lines.append(
+            "- Experiment receipt: code_sha256=%s… training_trace_lines=%s elapsed=%ss"
+            % (
+                str(r.get("code_sha256", ""))[:12],
+                r.get("training_trace_lines"),
+                r.get("elapsed_sec"),
+            )
+        )
+    lines.append(
+        "- Writing rules: (1) state these scale facts explicitly in Experimental Setup; "
+        "(2) pilot-scale results MUST be labeled 'pilot-scale' wherever reported; "
+        "(3) include a 'Scale-up Plan' subsection describing how the method extends "
+        "to full-scale data/compute; (4) NEVER claim state-of-the-art or "
+        "production-grade performance from pilot-scale evidence."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     """Collect raw experiment metric lines from stdout for paper writing.
 
@@ -1444,6 +1489,9 @@ def _execute_paper_draft(
             has_real_metrics = True
         exp_metrics_instruction += raw_metrics_block
 
+    # ── 实验规模强制声明（诚实标注，禁止 pilot 结果冒充 SOTA）──
+    exp_metrics_instruction += _build_scale_block(run_dir, config)
+
     # R18-1 + R19-6: Inject paired statistical comparisons AND condition summaries
     if exp_summary_text:
         exp_summary_parsed = _safe_json_loads(exp_summary_text, {})
@@ -1755,6 +1803,58 @@ def _execute_paper_draft(
         config.research.topic, config.research.domains
     )
     _empirical_domains = {"ml", "engineering", "biology", "chemistry"}
+    # ── 硬阻断：simulated 模式的指标是执行层编造的，绝不允许进论文 ──
+    _has_simulated_runs = False
+    for _run_json in sorted(run_dir.glob("stage-12*/runs/*.json")):
+        try:
+            _rj = json.loads(_run_json.read_text(encoding="utf-8"))
+            if _rj.get("status") == "simulated":
+                _has_simulated_runs = True
+                break
+        except (json.JSONDecodeError, OSError):
+            continue
+    if _has_simulated_runs:
+        logger.error(
+            "BLOCKED: simulated-mode experiment results detected — refusing to "
+            "write paper from fabricated metrics."
+        )
+        (stage_dir / "paper_draft.md").write_text(
+            "# Paper Draft Blocked\n\n"
+            "**Reason**: Experiment results came from `simulated` mode — the metrics "
+            "were fabricated by the executor, not measured.\n\n"
+            "**Action Required**: Set `experiment.mode` to `sandbox`, `docker` or "
+            "`ssh_remote` and re-run from --from-stage EXPERIMENT_RUN.",
+            encoding="utf-8",
+        )
+        (stage_dir / "paper_meta.json").write_text(
+            json.dumps(
+                {
+                    "outcome": "blocked_simulated",
+                    "detected_by": (
+                        "stage-12/runs/*.json contains status='simulated' "
+                        "(executor-fabricated metrics)"
+                    ),
+                    "action_required": (
+                        "Switch experiment.mode away from 'simulated'; re-run "
+                        "from --from-stage EXPERIMENT_RUN."
+                    ),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return StageResult(
+            stage=Stage.PAPER_DRAFT,
+            status=StageStatus.PAUSED,
+            artifacts=("paper_draft.md", "paper_meta.json"),
+            error=(
+                "Paper draft blocked: simulated-mode metrics detected. "
+                "Run real experiments instead."
+            ),
+            evidence_refs=("stage-17/paper_draft.md", "stage-17/paper_meta.json"),
+            decision="blocked_simulated",
+        )
+
     if not has_real_metrics and not _is_lit_first:
         if _domain_id in _empirical_domains:
             logger.error(

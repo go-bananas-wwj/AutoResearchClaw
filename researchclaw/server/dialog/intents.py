@@ -14,6 +14,7 @@ class Intent(str, Enum):
     START_PIPELINE = "start_pipeline"
     STOP_PIPELINE = "stop_pipeline"
     SYNC_OVERLEAF = "sync_overleaf"
+    IDEATION = "ideation"
     CHECK_STATUS = "check_status"
     MODIFY_CONFIG = "modify_config"
     DISCUSS_RESULTS = "discuss_results"
@@ -24,6 +25,10 @@ class Intent(str, Enum):
 
 # Keyword patterns for fast classification
 _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
+    (Intent.IDEATION, re.compile(
+        r"(?:找选题|选个题|选题结果|选题报告|证据卡|有什么可做|有没有.*(?:选题|方向可做)|推荐.*(?:课题|题目)|ideat)",
+        re.IGNORECASE,
+    )),
     (Intent.SYNC_OVERLEAF, re.compile(
         r"(?:overleaf|同步到?\s*overleaf|推送到?\s*overleaf)", re.IGNORECASE
     )),

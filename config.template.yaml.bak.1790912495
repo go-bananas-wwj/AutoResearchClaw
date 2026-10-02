@@ -40,7 +40,6 @@ literature_search:
 
 experiment:
   mode: "docker"
-  scale: "pilot"               # 规模诚实标签：smoke/pilot/full，会写进论文的规模声明
   time_budget_sec: 300          # 按任务量级调：轻量 ML 300s 起步，训练类 900s+
   max_iterations: 10
   metric_key: "val_loss"        # 与评分脚本输出一致的单一标量指标

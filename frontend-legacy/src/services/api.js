@@ -50,4 +50,7 @@ const API = {
   settingsFile(name) { return this.get(`/settings/file?name=${encodeURIComponent(name)}`); },
   settingsSave(name, content) { return this.put('/settings/file', { name, content }); },
   settingsEnv() { return this.get('/settings/env'); },
+  ideationStart(direction) { return this.post('/ideation/start', { direction }); },
+  ideationStatus() { return this.get('/ideation/status'); },
+  ideationReport(runId) { return this.get(`/ideation/report${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`); },
 };

@@ -64,6 +64,13 @@ async def route_message(raw_message: str, client_id: str) -> str:
         session.add_message("assistant", reply)
         return reply
 
+    # 上一条在等选题方向 → 本条按方向启动选题引擎
+    if session.pending.get("awaiting") == "ideation":
+        session.pending.pop("awaiting", None)
+        reply = await _handle_ideate(f"找选题：{text.strip()}", session)
+        session.add_message("assistant", reply)
+        return reply
+
     intent, confidence = classify_intent(text)
     logger.debug("Intent: %s (%.2f) for: %s", intent.value, confidence, text[:50])
 
@@ -151,6 +158,66 @@ async def _handle_stop(text: str, session: ChatSession) -> str:
     session.current_run = ""
     detail = result if isinstance(result, dict) else {}
     return f"已请求停止当前运行{('：' + detail.get('run_id')) if detail.get('run_id') else ''}。"
+
+
+async def _handle_ideate(text: str, session: ChatSession) -> str:
+    """「找选题」：启动/查询选题引擎（Stage 1-8 + 证据卡）。"""
+    from fastapi import HTTPException
+
+    # 查询结果分支
+    if re.search(r"结果|报告|证据卡|出来了吗|好了吗|咋样了", text):
+        from researchclaw.server.routes.ideation import ideation_report, ideation_status
+
+        st = await ideation_status()
+        if st.get("status") == "running":
+            return (
+                f"选题引擎还在跑（{st.get('run_id')}，方向：{st.get('direction')}）。"
+                "文献扫描通常 10–30 分钟，稍后问我「选题结果」。"
+            )
+        try:
+            rep = await ideation_report()
+        except HTTPException:
+            return "还没有选题结果。给我一个方向，比如「找选题：遥感嵌入+灾害预警」。"
+        lines = [
+            f"查新评分 {rep.get('novelty_score')}（{rep.get('novelty_assessment')}），"
+            f"候选科学问题 {len(rep.get('cards', []))} 个："
+        ]
+        for c in rep.get("cards", []):
+            lines.append(f"\n**#{c.get('rank')} {c.get('question')}**")
+            if c.get("note_zh"):
+                lines.append(f"  {c['note_zh']}")
+            for ev in (c.get("gap_evidence") or [])[:2]:
+                lines.append(f"  缺口证据：{ev[:120]}")
+            if c.get("novelty_hint"):
+                lines.append(f"  新颖性：{c['novelty_hint'][:120]}")
+        lines.append("\n看中哪个，说「开始研究：那个题目」我就启动完整流水线。")
+        return "\n".join(lines)
+
+    # 启动分支
+    direction = _extract_topic(text)
+    if not direction:
+        m = re.search(r"(?:找选题|选题|ideate)\s*[:：]?\s*(.+)", text)
+        direction = (m.group(1).strip() if m else "").strip("。")
+    if len(direction) < 4:
+        session.pending["awaiting"] = "ideation"
+        return (
+            "好，帮你跑选题引擎（真实扫描 OpenAlex/S2/arXiv → 找缺口 → 候选科学问题+证据卡）。"
+            "告诉我**研究方向**（例如「遥感嵌入+灾害预警」）。"
+        )
+
+    from researchclaw.server.routes.ideation import IdeationStartRequest, start_ideation
+
+    try:
+        resp = await start_ideation(IdeationStartRequest(direction=direction))
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return "已有一次选题运行在跑，问我「选题结果」看进度。"
+        return f"启动失败：{exc.detail}"
+    return (
+        f"选题引擎已启动（{resp.run_id}，方向：{direction}）。\n"
+        "它会真实扫描文献找缺口，通常 10–30 分钟。"
+        "完成后对我说「选题结果」，我把候选科学问题和证据卡发你。"
+    )
 
 
 async def _handle_overleaf(text: str, session: ChatSession) -> str:
@@ -389,6 +456,7 @@ _HANDLERS = {
     Intent.START_PIPELINE: _handle_start,
     Intent.STOP_PIPELINE: _handle_stop,
     Intent.SYNC_OVERLEAF: _handle_overleaf,
+    Intent.IDEATION: _handle_ideate,
     Intent.TOPIC_SELECTION: _handle_topic,
     Intent.MODIFY_CONFIG: _handle_config,
     Intent.DISCUSS_RESULTS: _handle_results,

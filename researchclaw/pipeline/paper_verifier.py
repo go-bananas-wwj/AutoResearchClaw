@@ -215,15 +215,20 @@ def verify_paper(
             result.total_numbers_checked += 1
 
             # Always-allowed numbers
-            if value in _ALWAYS_ALLOWED:
+            is_strict_ctx = _is_strict_section(section_lower, strict_sections) or in_table
+
+            # 严格区（Results/表格）不再套用通用常数白名单——除年份(2000-2100)外，
+            # 结果区数字必须有 registry 背书，防止 0.95/0.99 这类高伪造成绩
+            # 借"超参常数"白名单逃逸。宽松区（正文叙述）维持原白名单。
+            if value in _ALWAYS_ALLOWED and (
+                not is_strict_ctx or 2000.0 <= value <= 2100.0
+            ):
                 result.total_numbers_verified += 1
                 continue
 
             # Integer-like small numbers (likely indices, counts, etc.)
-            # BUG-23 P1: In strict sections or tables, only auto-pass very small
-            # integers (≤5) — larger counts (e.g. "20 datasets") could be fabricated.
-            is_strict_ctx = _is_strict_section(section_lower, strict_sections) or in_table
-            _int_limit = 5 if is_strict_ctx else 20
+            # 严格区进一步收紧到 ≤3（原 ≤5），宽松区 ≤20。
+            _int_limit = 3 if is_strict_ctx else 20
             if value == int(value) and abs(value) <= _int_limit:
                 result.total_numbers_verified += 1
                 continue

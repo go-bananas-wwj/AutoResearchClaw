@@ -241,7 +241,43 @@ def _execute_peer_review(
         f"judge_model={_judge_model or _author_model or 'unknown'} "
         f"independent={'yes' if _independent else 'no'} -->\n"
     )
-    (stage_dir / "reviews.md").write_text(_prov_header + reviews, encoding="utf-8")
+
+    # ── 声明级核验（此前已实现但全库零调用——接回流水线）──
+    _cv_section = ""
+    try:
+        from researchclaw.hitl.claim_verifier import ClaimVerifier
+
+        _cv = ClaimVerifier(run_dir, llm_client=llm)
+        _cv_report = _cv.verify_text(draft)
+        (stage_dir / "claim_verification.json").write_text(
+            json.dumps(_cv_report.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        _ungrounded = [c for c in _cv_report.claims if c.grounded is False]
+        _cv_section = (
+            "\n\n## Claim Verification (automated)\n"
+            f"- Claims checked: {_cv_report.total_claims} | "
+            f"grounded: {_cv_report.grounded_claims} | "
+            f"ungrounded: {_cv_report.ungrounded_claims} | "
+            f"score: {_cv_report.score}\n"
+        )
+        if _ungrounded:
+            _cv_section += "- Ungrounded claims (needs human check):\n" + "\n".join(
+                f"  - {c.text[:160]}" for c in _ungrounded[:10]
+            ) + "\n"
+        logger.info(
+            "Stage 18: claim verification — %d/%d grounded",
+            _cv_report.grounded_claims,
+            _cv_report.total_claims,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Stage 18: claim verification failed (non-blocking)", exc_info=True
+        )
+
+    (stage_dir / "reviews.md").write_text(
+        _prov_header + reviews + _cv_section, encoding="utf-8"
+    )
     (stage_dir / "review_provenance.json").write_text(
         json.dumps(
             {
@@ -256,7 +292,7 @@ def _execute_peer_review(
     return StageResult(
         stage=Stage.PEER_REVIEW,
         status=StageStatus.DONE,
-        artifacts=("reviews.md", "review_provenance.json"),
+        artifacts=("reviews.md", "review_provenance.json", "claim_verification.json"),
         evidence_refs=("stage-18/reviews.md",),
     )
 

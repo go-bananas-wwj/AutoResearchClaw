@@ -73,6 +73,14 @@
     'Saving validates YAML and writes an automatic .bak backup next to the file. Changes to a running pipeline require a restart of the run to take effect.':
       '保存时会校验 YAML，并在文件旁自动生成 .bak 备份；对正在运行的流水线，改动需重新启动该 run 才生效。',
     'Select a config file': '选择一个配置文件',
+    /* IdeationView */
+    'Ideation': '选题',
+    'Research Ideation': '科研选题',
+    'Give a research direction — the engine scans the literature (OpenAlex/S2/arXiv), finds gaps, and returns evidence-backed candidate scientific questions.':
+      '给一个研究方向——引擎会扫描文献（OpenAlex/S2/arXiv）、找出缺口，返回带证据的候选科学问题。',
+    'Find Topics': '找选题', 'Stop': '停止',
+    'e.g., 遥感嵌入 + 灾害预警': '例：遥感嵌入 + 灾害预警',
+    'Start full pipeline with this topic': '用这个题目启动完整流水线',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */

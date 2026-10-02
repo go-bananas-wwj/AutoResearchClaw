@@ -1067,6 +1067,63 @@ def cmd_trends(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ideate(args: argparse.Namespace) -> int:
+    """选题模式：只跑 Stage 1–8（文献扫描→缺口分析→候选问题+查新），产出证据卡。"""
+    resolved = _resolve_config_or_exit(args)
+    if resolved is None:
+        return 1
+    config_path = resolved
+    config = RCConfig.load(config_path, check_paths=False)
+
+    direction = cast(str | None, args.direction) or config.research.topic
+    if not direction or direction.strip() in ("", "Your research topic here"):
+        print("Error: 请用 --direction 给出选题方向（或在 config 里写 research.topic）", file=sys.stderr)
+        return 1
+
+    import dataclasses
+
+    config = dataclasses.replace(
+        config, research=dataclasses.replace(config.research, topic=direction)
+    )
+
+    run_id = _generate_run_id(direction)
+    run_dir = Path(cast(str | None, args.output) or f"artifacts/{run_id}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[ideate] 方向: {direction}")
+    print(f"[ideate] run_dir: {run_dir}（跑 Stage 1–8：文献扫描→缺口→候选问题）")
+
+    from researchclaw.pipeline.runner import execute_pipeline
+    from researchclaw.pipeline.stages import Stage
+
+    execute_pipeline(
+        run_dir=run_dir,
+        run_id=run_id,
+        config=config,
+        adapters=AdapterBundle(),
+        to_stage=Stage.HYPOTHESIS_GEN,
+        auto_approve_gates=True,
+    )
+
+    from researchclaw.ideation.report import build_ideation_report
+
+    report = build_ideation_report(run_dir, config)
+    if not report.get("ok"):
+        print(f"[ideate] 证据卡生成失败: {report.get('reason')}", file=sys.stderr)
+        return 1
+
+    print(f"\n[ideate] 查新评分: {report.get('novelty_score')} ({report.get('novelty_assessment')})")
+    print(f"[ideate] 候选科学问题 {len(report['cards'])} 个（详见 {run_dir}/ideation_report.json）：\n")
+    for c in report["cards"]:
+        print(f"  #{c.get('rank')} {c.get('question')}")
+        if c.get("note_zh"):
+            print(f"      {c['note_zh']}")
+        for ev in (c.get("gap_evidence") or [])[:2]:
+            print(f"      缺口证据: {ev[:100]}")
+        print()
+    return 0
+
+
 def cmd_calendar(args: argparse.Namespace) -> int:
     """Conference deadline calendar commands."""
     from researchclaw.calendar.deadlines import ConferenceCalendar
@@ -1369,6 +1426,13 @@ def build_parser() -> argparse.ArgumentParser:
     _ = trends_p.add_argument("--config", "-c", default="config.yaml", help="Config file path")
     _ = trends_p.add_argument("--domains", nargs="+", help="Override domains")
 
+    ideate_p = sub.add_parser(
+        "ideate", help="选题模式：文献扫描→缺口分析→候选科学问题（Stage 1-8 + 证据卡）"
+    )
+    _ = ideate_p.add_argument("direction", nargs="?", help="选题方向（自然语言）")
+    _ = ideate_p.add_argument("--config", "-c", default="config.arc.yaml", help="Config file path")
+    _ = ideate_p.add_argument("--output", "-o", default=None, help="Run 目录（默认 artifacts/<run_id>）")
+
     # Domain profiles (deployable — bundle prompts + infra defaults per domain)
     prof_p = sub.add_parser(
         "profile",
@@ -1520,6 +1584,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "run":
         return cmd_run(args)
+    if command == "ideate":
+        return cmd_ideate(args)
     elif command == "validate":
         return cmd_validate(args)
     elif command == "doctor":

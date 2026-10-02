@@ -38,6 +38,60 @@ from researchclaw.pipeline._helpers import (
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
+
+_LOSS_LINE_RE = re.compile(
+    r"(?:^|\b)(?:step|epoch|iter(?:ation)?)[\s:=]+\d+.*?(?:loss|metric)[\s:=]+[\d.eE+-]+",
+    re.IGNORECASE,
+)
+
+
+def _build_experiment_receipt(
+    *,
+    code_text: str,
+    exp_dir_path: Any,
+    stdout: str,
+    elapsed_sec: float | None,
+    mode: str,
+    time_budget_sec: int,
+    metric_key: str,
+) -> dict[str, Any]:
+    """实验收据：把指标与其产生的代码/训练输出做密码学绑定。
+
+    防"秒过假实验/不学习只刷分"（autoresearch issue #599 类问题）：
+    - code_sha256：实际执行的代码（单文件为 code_text，多文件为全部 .py 拼接）；
+    - stdout_fingerprint：stdout 中 step/loss 行的 sha256——真实训练过程的指纹，
+      伪造 metrics 而不跑训练时此指纹缺失或行数为 0；
+    - 附带执行环境与预算上下文，供论文规模声明使用。
+    """
+    import hashlib
+
+    code_all = code_text or ""
+    if exp_dir_path and Path(exp_dir_path).is_dir():
+        for pyf in sorted(Path(exp_dir_path).glob("*.py")):
+            try:
+                code_all += "\n" + pyf.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                pass
+
+    loss_lines = [ln for ln in (stdout or "").splitlines() if _LOSS_LINE_RE.search(ln)]
+    fingerprint_src = "\n".join(loss_lines[:200])
+
+    return {
+        "code_sha256": hashlib.sha256(code_all.encode("utf-8")).hexdigest(),
+        "code_bytes": len(code_all.encode("utf-8")),
+        "stdout_fingerprint": (
+            hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()
+            if fingerprint_src
+            else None
+        ),
+        "training_trace_lines": len(loss_lines),
+        "elapsed_sec": elapsed_sec,
+        "sandbox_mode": mode,
+        "time_budget_sec": time_budget_sec,
+        "metric_key": metric_key,
+        "issued_at": _utcnow_iso(),
+    }
+
 logger = logging.getLogger(__name__)
 
 
@@ -387,6 +441,15 @@ def _execute_experiment_run(
             "stderr": result.stderr,
             "timed_out": result.timed_out,
             "completed_at": _utcnow_iso(),
+            "receipt": _build_experiment_receipt(
+                code_text=code_text,
+                exp_dir_path=exp_dir_path,
+                stdout=result.stdout or "",
+                elapsed_sec=result.elapsed_sec,
+                mode=mode,
+                time_budget_sec=config.experiment.time_budget_sec,
+                metric_key=config.experiment.metric_key,
+            ),
         }
         if structured_results is not None:
             run_payload["structured_results"] = structured_results
@@ -950,6 +1013,15 @@ def _execute_iterative_refine(
         return "\n\n".join(parts)
 
     def _write_refinement_log() -> None:
+        # 附带主实验收据（若 stage-12 有），把 best 指标与代码/训练指纹绑定
+        try:
+            _r1 = run_dir / "stage-12" / "runs" / "run-1.json"
+            if _r1.is_file():
+                _r1d = json.loads(_r1.read_text(encoding="utf-8"))
+                if _r1d.get("receipt") and "receipt" not in log:
+                    log["receipt"] = _r1d["receipt"]
+        except (json.JSONDecodeError, OSError):
+            pass
         (stage_dir / "refinement_log.json").write_text(
             json.dumps(log, indent=2), encoding="utf-8"
         )

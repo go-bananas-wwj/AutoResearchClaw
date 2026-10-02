@@ -4,6 +4,7 @@ This file is injected into the sandbox project directory at execution time.
 The LLM-generated experiment code should import and use this harness for:
 - Time budget management (should_stop)
 - Metric reporting (report_metric)
+- Training trace for receipts (log_step)
 - Result finalization (finalize)
 - NaN/divergence detection (built-in)
 
@@ -104,6 +105,21 @@ class ExperimentHarness:
 
     def step(self) -> None:
         """Increment step counter. Call this once per experiment step."""
+        self._step_count += 1
+
+    def log_step(self, step: int, loss: float, **extra: float) -> None:
+        """Print a training-trace line — the real-time fingerprint of actual training.
+
+        Experiment code SHOULD call this during training loops (throttled, e.g.
+        every N steps). The execution layer hashes these lines into the
+        experiment receipt, proving the metrics came from real training rather
+        than a fabricated print (autoresearch issue #599 class of cheating).
+        """
+        if not self.check_value(loss, "loss"):
+            return
+        extras = " ".join(f"{k}={v}" for k, v in extra.items())
+        suffix = f" {extras}" if extras else ""
+        print(f"step={step} loss={loss}{suffix}")
         self._step_count += 1
 
 

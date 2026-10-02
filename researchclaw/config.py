@@ -584,6 +584,9 @@ class CliAgentConfig:
 class ExperimentConfig:
     mode: str = "simulated"
     time_budget_sec: int = 300
+    # 实验规模声明（诚实标注用）：smoke(≤5min) / pilot(分钟-小时级) / full(全尺寸)
+    # 仅作标签进入论文规模声明，不改变调度行为；预算仍由 time_budget_sec 决定。
+    scale: str = "pilot"
     max_iterations: int = 10
     max_refine_duration_sec: int = 0  # 0 = auto (3× time_budget_sec)
     metric_key: str = "primary_metric"
@@ -1344,6 +1347,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
     return ExperimentConfig(
         mode=data.get("mode", "simulated"),
         time_budget_sec=_safe_int(data.get("time_budget_sec"), 300),
+        scale=str(data.get("scale", "pilot") or "pilot"),
         max_iterations=_safe_int(data.get("max_iterations"), 10),
         max_refine_duration_sec=_safe_int(data.get("max_refine_duration_sec"), 0),
         metric_key=data.get("metric_key", "primary_metric"),

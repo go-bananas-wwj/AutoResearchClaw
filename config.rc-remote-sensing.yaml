@@ -35,6 +35,7 @@ literature_search:
 
 experiment:
   mode: "docker"               # V100 走沙箱容器隔离；改 "sandbox" 可直用宿主 venv
+  scale: "pilot"               # 规模诚实标签：smoke(≤5min)/pilot(分钟-小时)/full(全尺寸)，论文强制声明
   time_budget_sec: 900         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
   max_iterations: 10
   metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致
