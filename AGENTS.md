@@ -15,6 +15,8 @@
 - `researchclaw/docker/Dockerfile`：烘焙数据集层默认关闭（`EMBED_DATASETS`）。
 - 前端 `frontend-legacy/`：已接为服务路径 `/app/frontend`（上游目录名不匹配是已知问题）；含 i18n（`src/services/i18n.js`，右上角 中文/EN）与 Settings 页（对应后端 `researchclaw/server/routes/settings.py`）。
 - `researchclaw/overleaf/`：论文自动同步共享 Overleaf 项目（每 run 一个 `runs/<run_id>/`）。token 走 `.env` 的 `OVERLEAF_TOKEN`；`.overleaf/` 共享克隆已 gitignore；**不要把 Overleaf token 写进任何配置文件提交**。模板 `tgrs`（IEEE TGRS）加在 `templates/conference.py`（author_format `ieee` 分支），IEEEtran 样式随 TeX Live，无需下载。
+- **docker-sibling 部署**：serve/control 容器经 `/var/run/docker.sock` 调度实验沙箱兄弟容器。两条铁律：① `DockerSandbox._host_visible()` 依赖 `.env` 的 `RC_HOST_REPO`（宿主机仓库真实路径）做 bind-mount 路径翻译——**删掉它实验沙箱就会挂载空目录**；② serve 与 control 两个服务都必须挂 docker.sock + `group_add` docker GID。
+- `PipelineStartRequest.auto_approve` 默认 False（Web 启动=co-pilot）；Chat 显式传 True（全自动）。门控走 REST `/api/runs/{id}/hitl/{waiting,respond}` + hitl 文件 IPC。
 
 ## 生效方式速查
 
