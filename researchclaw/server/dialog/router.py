@@ -304,16 +304,43 @@ async def _handle_results(text: str, session: ChatSession) -> str:
     return "\n".join(lines) if len(lines) > 1 else f"指标：{latest.metrics}"
 
 
+async def _llm_reply(session: ChatSession, extra_system: str = "") -> str:
+    """统一的 LLM 应答入口：会话历史 + 角色系统提示（可附加状态上下文）。"""
+    try:
+        client = _llm()
+        messages = session.get_context(12)
+        system = _SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else "")
+        resp = await asyncio.to_thread(
+            client.chat, messages, system=system, max_tokens=600
+        )
+        return resp.content
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("LLM chat failed")
+        return f"（模型调用失败，请检查 Settings 页的 API 配置后重试）\n错误：{exc}"
+
+
 async def _handle_paper(text: str, session: ChatSession) -> str:
-    return (
-        "论文在第 17 阶段（起草）完成后可编辑。\n\n"
-        "我可以帮你：\n"
-        "- 审读摘要并提修改建议\n"
-        "- 检查引言结构\n"
-        "- 核对实验描述与真实结果是否一致\n"
-        "- 扩充相关工作\n\n"
-        "想先从哪一节开始？"
+    from researchclaw.dashboard.collector import DashboardCollector
+
+    runs = DashboardCollector().collect_all()
+    if runs:
+        latest = runs[0]
+        ctx = (
+            f"当前论文状态：最近运行 {latest.run_id}，阶段 {latest.current_stage}/23，"
+            f"状态 {latest.status}。"
+            + ("论文已生成，可结合其内容审读。" if latest.current_stage >= 17
+               else "论文尚未起草（第 17 阶段才生成），如用户想要新论文，引导其先给研究题目启动 run。")
+        )
+    else:
+        ctx = "当前论文状态：尚无任何运行记录，如用户想要论文，引导其先给研究题目启动 run。"
+    extra = (
+        ctx
+        + "\n用户正在咨询论文相关问题。你可以：结合运行状态给写作/修改建议、"
+        "讲解 TGRS 期刊论文结构、评估选题可行性。"
+        "注意如实说明：你不能直接改动 Overleaf/磁盘上的 tex 文件，"
+        "实际编辑在 Overleaf 进行（同步通道已通）。"
     )
+    return await _llm_reply(session, extra_system=extra)
 
 
 # ---------------------------------------------------------------- LLM-backed general chat
@@ -334,19 +361,7 @@ _SYSTEM_PROMPT = (
 
 
 async def _handle_general(text: str, session: ChatSession) -> str:
-    try:
-        client = _llm()
-        messages = session.get_context(12)
-        resp = await asyncio.to_thread(
-            client.chat, messages, system=_SYSTEM_PROMPT, max_tokens=600
-        )
-        return resp.content
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("LLM chat failed")
-        return (
-            "（模型调用失败，请检查 Settings 页的 API 配置后重试）\n"
-            f"错误：{exc}"
-        )
+    return await _llm_reply(session)
 
 
 async def _handle_help(text: str, session: ChatSession) -> str:
