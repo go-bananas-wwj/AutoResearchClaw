@@ -95,6 +95,30 @@ class ConferenceTemplate:
             "" if self.author_format == "revtex" else f"\\title{{{title}}}\n"
         )
 
+        if self.author_format == "ieee":
+            # IEEEtran journal layout: \maketitle first, then abstract + IEEEkeywords
+            return (
+                f"{style_comment}"
+                f"{docclass_line}"
+                f"{style_line}"
+                f"{pkg_lines}\n"
+                f"{preamble_extra}\n"
+                f"\n"
+                f"\\title{{{title}}}\n"
+                f"\n"
+                f"{author_block}\n"
+                f"\n"
+                f"\\begin{{document}}\n"
+                f"\\maketitle\n"
+                f"\\begin{{abstract}}\n"
+                f"{abstract}\n"
+                f"\\end{{abstract}}\n"
+                f"\n"
+                f"\\begin{{IEEEkeywords}}\n"
+                f"Remote sensing, deep learning, machine learning\n"
+                f"\\end{{IEEEkeywords}}\n"
+            )
+
         return (
             f"{style_comment}"
             f"{docclass_line}"
@@ -155,6 +179,12 @@ class ConferenceTemplate:
             return (
                 f"\\author{{{authors}}}\n"
                 f"\\affiliation{{Affiliation}}"
+            )
+        if self.author_format == "ieee":
+            # IEEEtran journal: plain author line + received-date thanks
+            return (
+                f"\\author{{{authors}}}\n"
+                f"\\thanks{{Manuscript received \\today.}}"
             )
         return f"\\author{{{authors}}}"
 
@@ -509,6 +539,38 @@ GENERIC = ConferenceTemplate(
 
 
 # ---------------------------------------------------------------------------
+# IEEE journals (remote sensing / geoscience, SCI Q1)
+# ---------------------------------------------------------------------------
+
+TGRS = ConferenceTemplate(
+    name="tgrs",
+    display_name="IEEE Transactions on Geoscience and Remote Sensing",
+    year=2026,
+    document_class="IEEEtran",
+    style_package="",
+    style_options="journal",
+    extra_packages=(
+        "amsmath",
+        "amssymb",
+        "amsfonts",
+        "graphicx",
+        "booktabs",
+        "multirow",
+        "hyperref",
+        "url",
+    ),
+    author_format="ieee",
+    bib_style="IEEEtran",
+    columns=2,
+    style_download_url=(
+        "https://journals.ieeeauthorcenter.ieee.org/"
+        "create-your-ieee-journal-article/authoring-tools-and-templates/"
+    ),
+    # IEEEtran.cls / IEEEtran.bst 随 TeX Live 发行，无需额外下载样式文件
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — short aliases point to LATEST version of each conference
 # ---------------------------------------------------------------------------
 
@@ -517,6 +579,10 @@ CONFERENCE_REGISTRY: dict[str, ConferenceTemplate] = {
     "neurips": NEURIPS_2025,
     "iclr": ICLR_2026,
     "icml": ICML_2026,
+    # IEEE remote-sensing journal
+    "tgrs": TGRS,
+    "ieee_tgrs": TGRS,
+    "ieee_tgrs_2026": TGRS,
     # Generic for non-ML domains
     "generic": GENERIC,
     "article": GENERIC,

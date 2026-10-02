@@ -84,8 +84,16 @@ knowledge_base:
   root: "docs/kb"
 
 export:
-  target_conference: "iclr_2026"   # neurips_2025 / iclr_2026 / icml_2026
+  target_conference: "tgrs"      # 遥感 ML 的 SCI 一区目标（IEEE TGRS，IEEEtran 双栏）；可选 neurips_2025 / iclr_2026 / icml_2026
   authors: "Anonymous"
+
+# 论文产出自动同步到 Overleaf 共享项目（每个 run 一个 runs/<run_id>/ 文件夹）
+# token 走环境变量 OVERLEAF_TOKEN（.env），不落文件
+overleaf:
+  enabled: true
+  git_url: "https://git.overleaf.com/6abf1ff4f69d58b37f570e1a"
+  branch: "main"
+  auto_push: true
 
 metaclaw_bridge:
   enabled: true

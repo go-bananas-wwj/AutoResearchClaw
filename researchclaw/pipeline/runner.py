@@ -890,6 +890,14 @@ def execute_pipeline(
     except Exception:  # noqa: BLE001
         logger.warning("Deliverables packaging failed (non-blocking)")
 
+    # --- Overleaf per-run sync（overleaf.enabled 时生效；失败不阻断）---
+    try:
+        from researchclaw.overleaf.run_sync import maybe_sync_run
+
+        maybe_sync_run(run_dir, run_id, config)
+    except Exception:  # noqa: BLE001
+        logger.debug("Overleaf sync skipped", exc_info=True)
+
     # --- HITL: Finalize session state ---
     try:
         hitl_session = getattr(adapters, "hitl", None)
@@ -1748,6 +1756,14 @@ def execute_iterative_pipeline(
             print(f"[{run_id}] Deliverables packaged →{deliverables_dir}")
     except Exception:  # noqa: BLE001
         logger.warning("Deliverables packaging failed (non-blocking)")
+
+    # --- Overleaf per-run sync（overleaf.enabled 时生效；失败不阻断）---
+    try:
+        from researchclaw.overleaf.run_sync import maybe_sync_run
+
+        maybe_sync_run(run_dir, run_id, config)
+    except Exception:  # noqa: BLE001
+        logger.debug("Overleaf sync skipped", exc_info=True)
 
     return summary
 

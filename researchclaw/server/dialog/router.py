@@ -153,6 +153,46 @@ async def _handle_stop(text: str, session: ChatSession) -> str:
     return f"已请求停止当前运行{('：' + detail.get('run_id')) if detail.get('run_id') else ''}。"
 
 
+async def _handle_overleaf(text: str, session: ChatSession) -> str:
+    """「同步到 Overleaf」：把指定/当前/最近 run 的论文推到共享 Overleaf 项目。"""
+    from researchclaw.server.app import _app_state
+
+    # 1) 解析目标 run：消息里显式给的 run_id > 会话当前 run > 最近的 run
+    m = re.search(r"(rc-[\w-]+)", text)
+    run_id = m.group(1) if m else session.current_run
+    if not run_id:
+        from researchclaw.dashboard.collector import DashboardCollector
+
+        runs = DashboardCollector().collect_all()
+        if not runs:
+            return "还没有任何运行记录——先开一条流水线，跑完再同步。"
+        run_id = runs[0].run_id
+
+    run_dir = REPO_ROOT / "artifacts" / run_id
+    if not run_dir.is_dir():
+        return f"找不到 run 目录：artifacts/{run_id}"
+
+    from researchclaw.overleaf.run_sync import sync_run_to_overleaf
+
+    try:
+        result = await asyncio.to_thread(
+            sync_run_to_overleaf, run_dir, run_id, _app_state["config"]
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("overleaf sync failed from chat")
+        return f"同步失败：{exc}"
+
+    if not result.get("ok"):
+        return f"同步未完成：{result.get('reason', 'unknown')}"
+    note = "（内容无变化，已是最新）" if not result.get("pushed") else ""
+    return (
+        f"已同步 **{run_id}** 到 Overleaf 共享项目 {note}\n"
+        f"- 位置：`runs/{run_id}/`（paper.tex + references.bib + figures/）\n"
+        "- 在 Overleaf 打开该文件夹，把 paper.tex 设为 Main document 即可编译\n"
+        "- 之后你在 Overleaf 上的修改会经 git 双向同步，流水线内我说「拉取 Overleaf 改动」可取回"
+    )
+
+
 # ---------------------------------------------------------------- model switch
 
 def _update_primary_model(model: str) -> str:
@@ -333,6 +373,7 @@ _HANDLERS = {
     Intent.CHECK_STATUS: _handle_status,
     Intent.START_PIPELINE: _handle_start,
     Intent.STOP_PIPELINE: _handle_stop,
+    Intent.SYNC_OVERLEAF: _handle_overleaf,
     Intent.TOPIC_SELECTION: _handle_topic,
     Intent.MODIFY_CONFIG: _handle_config,
     Intent.DISCUSS_RESULTS: _handle_results,

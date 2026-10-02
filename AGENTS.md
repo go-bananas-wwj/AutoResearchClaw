@@ -14,6 +14,7 @@
 - `researchclaw/cli.py`：`uvicorn.run(..., ws="wsproto")` —— websockets≥14 强制 Origin 校验导致 WS 403，本工具按单人本地场景换用 wsproto；多用户部署请配置 `server.auth_token` 而不是回退。
 - `researchclaw/docker/Dockerfile`：烘焙数据集层默认关闭（`EMBED_DATASETS`）。
 - 前端 `frontend-legacy/`：已接为服务路径 `/app/frontend`（上游目录名不匹配是已知问题）；含 i18n（`src/services/i18n.js`，右上角 中文/EN）与 Settings 页（对应后端 `researchclaw/server/routes/settings.py`）。
+- `researchclaw/overleaf/`：论文自动同步共享 Overleaf 项目（每 run 一个 `runs/<run_id>/`）。token 走 `.env` 的 `OVERLEAF_TOKEN`；`.overleaf/` 共享克隆已 gitignore；**不要把 Overleaf token 写进任何配置文件提交**。模板 `tgrs`（IEEE TGRS）加在 `templates/conference.py`（author_format `ieee` 分支），IEEEtran 样式随 TeX Live，无需下载。
 
 ## 生效方式速查
 

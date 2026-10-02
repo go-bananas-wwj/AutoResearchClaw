@@ -32,9 +32,11 @@ class OverleafSync:
         self._last_sync: datetime | None = None
         self._conflict_resolver = ConflictResolver()
 
-    def setup(self, run_dir: Path) -> Path:
+    def setup(self, run_dir: Path, local_dir: Path | None = None) -> Path:
         """Clone or update the Overleaf repo into the run directory."""
-        self.local_dir = run_dir / "overleaf_repo"
+        self.local_dir = (
+            local_dir if local_dir is not None else run_dir / "overleaf_repo"
+        )
         if self.local_dir.exists() and (self.local_dir / ".git").exists():
             logger.info("Pulling latest from Overleaf...")
             self._git("pull", "origin", self.branch)
@@ -42,47 +44,65 @@ class OverleafSync:
             logger.info("Cloning Overleaf repo: %s", self.git_url)
             self.local_dir.mkdir(parents=True, exist_ok=True)
             self._git_clone()
+        # 容器/最小环境里 git 无全局身份，提交前必须补本地身份
+        self._git("config", "user.email", "researchclaw@local")
+        self._git("config", "user.name", "ResearchClaw")
         return self.local_dir
+
+    def _auth_git_url(self) -> str:
+        """为 git.overleaf.com 裸 URL 注入 OVERLEAF_TOKEN（token 不落配置文件）。"""
+        import os
+
+        if "git.overleaf.com" in self.git_url and "@" not in self.git_url:
+            token = os.environ.get("OVERLEAF_TOKEN", "")
+            if token:
+                return self.git_url.replace("https://", f"https://git:{token}@", 1)
+        return self.git_url
 
     def push_paper(
         self,
         paper_tex: Path,
         bib_file: Path | None = None,
         figures_dir: Path | None = None,
+        subdir: str = "",
     ) -> bool:
         """Push pipeline-generated paper to Overleaf.
 
-        Copies .tex, .bib, and figures into the local clone, then commits and pushes.
+        Copies .tex, .bib, and figures into the local clone (under *subdir*
+        when given, e.g. ``runs/<run_id>/``), then commits and pushes.
         """
         if not self.local_dir:
             raise RuntimeError("Call setup() before push_paper()")
 
+        base = self.local_dir / subdir if subdir else self.local_dir
+        base.mkdir(parents=True, exist_ok=True)
+
         # Copy main tex file
-        dst_tex = self.local_dir / paper_tex.name
+        dst_tex = base / paper_tex.name
         shutil.copy2(paper_tex, dst_tex)
         logger.info("Copied %s -> %s", paper_tex, dst_tex)
 
         # Copy bib file
         if bib_file and bib_file.exists():
-            dst_bib = self.local_dir / bib_file.name
+            dst_bib = base / bib_file.name
             shutil.copy2(bib_file, dst_bib)
 
         # Copy figures
         if figures_dir and figures_dir.is_dir():
-            dst_figs = self.local_dir / "figures"
+            dst_figs = base / "figures"
             if dst_figs.exists():
                 shutil.rmtree(dst_figs)
             shutil.copytree(figures_dir, dst_figs)
 
-        # Git add, commit, push
-        self._git("add", "-A")
+        # Git add, commit, push（共享仓库模式下只暂存本 run 的子目录）
+        self._git("add", subdir if subdir else "-A")
         status = self._git("status", "--porcelain")
         if not status.strip():
             logger.info("No changes to push")
             return False
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        self._git("commit", "-m", f"AutoResearchClaw sync: {ts}")
+        self._git("commit", "-m", f"AutoResearchClaw sync{' ' + subdir if subdir else ''}: {ts}")
         self._git("push", "origin", self.branch)
         self._last_sync = datetime.now(timezone.utc)
         logger.info("Pushed paper to Overleaf")
@@ -146,7 +166,7 @@ class OverleafSync:
     def _git_clone(self) -> None:
         """Clone the Overleaf repo."""
         result = subprocess.run(
-            ["git", "clone", "-b", self.branch, self.git_url, str(self.local_dir)],
+            ["git", "clone", "-b", self.branch, self._auth_git_url(), str(self.local_dir)],
             capture_output=True,
             text=True,
             timeout=120,

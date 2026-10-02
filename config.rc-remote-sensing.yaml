@@ -87,8 +87,14 @@ knowledge_base:
   root: "docs/kb"
 
 export:
-  target_conference: "iclr_2026"   # 或 neurips_2025 / icml_2026
-  authors: "Anonymous"             # 定稿前替换；AI 辅助按会议政策如实披露
+  target_conference: "tgrs"      # IEEE TGRS（遥感 ML 的 SCI 一区目标刊，IEEEtran 双栏）；可选 neurips_2025 / iclr_2026 / icml_2026
+  authors: "Anonymous"             # 定稿前替换；AI 辅助按期刊政策如实披露
+
+overleaf:
+  enabled: true
+  git_url: "https://git.overleaf.com/6abf1ff4f69d58b37f570e1a"
+  branch: "main"
+  auto_push: true
 
 metaclaw_bridge:
   enabled: true                    # 跨 run 教训沉淀，第一周建议开着

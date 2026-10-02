@@ -50,6 +50,15 @@ docker compose up -d dashboard      # 常驻，改代码/配置后 docker compos
 
 🛠 **Settings 页**：在浏览器里直接编辑 `config*.yaml`（保存前 YAML 校验、自动 .bak 备份），并查看各 API key 环境变量是否就绪（只显示有/无，不回显值）。服务运行于完整 `serve` 模式，`/api/pipeline/start|stop` 亦已开放（前端启动按钮暂未接，可直接调 API）。
 
+## 论文自动同步 Overleaf
+
+`overleaf.enabled: true`（两份配置模板均已开）时，每条 run 在收尾（deliverables 打包后）自动把 `paper.tex + references.bib + figures/` 推到共享 Overleaf 项目的 `runs/<run_id>/` 文件夹，全程走 Overleaf Git 集成；也可随时在对话里说「同步到 Overleaf」手动触发。
+
+- 共享克隆在 `.overleaf/papers/`（已 gitignore）；token 走 `.env` 的 `OVERLEAF_TOKEN`，不落配置文件
+- 在 Overleaf 打开对应 run 文件夹，把 `paper.tex` 设为 Main document 即可编译
+- 导出模板由 `export.target_conference` 决定：遥感默认 `tgrs`（IEEE TGRS，SCI 一区，IEEEtran 双栏，样式文件 TeX Live 自带），亦可切 `neurips_2025 / iclr_2026 / icml_2026`
+- 你在 Overleaf 网页端的修改经 git 双向同步，可用对话或 CLI 拉回
+
 ## 本目录新增文件
 
 | 文件 | 作用 |
