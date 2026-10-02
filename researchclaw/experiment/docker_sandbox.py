@@ -261,6 +261,23 @@ class DockerSandbox:
     # Internals
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _host_visible(staging_dir: Path) -> Path:
+        """docker-sibling 部署的路径翻译。
+
+        本控制面以容器运行、经 /var/run/docker.sock 调度兄弟容器时，bind-mount
+        路径由**宿主机** daemon 解析。设置环境变量 RC_HOST_REPO（宿主机上 /app
+        对应的真实路径）后，把容器内的 /app/... 翻译成宿主路径；未设置时原样返回
+        （直接在宿主机运行的场景不受影响）。
+        """
+        import os
+
+        prefix = os.environ.get("RC_HOST_REPO", "").rstrip("/")
+        s = str(staging_dir)
+        if prefix and s.startswith("/app/"):
+            return Path(prefix) / s[len("/app/"):]
+        return staging_dir
+
     def _execute(
         self,
         staging_dir: Path,
@@ -384,7 +401,7 @@ class DockerSandbox:
             "docker", "run",
             "--name", container_name,
             "--rm",
-            "-v", f"{staging_dir}:/workspace",
+            "-v", f"{self._host_visible(staging_dir)}:/workspace",
             "-w", "/workspace",
             f"--memory={cfg.memory_limit_mb}m",
             f"--shm-size={cfg.shm_size_mb}m",

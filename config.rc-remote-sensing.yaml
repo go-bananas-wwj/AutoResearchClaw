@@ -46,6 +46,12 @@ experiment:
     gpu_enabled: true
     memory_limit_mb: 24576                    # V100 32GB，留余量给系统与宿主
     auto_install_deps: true
+  ssh_remote:
+    host: ""                       # 远程 GPU 主机（填了即可把 experiment.mode 切到 ssh_remote）
+    user: ""
+    # key_path: "/home/claw/.ssh/id_rsa"   # 容器内路径（compose 已只读挂载 ~/.ssh）
+    # gpu_ids: [0]
+    # setup_commands: ["pip install torch"]
   sandbox:
     python_path: "python3"   # 容器内解释器（仅 simulated/回退用；实验走 docker 模式）
     gpu_required: true

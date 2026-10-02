@@ -17,6 +17,7 @@ services:
       - ./frontend-legacy:/app/frontend   # 仪表盘前端（server 按 /app/frontend 查找）
       - ./artifacts:/app/artifacts # 所有 run 产物落在宿主机
       - /var/run/docker.sock:/var/run/docker.sock  # 容器内 docker CLI 调度实验沙箱
+      - ~/.ssh:/home/claw/.ssh:ro  # ssh_remote 实验模式的密钥（只读挂载）
     working_dir: /app
     group_add: ["${DOCKER_GID:-999}"]  # 宿主 docker 组 GID，容器内可写 docker.sock
     stdin_open: true
@@ -38,6 +39,8 @@ services:
       - ./:/app
       - ./frontend-legacy:/app/frontend
       - ./artifacts:/app/artifacts
+      - /var/run/docker.sock:/var/run/docker.sock  # serve 容器内调度实验沙箱（浏览器/对话启动的 run 在此执行）
+      - ~/.ssh:/home/claw/.ssh:ro
     working_dir: /app
     group_add: ["${DOCKER_GID:-999}"]
     ports:
