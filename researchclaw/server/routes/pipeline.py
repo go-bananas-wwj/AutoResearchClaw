@@ -101,6 +101,27 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
             if kb_root:
                 kb_root.mkdir(parents=True, exist_ok=True)
 
+            adapters = AdapterBundle()
+            if not req.auto_approve:
+                # Web 启动 = co-pilot：挂 HITLSession，门控处写 hitl/waiting.json
+                # 并轮询 hitl/response.json（无 input_callback → 文件 IPC）。
+                # REST /runs/{id}/hitl/{waiting,respond} 与前端横幅都基于这两个文件。
+                hitl_cfg = getattr(config, "hitl", None)
+                try:
+                    if hitl_cfg is None or not getattr(hitl_cfg, "enabled", False):
+                        from researchclaw.hitl.presets import copilot_preset
+
+                        hitl_cfg = copilot_preset()
+                    from researchclaw.hitl.session import HITLSession
+
+                    adapters.hitl = HITLSession(
+                        run_id=run_id,
+                        config=hitl_cfg,
+                        run_dir=run_dir,
+                    )
+                except Exception as _hitl_exc:
+                    logger.warning("HITL session setup failed: %s", _hitl_exc)
+
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
@@ -108,7 +129,7 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                     run_dir=run_dir,
                     run_id=run_id,
                     config=config,
-                    adapters=AdapterBundle(),
+                    adapters=adapters,
                     auto_approve_gates=req.auto_approve,
                     skip_noncritical=True,
                     kb_root=kb_root,
