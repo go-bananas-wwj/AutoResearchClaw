@@ -146,3 +146,4 @@ experiments/arc_bench/batch_logs/
 external/agents/ColliderAgent/*
 !external/agents/ColliderAgent/README.md
 .overleaf/
+researchclaw/data/code_search_cache/
