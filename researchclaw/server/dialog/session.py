@@ -60,6 +60,7 @@ class ChatSession:
             "current_run": self.current_run,
             "history": [m.to_dict() for m in self.history],
             "created_at": self.created_at,
+            "pending": self.pending,
         }
 
 
@@ -107,6 +108,9 @@ class SessionManager:
                 current_run=data.get("current_run", ""),
                 created_at=data.get("created_at", time.time()),
             )
+            pending = data.get("pending")
+            if isinstance(pending, dict):
+                session.pending = pending
             for m in data.get("history", []):
                 session.history.append(
                     ChatMessage(

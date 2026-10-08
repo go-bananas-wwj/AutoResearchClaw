@@ -52,6 +52,12 @@ async def route_message(raw_message: str, client_id: str) -> str:
     session = _session_manager.get_or_create(client_id)
     session.add_message("user", text)
 
+    # 研究任务书确认流程（BRIEF flow）进行中 → 所有消息交给步骤机（其内部处理取消/上一步）
+    if session.pending.get("flow") == "brief":
+        reply = await _handle_brief_flow(text, session)
+        session.add_message("assistant", reply)
+        return reply
+
     # 上一条在等 topic → 本条优先按 topic 处理（除非显式取消）
     if session.pending.get("awaiting") == "topic":
         if re.search(r"(?:\bcancel\b|取消|算了|先不)", text, re.IGNORECASE):
@@ -329,6 +335,376 @@ async def _handle_reproduce(text: str, session: ChatSession) -> str:
     )
 
 
+# ---------------------------------------------------------------- BRIEF flow（研究任务书）
+
+# 6 个确认槽位：(key, 中文标签, 提问语)
+_BRIEF_SLOTS: list[tuple[str, str, str]] = [
+    ("topic", "研究题目", "用一句话说明**研究题目**（越具体越好）"),
+    ("scientific_question", "核心科学问题", "这项研究要回答的**核心科学问题**是什么（一句话、可检验）？"),
+    ("survey_summary", "调研结论与研究空白", "相关文献的**调研结论和研究空白**是什么？"),
+    ("hypotheses", "研究假设", "你提出的**可检验假设**是什么（可以有多条，逐条说）？"),
+    ("experiment_scope", "实验范围/数据/指标", "**实验怎么做**：范围、数据集、基线、评价指标（含方向，如 mIoU 越高越好）？"),
+    ("target_conference", "目标会议/期刊", "**目标投稿会议或期刊**（如 IEEE TGRS、NeurIPS）？"),
+]
+
+_BRIEF_EXTRACT_SCHEMAS: dict[str, str] = {
+    "topic": '{"value": "研究题目（保留原文语言，一句话）"}',
+    "scientific_question": '{"value": "核心科学问题（一句话、可检验）"}',
+    "survey_summary": '{"value": "调研结论与研究空白（保留要点，200 字内）"}',
+    "hypotheses": '{"value": ["假设1", "假设2"]}',
+    "experiment_scope": (
+        '{"scope": "实验范围/设计描述", "datasets": ["数据集1"], '
+        '"metrics": [{"metric_key": "指标名", "direction": "maximize 或 minimize"}]}'
+    ),
+    "target_conference": '{"value": "目标会议/期刊名"}',
+}
+
+
+def _brief_fallback_value(slot_key: str, text: str) -> Any:
+    """LLM 抽取失败时兜底：原文直接作为槽位内容。"""
+    t = text.strip()
+    if slot_key == "hypotheses":
+        return [t] if t else []
+    if slot_key == "experiment_scope":
+        return {"scope": t, "datasets": [], "metrics": []}
+    return t
+
+
+def _brief_normalize_value(slot_key: str, data: Any) -> Any:
+    """把 LLM json_mode 输出规整成槽位值；取不出内容时返回假值。"""
+    if not isinstance(data, dict):
+        return None
+    if slot_key == "experiment_scope":
+        scope = str(data.get("scope") or "").strip()
+        datasets = [
+            str(d).strip() for d in (data.get("datasets") or []) if str(d).strip()
+        ]
+        metrics: list[dict[str, str]] = []
+        for m in data.get("metrics") or []:
+            if isinstance(m, str) and m.strip():
+                metrics.append({"metric_key": m.strip(), "direction": ""})
+            elif isinstance(m, dict) and m.get("metric_key"):
+                direction = str(m.get("direction") or "").lower()
+                metrics.append(
+                    {
+                        "metric_key": str(m["metric_key"]).strip(),
+                        "direction": direction
+                        if direction in ("maximize", "minimize")
+                        else "",
+                    }
+                )
+        if not (scope or datasets or metrics):
+            return None
+        return {"scope": scope, "datasets": datasets, "metrics": metrics}
+    value = data.get("value")
+    if slot_key == "hypotheses":
+        if isinstance(value, str):
+            value = [value]
+        items = [str(h).strip() for h in (value or []) if str(h).strip()]
+        return items or None
+    text_value = str(value or "").strip()
+    return text_value or None
+
+
+async def _brief_extract(slot_key: str, text: str, session: ChatSession) -> Any:
+    """用 LLM（json_mode）从用户自然语言里抽取当前槽位内容；失败回退原文。"""
+    label = dict((k, lbl) for k, lbl, _ in _BRIEF_SLOTS)[slot_key]
+    prompt = (
+        f"用户正在逐步确认一份《研究任务书》，当前要确认的槽位是「{label}」。\n"
+        f"用户的原话：\n{text}\n\n"
+        f"请把原话里属于「{label}」的内容抽取出来（不要编造原话没有的信息；"
+        "指标方向只有 maximize/minimize 两种，越高越好=maximize）。\n"
+        f"严格输出 JSON，格式：{_BRIEF_EXTRACT_SCHEMAS[slot_key]}"
+    )
+    try:
+        client = _llm()
+        resp = await asyncio.to_thread(
+            client.chat,
+            [{"role": "user", "content": prompt}],
+            json_mode=True,
+            max_tokens=800,
+        )
+        value = _brief_normalize_value(slot_key, json.loads(resp.content))
+        if value:
+            return value
+    except Exception:  # noqa: BLE001
+        logger.debug("brief slot extraction failed, fallback to raw text", exc_info=True)
+    return _brief_fallback_value(slot_key, text)
+
+
+def _brief_format_value(value: Any) -> str:
+    """槽位值的人类可读回显。"""
+    if isinstance(value, dict):  # experiment_scope
+        lines = []
+        if value.get("scope"):
+            lines.append(f"- 实验范围：{value['scope']}")
+        if value.get("datasets"):
+            lines.append("- 数据集：" + "、".join(value["datasets"]))
+        if value.get("metrics"):
+            parts = [
+                m["metric_key"]
+                + (
+                    f"（{'越高越好' if m.get('direction') == 'maximize' else '越低越好'}）"
+                    if m.get("direction")
+                    else ""
+                )
+                for m in value["metrics"]
+            ]
+            lines.append("- 指标：" + "、".join(parts))
+        return "\n".join(lines) or "（空）"
+    if isinstance(value, list):
+        return "\n".join(f"{i}. {h}" for i, h in enumerate(value, 1)) or "（空）"
+    return str(value or "（空）")
+
+
+def _brief_confirm_prompt(label: str, draft: Any) -> str:
+    return (
+        f"我理解你要确认的**{label}**是：\n\n{_brief_format_value(draft)}\n\n"
+        "确认吗？可回复：**确认** / **修改：……** / **上一步** / **取消**"
+    )
+
+
+def _load_ideation_card(rank: int) -> tuple[dict[str, Any] | None, str]:
+    """读最近一次选题引擎 run 的 ideation_report.json，取第 N 张证据卡。"""
+    artifacts = REPO_ROOT / "artifacts"
+    reports = sorted(
+        artifacts.glob("id-*/ideation_report.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not reports:
+        return None, ""
+    try:
+        report = json.loads(reports[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, ""
+    cards = report.get("cards") or []
+    card = next((c for c in cards if c.get("rank") == rank), None)
+    if card is None and 1 <= rank <= len(cards):
+        card = cards[rank - 1]
+    return card, reports[0].parent.name
+
+
+def _latest_reproduction_ref() -> str:
+    """最近一次已完成的复现产物引用（artifacts/<run>/reproduction/<slug>）。"""
+    try:
+        from researchclaw.server.routes.reproduce import _state as repro_state
+    except Exception:  # noqa: BLE001
+        return ""
+    if not repro_state or repro_state.get("status") != "completed":
+        return ""
+    run_id = repro_state.get("run_id") or ""
+    slug = repro_state.get("paper_slug") or ""
+    if not run_id or not slug:
+        return ""
+    ref = f"artifacts/{run_id}/reproduction/{slug}"
+    return ref if (REPO_ROOT / ref).is_dir() else ""
+
+
+async def _start_brief_pipeline(brief: Any) -> tuple[Any | None, str]:
+    """用任务书启动流水线（独立成函数便于测试 mock）。"""
+    from fastapi import HTTPException
+
+    from researchclaw.server.routes.pipeline import (
+        PipelineStartRequest,
+        start_pipeline,
+    )
+
+    try:
+        resp = await start_pipeline(
+            PipelineStartRequest(
+                topic=brief.topic,
+                brief=brief.to_dict(),
+                auto_approve=False,  # 任务书启动 = co-pilot，门控处人工把关
+            )
+        )
+        return resp, ""
+    except HTTPException as exc:
+        return None, f"{exc.status_code}: {exc.detail}"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("pipeline start from brief failed")
+        return None, str(exc)
+
+
+async def _finalize_brief(session: ChatSession) -> str:
+    """6 槽全部确认 → 生成 ResearchBrief → 物化并启动流水线。"""
+    from researchclaw.ideation.brief import ResearchBrief, suggest_from_stage
+
+    pending = session.pending
+    collected = pending.get("collected") or {}
+    scope = collected.get("experiment_scope") or {}
+    if isinstance(scope, str):
+        scope = {"scope": scope, "datasets": [], "metrics": []}
+    brief = ResearchBrief.from_dict(
+        {
+            "topic": collected.get("topic") or "",
+            "scientific_question": collected.get("scientific_question") or "",
+            "survey_summary": collected.get("survey_summary") or "",
+            "hypotheses": collected.get("hypotheses") or [],
+            "experiment_scope": scope.get("scope") or "",
+            "datasets": scope.get("datasets") or [],
+            "metrics": scope.get("metrics") or [],
+            "target_conference": collected.get("target_conference") or "",
+            "source_ideation_run": pending.get("source_ideation_run") or "",
+            "reproduced_baseline": pending.get("reproduced_baseline") or "",
+        }
+    )
+    resp, err = await _start_brief_pipeline(brief)
+    if resp is None:
+        # 启动失败不清 pending，用户可修正后重说「确认」
+        if "409" in err:
+            return "已有一条流水线在跑。问我「进度如何」看状态，或说「停止」后再重试。"
+        return f"任务书已确认完整，但启动失败：{err}。检查配置后再试。"
+
+    session.pending.clear()
+    session.current_run = resp.run_id
+    from_stage = suggest_from_stage(brief)
+    lines = [
+        f"✅ 《研究任务书》已确认并启动流水线 **{resp.run_id}**",
+        "",
+        f"- 题目：{brief.topic}",
+        f"- 科学问题：{brief.scientific_question or '（见假设）'}",
+        f"- 假设：{len(brief.hypotheses)} 条",
+        f"- 数据集：{'、'.join(brief.datasets) or '（待细化）'}",
+        f"- 目标会议：{brief.target_conference or '（未指定）'}",
+    ]
+    if brief.source_ideation_run:
+        lines.append(f"- 复用选题文献扫描：{brief.source_ideation_run}（stage-03..06）")
+    if brief.reproduced_baseline:
+        lines.append(f"- 复现基线：{brief.reproduced_baseline} → baseline_repo/")
+    lines += [
+        f"- 起始阶段：**{from_stage.name}**（已确认的前期阶段已物化跳过）",
+        "- 模式：co-pilot，门控处在 Dashboard/横幅审批",
+        "- 存证：`research_brief.json` 在 run 目录下",
+    ]
+    return "\n".join(lines)
+
+
+async def _handle_brief_flow(text: str, session: ChatSession) -> str:
+    """BRIEF 步骤机：逐槽位抽取 → 回显确认 → 前进/回退/取消。"""
+    pending = session.pending
+    collected = pending.setdefault("collected", {})
+
+    # 取消
+    if re.search(r"(?:\bcancel\b|取消|算了|先不弄|退出确认)", text, re.IGNORECASE):
+        session.pending.clear()
+        return "好的，已取消任务书确认。想重新开始就说「开始确认」。"
+
+    step = int(pending.get("step", 0))
+    step = max(0, min(step, len(_BRIEF_SLOTS) - 1))
+    key, label, ask = _BRIEF_SLOTS[step]
+
+    # 上一步
+    if re.search(r"(?:上一步|退回|返回上一个|go\s*back)", text, re.IGNORECASE):
+        if step == 0 and "draft" not in pending:
+            return "已经在第一步（研究题目）了。" + ask
+        pending.pop("draft", None)
+        prev_step = step - 1 if step > 0 else 0
+        pending["step"] = prev_step
+        pkey, plabel, pask = _BRIEF_SLOTS[prev_step]
+        current = _brief_format_value(collected.get(pkey))
+        return (
+            f"好，回到第 {prev_step + 1}/6 步——**{plabel}**。\n"
+            f"当前记录：\n{current}\n\n{pask}"
+        )
+
+    draft = pending.get("draft")
+    if draft is not None:
+        # 等待确认中
+        if re.search(r"^\s*(?:确认|对的?|是的?|没问题|可以|ok|okay|confirm|yes)\s*[。！!]*\s*$", text, re.IGNORECASE):
+            collected[key] = draft
+            pending.pop("draft", None)
+            next_step = step + 1
+            pending["step"] = next_step
+            if next_step >= len(_BRIEF_SLOTS):
+                return await _finalize_brief(session)
+            nkey, nlabel, nask = _BRIEF_SLOTS[next_step]
+            prefill_note = ""
+            if collected.get(nkey):
+                prefill_note = f"\n（当前已有记录：{_brief_format_value(collected[nkey])}，直接回复新内容可覆盖）\n"
+            return f"已记录**{label}**。\n\n第 {next_step + 1}/6 步——{nask}{prefill_note}"
+        # 修改：显式前缀或直接补充新内容，都重新抽取
+        m = re.match(r"^\s*(?:修改|改为|改成|不对[:，,]?)\s*[:：]?\s*(.+)$", text, re.S)
+        new_text = m.group(1) if m else text
+        new_draft = await _brief_extract(key, new_text, session)
+        pending["draft"] = new_draft
+        return _brief_confirm_prompt(label, new_draft)
+
+    # 本槽位首次作答 → 抽取并回显确认
+    draft = await _brief_extract(key, text, session)
+    pending["draft"] = draft
+    return _brief_confirm_prompt(label, draft)
+
+
+async def _handle_brief(text: str, session: ChatSession) -> str:
+    """「开始确认/定题/就选第 N 个」：初始化 BRIEF flow（可从选题卡片/复现预填）。"""
+    if session.pending.get("flow") == "brief":
+        return await _handle_brief_flow(text, session)
+
+    collected: dict[str, Any] = {}
+    source_ideation_run = ""
+    prefill_note = ""
+
+    m = re.search(r"第\s*(\d+)\s*个", text)
+    if m:
+        card, run_name = _load_ideation_card(int(m.group(1)))
+        if card:
+            source_ideation_run = run_name
+            collected["topic"] = str(card.get("question") or "")
+            collected["scientific_question"] = str(card.get("question") or "")
+            evidence = [e for e in (card.get("gap_evidence") or []) if e]
+            parts = []
+            if card.get("note_zh"):
+                parts.append(str(card["note_zh"]))
+            if evidence:
+                parts.append("缺口证据：" + "；".join(evidence[:3]))
+            if card.get("novelty_hint"):
+                parts.append("新颖性：" + str(card["novelty_hint"]))
+            collected["survey_summary"] = "\n".join(parts)
+            prefill_note = (
+                f"\n已从选题报告 **{run_name}** 的第 {m.group(1)} 张证据卡预填前 3 项，"
+                "我们直接从第 4 步（研究假设）开始；说「上一步」可回看修改。"
+            )
+        else:
+            prefill_note = "\n（没找到对应的选题证据卡，从头开始确认。）"
+
+    reproduced_baseline = ""
+    if re.search(r"复现", text):
+        reproduced_baseline = _latest_reproduction_ref()
+
+    # 第一个未预填的槽位
+    step = 0
+    for i, (skey, _lbl, _ask) in enumerate(_BRIEF_SLOTS):
+        if not collected.get(skey):
+            step = i
+            break
+    else:
+        step = len(_BRIEF_SLOTS) - 1
+
+    session.pending = {
+        "flow": "brief",
+        "step": step,
+        "collected": collected,
+        "source_ideation_run": source_ideation_run,
+        "reproduced_baseline": reproduced_baseline,
+    }
+    key, label, ask = _BRIEF_SLOTS[step]
+    baseline_note = (
+        f"\n已关联最近的复现基线：{reproduced_baseline}（将作为 our reproduction 写入实验计划）。"
+        if reproduced_baseline
+        else ""
+    )
+    return (
+        "好，开始确认**《研究任务书》**。我会跟你逐步确认 6 件事：\n"
+        "①研究题目 ②核心科学问题 ③调研结论/空白 ④研究假设 ⑤实验范围/数据/指标 ⑥目标会议。\n"
+        "每步我会先复述我的理解请你确认；全部确认后物化为流水线产物并启动（co-pilot 模式）。"
+        "随时可说「取消」退出。"
+        + prefill_note
+        + baseline_note
+        + f"\n\n第 {step + 1}/6 步——{ask}"
+    )
+
+
 async def _handle_overleaf(text: str, session: ChatSession) -> str:
     """「同步到 Overleaf」：把指定/当前/最近 run 的论文推到共享 Overleaf 项目。"""
     from researchclaw.server.app import _app_state
@@ -531,6 +907,10 @@ _SYSTEM_PROMPT = (
     "2) 对话通道：用户在这里聊 insight/研究问题——你可以启发式追问帮他把想法聊成"
     "具体题目，题目明确后调用启动（用户说「开始/跑起来」即启动同一条流水线）。\n"
     "你能实际做的事：启动/停止运行、查状态、看结果、切换主模型与兜底模型、回答科研问题。\n"
+    "**研究任务书（BRIEF）通道**：用户说「开始确认/定题/确认选题」时，进入 6 步确认流程"
+    "（研究题目→科学问题→调研结论/空白→假设→实验范围/数据/指标→目标会议）；"
+    "流程中你的角色是引导用户把每件事说具体（可检验、可衡量），全部确认后系统会"
+    "把任务书物化为流水线产物并从中间阶段启动。选题引擎的证据卡可以预填前 3 步。\n"
     "你做不到（如实说明）：在门控节点代替用户审批——那在终端 researchclaw attach 做。\n"
     "回答简洁（≤250字），要步骤时用列表。"
 )
@@ -560,6 +940,7 @@ async def _handle_topic(text: str, session: ChatSession) -> str:
 
 
 _HANDLERS = {
+    Intent.BRIEF: _handle_brief,
     Intent.HELP: _handle_help,
     Intent.CHECK_STATUS: _handle_status,
     Intent.START_PIPELINE: _handle_start,

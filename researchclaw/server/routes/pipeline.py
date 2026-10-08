@@ -36,6 +36,29 @@ class PipelineStartRequest(BaseModel):
     topic: str | None = None
     config_overrides: dict[str, Any] | None = None
     auto_approve: bool = False
+    # 研究任务书（Chat 多轮确认产物）：先物化为 stage 产物，再从中间阶段启动
+    brief: dict[str, Any] | None = None
+    # 显式指定起始阶段（Stage 名或编号），优先级高于 brief 的建议值
+    from_stage: str | None = None
+
+
+def _parse_from_stage(raw: str) -> "Any":
+    """把 'CODE_GENERATION' / 'code_generation' / '10' / 'stage-10' 解析为 Stage。"""
+    from researchclaw.pipeline.stages import Stage
+
+    s = raw.strip()
+    if not s:
+        raise HTTPException(status_code=400, detail="from_stage 不能为空")
+    m = _re.match(r"^(?:stage-?)?(\d{1,2})$", s, _re.IGNORECASE)
+    if m:
+        try:
+            return Stage(int(m.group(1)))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"非法阶段编号: {raw}") from None
+    try:
+        return Stage[s.upper()]
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"未知阶段名: {raw}") from None
 
 
 class PipelineStartResponse(BaseModel):
@@ -70,10 +93,64 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         state = _get_app_state()
         config = state["config"]
 
+        import dataclasses
+
         if req.topic:
-            import dataclasses
             new_research = dataclasses.replace(config.research, topic=req.topic)
             config = dataclasses.replace(config, research=new_research)
+
+        # 研究任务书：确认出的指标/目标会议/预算覆盖 config（dataclasses.replace 模式）
+        brief_obj = None
+        if req.brief:
+            from researchclaw.ideation.brief import ResearchBrief
+
+            brief_obj = ResearchBrief.from_dict(req.brief)
+            if brief_obj.topic and not req.topic:
+                config = dataclasses.replace(
+                    config,
+                    research=dataclasses.replace(
+                        config.research, topic=brief_obj.topic
+                    ),
+                )
+            if brief_obj.metrics:
+                first = brief_obj.metrics[0]
+                exp_over: dict[str, Any] = {}
+                if first.get("metric_key"):
+                    exp_over["metric_key"] = first["metric_key"]
+                if first.get("direction") in ("minimize", "maximize"):
+                    exp_over["metric_direction"] = first["direction"]
+                if exp_over:
+                    config = dataclasses.replace(
+                        config,
+                        experiment=dataclasses.replace(config.experiment, **exp_over),
+                    )
+            if brief_obj.target_conference:
+                config = dataclasses.replace(
+                    config,
+                    export=dataclasses.replace(
+                        config.export, target_conference=brief_obj.target_conference
+                    ),
+                )
+
+        # config_overrides 里允许的少量标量覆盖（与 brief 覆盖同模式）
+        for key, section in (
+            ("metric_key", "experiment"),
+            ("metric_direction", "experiment"),
+            ("time_budget_sec", "experiment"),
+            ("target_conference", "export"),
+        ):
+            value = (req.config_overrides or {}).get(key)
+            if value is None:
+                continue
+            if key == "metric_direction" and value not in ("minimize", "maximize"):
+                continue
+            config = dataclasses.replace(
+                config,
+                **{section: dataclasses.replace(getattr(config, section), **{key: value})},
+            )
+
+        # 显式 from_stage 同步校验（非法值直接 400，不进后台任务）
+        forced_from_stage = _parse_from_stage(req.from_stage) if req.from_stage else None
 
         import hashlib
         from datetime import datetime, timezone
@@ -96,10 +173,26 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         try:
             from researchclaw.adapters import AdapterBundle
             from researchclaw.pipeline.runner import execute_pipeline
+            from researchclaw.pipeline.stages import Stage
 
             kb_root = Path(config.knowledge_base.root) if config.knowledge_base.root else None
             if kb_root:
                 kb_root.mkdir(parents=True, exist_ok=True)
+
+            # 研究任务书物化：写 stage-01/02/07/08[/09] 产物 + research_brief.json，
+            # 并决定 from_stage（显式 from_stage 参数优先于任务书建议值）
+            from_stage = Stage.TOPIC_INIT
+            if brief_obj is not None:
+                from researchclaw.ideation.brief import materialize
+
+                loop0 = asyncio.get_event_loop()
+                from_stage = await loop0.run_in_executor(
+                    None, lambda: materialize(run_dir, brief_obj, config)
+                )
+            if forced_from_stage is not None:
+                from_stage = forced_from_stage
+            if _active_run:
+                _active_run["from_stage"] = from_stage.name
 
             adapters = AdapterBundle()
             if not req.auto_approve:
@@ -130,6 +223,7 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                     run_id=run_id,
                     config=config,
                     adapters=adapters,
+                    from_stage=from_stage,
                     auto_approve_gates=req.auto_approve,
                     skip_noncritical=True,
                     kb_root=kb_root,

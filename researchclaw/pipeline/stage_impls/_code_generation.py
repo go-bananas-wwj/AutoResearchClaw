@@ -203,6 +203,59 @@ Save all figures to output/figures/ in PDF and PNG format.
 """
 
 
+def _baseline_repo_guidance(run_dir: Path) -> str:
+    """复现 baseline 指导块：run_dir/baseline_repo/ 存在时注入 stage 10 prompt。
+
+    任务书物化（ideation/brief.materialize）会把复现好的 baseline 代码拷到
+    baseline_repo/，并在 research_brief.json 里记录 reproduced_baseline 来源；
+    这里把「在其基础上改进」的指令 + 复现报告问题清单摘要注入 prompt。
+    没有 baseline_repo/ 时返回空串，原有流程完全不变。
+    """
+    if not (run_dir / "baseline_repo").is_dir():
+        return ""
+    block = (
+        "\n\n## Reproduced Baseline Repository (baseline_repo/)\n"
+        "The run directory contains `baseline_repo/` — a baseline codebase that\n"
+        "has been REPRODUCED and verified working in a sandbox. You MUST build\n"
+        "your experiment ON TOP of this codebase (import/extend/modify it per\n"
+        "the experiment plan) instead of rewriting everything from scratch.\n"
+        "- Treat its measured results as the baseline numbers to beat.\n"
+        "- Keep the original entry points working; add your method alongside.\n"
+        "- Do NOT delete or rename existing files unless the plan requires it.\n"
+    )
+    # 复现报告问题清单摘要（若任务书记录了 reproduced_baseline 来源）
+    try:
+        brief_path = run_dir / "research_brief.json"
+        if brief_path.is_file():
+            brief_data = json.loads(brief_path.read_text(encoding="utf-8"))
+            repro_ref = str(brief_data.get("reproduced_baseline") or "").strip()
+            if repro_ref:
+                from researchclaw.ideation.brief import resolve_artifact_ref
+
+                report_path = (
+                    resolve_artifact_ref(repro_ref) / "reproduction_report.json"
+                )
+                if report_path.is_file():
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    issues = report.get("issues") or {}
+                    items: list[str] = []
+                    for category, lines in issues.items():
+                        for line in list(lines)[:4]:
+                            items.append(f"- [{category}] {line}")
+                        if len(items) >= 10:
+                            break
+                    if items:
+                        block += (
+                            "\nKnown issues from the reproduction report "
+                            "(address or work around these):\n"
+                            + "\n".join(items[:10])
+                            + "\n"
+                        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Baseline reproduction issues summary skipped", exc_info=True)
+    return block
+
+
 def _check_rl_compatibility(code: str) -> list[str]:
     """Detect DQN + continuous-action environment mismatches.
 
@@ -485,6 +538,9 @@ def _execute_code_generation(
         "sklearn, pandas) unless deep learning is inherent to the topic.\n"
         "- The experiment MUST be self-contained and runnable without GPU.\n"
     )
+
+    # --- Reproduced baseline guidance (research brief materialize 放的 baseline_repo/) ---
+    extra_guidance += _baseline_repo_guidance(run_dir)
 
     # --- Code generation: Beast Mode → CodeAgent → Legacy single-shot ---
     _code_agent_active = False

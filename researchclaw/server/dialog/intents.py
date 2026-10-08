@@ -10,6 +10,7 @@ from typing import Any
 class Intent(str, Enum):
     """Research chat intents."""
 
+    BRIEF = "brief"
     TOPIC_SELECTION = "topic_selection"
     START_PIPELINE = "start_pipeline"
     STOP_PIPELINE = "stop_pipeline"
@@ -26,6 +27,11 @@ class Intent(str, Enum):
 
 # Keyword patterns for fast classification
 _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
+    # BRIEF 必须排在最前：「开始确认」「定题」等词与 START/TOPIC 模式重叠
+    (Intent.BRIEF, re.compile(
+        r"(?:确认选题|开始确认|定题|敲定|研究任务书|research\s*brief|就选第|选第\s*\d|用第\s*\d+\s*个|就要第\s*\d)",
+        re.IGNORECASE,
+    )),
     (Intent.IDEATION, re.compile(
         r"(?:找选题|选个题|选题结果|选题报告|证据卡|有什么可做|有没有.*(?:选题|方向可做)|推荐.*(?:课题|题目)|ideat)",
         re.IGNORECASE,
