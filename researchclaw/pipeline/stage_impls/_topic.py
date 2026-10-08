@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from researchclaw.adapters import AdapterBundle
 from researchclaw.config import RCConfig
-from researchclaw.hardware import detect_hardware, ensure_torch_available
+from researchclaw.hardware import HardwareProfile, detect_hardware, ensure_torch_available
 from researchclaw.llm.client import LLMClient
 from researchclaw.pipeline._domain import _detect_domain
 from researchclaw.pipeline._helpers import (
@@ -97,6 +97,22 @@ Investigate the topic with emphasis on reproducible methods and measurable outco
     # When using ssh_remote, detect hardware on the remote host instead of locally
     _ssh_cfg = config.experiment.ssh_remote if config.experiment.mode == "ssh_remote" else None
     hw = detect_hardware(ssh_config=_ssh_cfg)
+    # docker-sibling 部署：控制面容器自身可能看不到 GPU（未开 --gpus），
+    # 但实验沙箱兄弟容器按 experiment.docker.gpu_enabled 带 GPU 运行。
+    # 此时信任配置并把硬件档案标为 GPU 可用，避免误导实验设计偏向 CPU 方案。
+    if (
+        not hw.has_gpu
+        and config.experiment.mode == "docker"
+        and getattr(config.experiment.docker, "gpu_enabled", False)
+    ):
+        hw = HardwareProfile(
+            has_gpu=True,
+            gpu_type="cuda",
+            gpu_name="GPU available in docker sandbox (sibling container)",
+            vram_mb=None,
+            tier="limited",
+            warning="",
+        )
     (stage_dir / "hardware_profile.json").write_text(
         json.dumps(hw.to_dict(), indent=2), encoding="utf-8"
     )
