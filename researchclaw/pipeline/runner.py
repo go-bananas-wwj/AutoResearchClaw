@@ -428,6 +428,101 @@ def _run_experiment_repair(run_dir: Path, config: RCConfig, run_id: str) -> None
         print(f"[{run_id}] Experiment repair failed: {exc}")
 
 
+_MAX_EXPERIMENT_RUN_REPAIRS = 2
+
+
+def _promote_best_repair_code(run_dir: Path, run_id: str) -> bool:
+    """把修复循环产出的最佳代码回写 stage-10/experiment/，供阶段 12 重试使用。
+
+    修复循环把修复代码写到 stage-14_repair_vN/experiment/ 并自行沙箱重跑，
+    但阶段 12 重试读的是 stage-10/experiment/，因此需要回写。
+    原始代码备份到 stage-10/experiment_broken_backup/（只备份首次）。
+    返回是否有产出真实指标的修复代码可用。
+    """
+    import shutil
+
+    from researchclaw.pipeline.experiment_repair import _summary_quality_score
+
+    best_dir = None
+    best_score = 0.0
+    for summary_path in sorted(
+        run_dir.glob("stage-14_repair_v*/experiment_summary.json")
+    ):
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        metrics = summary.get("metrics_summary") or summary.get("metrics") or {}
+        if not metrics:
+            continue
+        score = _summary_quality_score(summary)
+        if score > best_score:
+            best_score = score
+            best_dir = summary_path.parent
+    if best_dir is None:
+        return False
+    repair_exp = best_dir / "experiment"
+    target = run_dir / "stage-10" / "experiment"
+    if not repair_exp.is_dir() or not target.is_dir():
+        return False
+    backup = run_dir / "stage-10" / "experiment_broken_backup"
+    if not backup.exists():
+        shutil.copytree(target, backup)
+    shutil.rmtree(target)
+    shutil.copytree(repair_exp, target)
+    logger.info(
+        "[%s] Promoted repaired code from %s (score %.1f) to stage-10/experiment",
+        run_id, best_dir, best_score,
+    )
+    return True
+
+
+def _repair_and_retry_experiment_run(
+    *,
+    stage: Stage,
+    run_dir: Path,
+    run_id: str,
+    config: RCConfig,
+    adapters: AdapterBundle,
+    auto_approve_gates: bool,
+    prefix: str,
+) -> "StageResult | None":
+    """阶段 12 硬失败（崩溃/零指标）时的修复 + 重试。
+
+    旧行为是直接终止整条流水线——一次张量形状错误就浪费之前所有阶段。
+    现在：跑实验修复循环（内部有 max_cycles 上限）→ 把最佳修复代码回写
+    stage-10/experiment/ → 重试本阶段，最多 _MAX_EXPERIMENT_RUN_REPAIRS 次。
+    无可用修复代码时返回 None。
+    """
+    result = None
+    for attempt in range(1, _MAX_EXPERIMENT_RUN_REPAIRS + 1):
+        logger.warning(
+            "[%s] Stage 12 hard failure — repair loop attempt %d/%d",
+            run_id, attempt, _MAX_EXPERIMENT_RUN_REPAIRS,
+        )
+        print(
+            f"{prefix} 实验硬失败 — 修复循环后重试"
+            f"（第 {attempt}/{_MAX_EXPERIMENT_RUN_REPAIRS} 次）"
+        )
+        _run_experiment_repair(run_dir, config, run_id)
+        if not _promote_best_repair_code(run_dir, run_id):
+            logger.warning(
+                "[%s] No repaired code with real metrics — stop retrying", run_id
+            )
+            break
+        result = execute_stage(
+            stage,
+            run_dir=run_dir,
+            run_id=run_id,
+            config=config,
+            adapters=adapters,
+            auto_approve_gates=auto_approve_gates,
+        )
+        if result.status != StageStatus.FAILED:
+            return result
+    return result
+
+
 def execute_pipeline(
     *,
     run_dir: Path,
@@ -821,6 +916,23 @@ def execute_pipeline(
         if result.status == StageStatus.FAILED:
             if skip_noncritical and stage in NONCRITICAL_STAGES:
                 logger.warning("Noncritical stage %s failed - skipping", stage.name)
+            elif stage == Stage.EXPERIMENT_RUN and getattr(
+                getattr(config.experiment, "repair", None), "enabled", False
+            ):
+                # 阶段 12 硬失败不再直接终止整条流水线：修复循环 + 回写代码 + 重试
+                retried = _repair_and_retry_experiment_run(
+                    stage=stage,
+                    run_dir=run_dir,
+                    run_id=run_id,
+                    config=config,
+                    adapters=adapters,
+                    auto_approve_gates=auto_approve_gates,
+                    prefix=prefix,
+                )
+                if retried is None or retried.status == StageStatus.FAILED:
+                    break
+                result = retried
+                results.append(result)
             else:
                 break
 

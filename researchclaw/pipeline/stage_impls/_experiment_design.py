@@ -189,13 +189,34 @@ def _execute_experiment_design(
         except Exception:  # noqa: BLE001
             pass
         # Improvement A: Compute hardware profile + per-condition budget
-        _hw_profile_str = (
-            "- GPU: NVIDIA RTX 6000 Ada (49140 MB VRAM)\n"
-            "- GPU count: 1\n"
-            "- CPU: shared server"
-        )
+        # 硬件档案优先读 stage-01 的真实检测结果（docker-sibling 部署下
+        # 控制面容器可能看不到 GPU，stage-01 已按配置修正），
+        # 不再硬编码 RTX 6000 Ada——那会把 48GB 显存假设写进实验方案。
+        _hw = _load_hardware_profile(run_dir)
+        if _hw and _hw.get("has_gpu"):
+            _vram = _hw.get("vram_mb")
+            _vram_str = f"{_vram} MB VRAM" if _vram else "VRAM unknown"
+            _hw_profile_str = (
+                f"- GPU: {_hw.get('gpu_name', 'GPU')} ({_vram_str})\n"
+                "- GPU count: 1\n"
+                "- CPU: shared server"
+            )
+        elif _hw:
+            _hw_profile_str = "- No GPU available (CPU-only experiments)\n- CPU: shared server"
+        else:
+            _hw_profile_str = (
+                "- GPU: NVIDIA RTX 6000 Ada (49140 MB VRAM)\n"
+                "- GPU count: 1\n"
+                "- CPU: shared server"
+            )
         _per_condition_sec = int(config.experiment.time_budget_sec * 0.7 / 6)
-        _tier1 = "CIFAR-10, CIFAR-100, MNIST, FashionMNIST, STL-10, SVHN"
+        # tier1 是通用 CV 基准，仅在切题时使用；领域题目（如 SAR/医学/物理）
+        # 必须用领域数据集或合成数据，否则会出现 CIFAR-10 跑 SAR 的错位。
+        _tier1 = (
+            "CIFAR-10, CIFAR-100, MNIST, FashionMNIST, STL-10, SVHN "
+            "(generic CV benchmarks — use ONLY if directly relevant to the topic; "
+            "domain-specific topics MUST use domain datasets or synthetic data instead)"
+        )
 
         _overlay = _get_evolution_overlay(run_dir, "experiment_design")
         sp = _pm.for_stage(
