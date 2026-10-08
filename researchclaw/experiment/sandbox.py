@@ -76,6 +76,30 @@ _SUMMARY_PATTERN = re.compile(
 _CONDITION_MULTI_METRIC_RE = re.compile(
     r"(\w[\w.]*)\s*:\s*(" + _FLOAT_RE + r")"
 )
+# 端到端首跑实测：LLM 生成的实验代码常用人类可读汇总而不是 name: value 行，
+# 例如 "Physics Guided Net: Mean mIoU = 0.3356 ± 0.0015"。
+_MEAN_STD_SUMMARY_PATTERN = re.compile(
+    r"^(.+?)\s*:\s*Mean\s+([A-Za-z_][\w .]*?)\s*=\s*("
+    + _FLOAT_RE
+    + r")\s*(?:±|\+/-)\s*("
+    + _FLOAT_RE
+    + r")\s*$"
+)
+# 例如 "Standard CNN Baseline - Best Val mIoU: 0.3375"。
+_BEST_VAL_PATTERN = re.compile(
+    r"^(.+?)\s*-\s*Best\s+(?:Val\s+)?([A-Za-z_]\w*)\s*:\s*("
+    + _FLOAT_RE
+    + r")\s*$"
+)
+
+
+def _normalize_metric_name(name: str) -> str:
+    """'Mean mIoU'/'Val mIoU' 这类名称归一化为下划线小写，并补常见别名。"""
+    norm = name.strip().replace(" ", "_")
+    aliases = {norm}
+    if norm.lower() in ("miou", "val_miou"):
+        aliases.add("val_miou")
+    return "|".join(sorted(aliases))
 
 
 def _to_text(value: str | bytes | None) -> str:
@@ -107,6 +131,36 @@ def parse_metrics(stdout: str) -> dict[str, float]:
                     metrics[f"{cond_name}/{metric_name}_mean"] = mean_val
                     metrics[f"{cond_name}/{metric_name}_std"] = std_val
                     metrics[metric_name] = mean_val
+            continue
+
+        # LLM 常见的人类可读汇总行：
+        # "Model Name: Mean mIoU = 0.3356 ± 0.0015"
+        mean_match = _MEAN_STD_SUMMARY_PATTERN.match(stripped)
+        if mean_match:
+            cond_name, metric_name, mean_str, std_str = mean_match.groups()
+            try:
+                mean_val = float(mean_str)
+                std_val = float(std_str)
+            except ValueError:
+                continue
+            if not (math.isnan(mean_val) or math.isinf(mean_val)):
+                for alias in _normalize_metric_name(metric_name).split("|"):
+                    metrics[f"{cond_name}/{alias}"] = mean_val
+                    metrics[f"{cond_name}/{alias}_std"] = std_val
+                    metrics[alias] = mean_val
+            continue
+
+        # "Model Name - Best Val mIoU: 0.3375"
+        best_match = _BEST_VAL_PATTERN.match(stripped)
+        if best_match:
+            cond_name, metric_name, val_str = best_match.groups()
+            try:
+                val = float(val_str)
+            except ValueError:
+                continue
+            if not (math.isnan(val) or math.isinf(val)):
+                for alias in _normalize_metric_name(metric_name).split("|"):
+                    metrics[f"{cond_name}/best_{alias}"] = val
             continue
 
         # R16-1: Try ratio format first: "condition=X [tags] metric: N/M"

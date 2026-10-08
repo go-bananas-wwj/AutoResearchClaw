@@ -277,6 +277,95 @@ def _check_rl_compatibility(code: str) -> list[str]:
     return errors
 
 
+def _has_executable_entry(code: str) -> bool:
+    """检查代码是否有可执行入口（__main__ 块或模块级调用）。
+
+    LLM 生成被 max_tokens 截断时会产生"语法完全正确、但只定义类和函数、
+    没有任何可执行语句"的文件——沙箱里 python3 main.py 静默退出、零指标，
+    语法校验抓不到这种情况。
+    """
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.If) and "__name__" in ast.dump(node.test):
+            return True
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            return True
+    return False
+
+
+def _pick_entry_file(files: dict[str, str]) -> str | None:
+    """定位实验入口文件：优先 main.py，其次 train.py，再次任一 .py。"""
+    for candidate in ("main.py", "train.py", "run.py"):
+        if candidate in files:
+            return candidate
+    return next((f for f in files if f.endswith(".py")), None)
+
+
+def _ensure_executable_entry(
+    files: dict[str, str],
+    llm: "LLMClient | None",
+    *,
+    validation_log: list[str] | None = None,
+    exp_dir: Path | None = None,
+) -> bool:
+    """确保入口文件有可执行入口；没有则给 LLM 一次补全机会。
+
+    生成/修复被 max_tokens 截断时会产生"语法正确但没有任何可执行入口"的
+    main.py——沙箱里 python3 main.py 静默退出、零指标（端到端首跑三次踩中）。
+    补全成功且传入 exp_dir 时同步写盘。返回入口是否最终可用。
+    """
+    entry = _pick_entry_file(files)
+    if not entry or _has_executable_entry(files[entry]):
+        return True
+    logger.warning(
+        "Stage 10: %s has no executable entry point (likely truncated "
+        "generation) — attempting LLM completion",
+        entry,
+    )
+    if validation_log is not None:
+        validation_log.append(
+            f"ENTRY_MISSING: {entry}: no __main__ block or top-level call"
+        )
+    if llm is None:
+        return False
+    all_files_ctx = "\n\n".join(
+        f"```filename:{f}\n{c}\n```" for f, c in files.items()
+    )
+    cp = _pm.sub_prompt(
+        "code_repair",
+        fname=entry,
+        issues_text=(
+            "The file defines classes/functions but has NO executable "
+            "entry point — generation was likely truncated by the token "
+            "limit. Return the COMPLETE file: keep all existing content, "
+            "finish any incomplete definitions, then add the full "
+            "experiment driver (build datasets/dataloaders, instantiate "
+            "models, run training+evaluation loops, report metrics via "
+            "ExperimentHarness.report_metric) and end with an "
+            "`if __name__ == '__main__':` block that actually runs it."
+        ),
+        all_files_ctx=all_files_ctx,
+    )
+    resp = _chat_with_prompt(llm, cp.system, cp.user, max_tokens=32768)
+    completed = _extract_code_block(resp.content)
+    if completed.strip() and _has_executable_entry(completed):
+        files[entry] = completed
+        if exp_dir is not None:
+            (exp_dir / entry).write_text(completed, encoding="utf-8")
+        if validation_log is not None:
+            validation_log.append(
+                f"ENTRY_COMPLETED: {entry}: LLM completion accepted"
+            )
+        return True
+    logger.error("Stage 10: entry-point completion failed for %s", entry)
+    return False
+
+
 def _execute_code_generation(
     stage_dir: Path,
     run_dir: Path,
@@ -922,9 +1011,18 @@ def _execute_code_generation(
                 validation_log.append(f"RL_COMPAT: {fname}: {_rl_err}")
             all_valid = False
 
+    # --- Entry-point executability check ---
+    # 截断生成检测（详见 _ensure_executable_entry）；补不回来按 critical
+    # 阻断阶段（宁可 fail，也不让阶段 12 空跑）。
+    if not _ensure_executable_entry(files, llm, validation_log=validation_log):
+        all_valid = False
+    _entry_fname = _pick_entry_file(files)
+
     # BUG-14: Block on critical validation failures (syntax/import errors)
     if not all_valid:
         _has_critical = False
+        if _entry_fname and not _has_executable_entry(files[_entry_fname]):
+            _has_critical = True
         for fname, code in files.items():
             _v = validate_code(code)
             if not _v.ok:
@@ -1524,6 +1622,25 @@ def _execute_code_generation(
                     logger.debug("Ablation repair failed: %s", exc)
         except Exception as exc:
             logger.debug("Ablation validation skipped: %s", exc)
+
+    # --- Final entry-point guarantee ---
+    # 后期的 deep-repair / 消融修复 / 对题重生成都会整体重写 files，可能
+    # 再次截断入口（首跑实测：深度修复在守卫通过后又把 main.py 截断）。
+    # 写 spec 前最后兜一道并同步写盘；补不回来就阻断本阶段，不让阶段 12 空跑。
+    if not _ensure_executable_entry(files, llm, exp_dir=exp_dir):
+        (stage_dir / "validation_report.md").write_text(
+            "# Code Validation Report\n\n"
+            "**Status**: BLOCKED — entry file has no executable entry point "
+            "after all repair passes\n\n"
+            + "\n".join(f"- {e}" for e in validation_log),
+            encoding="utf-8",
+        )
+        return StageResult(
+            stage=Stage.CODE_GENERATION,
+            status=StageStatus.FAILED,
+            artifacts=("validation_report.md",),
+            evidence_refs=(),
+        )
 
     # --- Write spec ---
     file_list = ", ".join(f"`{f}`" for f in sorted(files.keys()))

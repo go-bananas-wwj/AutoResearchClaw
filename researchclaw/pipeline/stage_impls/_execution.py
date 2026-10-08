@@ -183,6 +183,33 @@ def _estimate_stage12_footprint_bytes(run_dir: Path) -> int:
     return total
 
 
+def _find_latest_experiment_dir(run_dir: Path) -> str | None:
+    """定位实验代码目录：只认代码生成阶段（stage-10*）的产物。
+
+    版本约定：PIVOT/回滚时旧目录改名为 stage-10_vN，最新一次生成写回
+    非版本化的 stage-10/。因此非版本化优先，其次版本号最大者。
+    """
+    def _key(p: Path) -> tuple[int, int]:
+        name = p.name
+        if "_v" in name:
+            _, _, ver = name.rpartition("_v")
+            try:
+                return (1, int(ver))
+            except ValueError:
+                return (1, 0)
+        return (2, 0)  # 非版本化 = 最新一次生成，优先级最高
+
+    candidates = [
+        p / "experiment"
+        for p in run_dir.glob("stage-10*")
+        if (p / "experiment").is_dir()
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: _key(p.parent), reverse=True)
+    return str(candidates[0])
+
+
 def _execute_experiment_run(
     stage_dir: Path,
     run_dir: Path,
@@ -196,8 +223,14 @@ def _execute_experiment_run(
     from researchclaw.experiment.runner import ExperimentRunner
 
     schedule_text = _read_prior_artifact(run_dir, "schedule.json") or "{}"
-    # Try multi-file experiment directory first, fall back to single file
-    exp_dir_path = _read_prior_artifact(run_dir, "experiment/")
+    # Try multi-file experiment directory first, fall back to single file.
+    # 注意：不能用 _read_prior_artifact(run_dir, "experiment/")——它按目录名
+    # 倒序，会命中 stage-14_repair_vN/experiment（修复循环的旧代码），PIVOT
+    # 后阶段 10 重新生成的代码反而被陈旧修复代码覆盖（端到端首跑实测：阶段 12
+    # 连续三次跑了几轮前的截断旧代码）。
+    exp_dir_path = _find_latest_experiment_dir(run_dir) or _read_prior_artifact(
+        run_dir, "experiment/"
+    )
     code_text = ""
     if exp_dir_path and Path(exp_dir_path).is_dir():
         main_path = Path(exp_dir_path) / "main.py"
