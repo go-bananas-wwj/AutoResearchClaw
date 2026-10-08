@@ -88,11 +88,13 @@ def create_app(
     from researchclaw.server.routes.projects import router as projects_router
     from researchclaw.server.routes.settings import router as settings_router
     from researchclaw.server.routes.ideation import router as ideation_router
+    from researchclaw.server.routes.reproduce import router as reproduce_router
 
     app.include_router(pipeline_router)
     app.include_router(projects_router)
     app.include_router(settings_router)
     app.include_router(ideation_router)
+    app.include_router(reproduce_router)
 
     if not dashboard_only:
         from researchclaw.server.routes.chat import router as chat_router, set_chat_manager

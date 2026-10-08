@@ -4,6 +4,7 @@
 const IdeationView = {
   _runId: null,
   _pollTimer: null,
+  _cards: null,
 
   render(container) {
     container.innerHTML = `
@@ -100,9 +101,10 @@ const IdeationView = {
     try {
       const rep = await API.ideationReport(this._runId);
       const cards = rep.cards || [];
+      this._cards = cards;
       document.getElementById('id-cards').innerHTML = `
         ${rep.novelty_score != null ? `<div class="card" style="font-size:13px">Novelty score: <b>${rep.novelty_score}</b> (${rep.novelty_assessment || ''})</div>` : ''}
-        ${cards.map(c => `
+        ${cards.map((c, i) => `
           <div class="idea-card">
             <h3><span class="rank-badge">#${c.rank || '?'}</span>${c.question}</h3>
             ${c.note_zh ? `<div class="idea-meta">${c.note_zh}</div>` : ''}
@@ -114,7 +116,25 @@ const IdeationView = {
             <button class="wiz-btn primary" style="margin-top:8px" onclick="IdeationView._launch('${(c.question || '').replace(/'/g, "\\'")}')">
               Start full pipeline with this topic
             </button>
+            <button class="wiz-btn" style="margin-top:8px;margin-left:8px" onclick="IdeationView._reproduce(${i})">
+              复现这篇
+            </button>
           </div>`).join('')}`;
+    } catch (e) { this._setStatus(String(e.message || e), true); }
+  },
+
+  async _reproduce(idx) {
+    const c = (this._cards || [])[idx];
+    if (!c) return;
+    // 从卡片证据/提示里找 arXiv id 或代码仓库链接；找不到就用问题文本当标题查询
+    const haystack = [c.question, c.note_zh, c.novelty_hint, ...(c.gap_evidence || [])].filter(Boolean).join('\n');
+    const m = haystack.match(/https?:\/\/[^\s<>"')\]]+|\b\d{4}\.\d{4,5}(?:v\d+)?\b/);
+    const paper = m ? m[0] : (c.question || '');
+    if (paper.length < 4) { this._setStatus('无法从该卡片确定论文标识。', true); return; }
+    this._setStatus(`Starting reproduction for: ${paper} ...`);
+    try {
+      const r = await API.reproduceStart({ paper, paper_title: c.question || '', run_id: this._runId });
+      this._setStatus(`Reproduction started: ${r.run_id} — output artifacts/${r.run_id}/reproduction/${r.paper_slug}/ (may take 1-2h; ask chat「复现结果」).`);
     } catch (e) { this._setStatus(String(e.message || e), true); }
   },
 

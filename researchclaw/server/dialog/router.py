@@ -71,6 +71,13 @@ async def route_message(raw_message: str, client_id: str) -> str:
         session.add_message("assistant", reply)
         return reply
 
+    # 上一条在等复现目标 → 本条按论文标识启动复现
+    if session.pending.get("awaiting") == "reproduce":
+        session.pending.pop("awaiting", None)
+        reply = await _handle_reproduce(f"复现 {text.strip()}", session)
+        session.add_message("assistant", reply)
+        return reply
+
     intent, confidence = classify_intent(text)
     logger.debug("Intent: %s (%.2f) for: %s", intent.value, confidence, text[:50])
 
@@ -217,6 +224,108 @@ async def _handle_ideate(text: str, session: ChatSession) -> str:
         f"选题引擎已启动（{resp.run_id}，方向：{direction}）。\n"
         "它会真实扫描文献找缺口，通常 10–30 分钟。"
         "完成后对我说「选题结果」，我把候选科学问题和证据卡发你。"
+    )
+
+
+async def _handle_reproduce(text: str, session: ChatSession) -> str:
+    """「复现这篇」：启动/查询论文复现（找官方 repo → 沙箱跑通 → 复现报告）。"""
+    from fastapi import HTTPException
+
+    # 停止分支
+    if re.search(r"(?:停止|终止|取消|\b(?:stop|cancel|abort)\b)", text, re.IGNORECASE):
+        from researchclaw.server.routes.reproduce import stop_reproduce
+
+        try:
+            await stop_reproduce()
+            return "已请求停止当前复现任务。"
+        except HTTPException as exc:
+            return str(exc.detail)
+
+    # 查询结果分支
+    if re.search(r"结果|报告|出来了吗|好了吗|咋样了|进度", text):
+        from researchclaw.server.routes.reproduce import (
+            reproduce_report,
+            reproduce_status,
+        )
+
+        st = await reproduce_status()
+        if st.get("status") == "running":
+            phase_zh = {
+                "finding_repo": "找官方代码仓库",
+                "reproducing": "沙箱里装环境/跑通",
+                "comparing": "对比宣称 vs 实测指标",
+                "reporting": "生成复现报告",
+            }.get(st.get("phase"), st.get("phase", ""))
+            return (
+                f"复现任务还在跑（{st.get('run_id')}，当前：{phase_zh}）。"
+                "复现可能要 1~2 小时，稍后问我「复现结果」。"
+            )
+        try:
+            rep = await reproduce_report()
+        except HTTPException:
+            return "还没有复现结果。给我论文，比如「复现 1706.03762」或「复现 https://arxiv.org/abs/xxx」。"
+        exe = rep.get("execution") or {}
+        lines = [
+            f"**{rep.get('title', '复现报告')}**",
+            f"- repo：{(rep.get('repository') or {}).get('url', '(无)')}",
+            f"- 沙箱执行：{'✅ 跑通' if exe.get('ok') else '❌ 未跑通'}"
+            f"（{exe.get('rounds_used', 0)} 轮修复，{exe.get('elapsed_sec', 0)}s）",
+        ]
+        rows = rep.get("metrics_table") or []
+        if rows:
+            lines.append("- 宣称 vs 实测：")
+            for r in rows[:5]:
+                lines.append(
+                    f"  - {r.get('dataset') or '-'}/{r.get('metric')}：宣称 {r.get('claimed')}"
+                    f" vs 实测 {r.get('measured')}（{r.get('status')}）"
+                )
+        issues = rep.get("issues") or {}
+        if issues:
+            total = sum(len(v) for v in issues.values())
+            lines.append(f"- 问题清单 {total} 条（{ '/'.join(f'{k}:{len(v)}' for k, v in issues.items()) }）")
+        opps = rep.get("opportunities") or []
+        if opps:
+            lines.append(f"- 改进机会 {len(opps)} 条，第一条：{opps[0].get('hypothesis')}")
+        report_md = st.get("report_md") or "reproduction_report.md"
+        lines.append(f"- 完整报告：`{report_md}`")
+        return "\n".join(lines)
+
+    # 启动分支：解析论文标识（arXiv id / URL / GitHub 链接 / 标题）
+    paper = ""
+    m = re.search(r"(https?://\S+|\b\d{4}\.\d{4,5}(?:v\d+)?\b)", text)
+    if m:
+        paper = m.group(1)
+    else:
+        m = re.search(r"复现\s*[:：]?\s*(.+)", text)
+        paper = (m.group(1).strip() if m else "").strip("。")
+    if len(paper) < 4:
+        session.pending["awaiting"] = "reproduce"
+        return (
+            "好，帮你复现一篇论文。给我**论文标识**：arXiv id（如 1706.03762）、"
+            "arXiv/GitHub 链接，或论文标题（我会先找官方代码仓库，再进沙箱真跑）。"
+        )
+
+    from researchclaw.server.routes.reproduce import (
+        ReproduceStartRequest,
+        start_reproduce,
+    )
+
+    try:
+        resp = await start_reproduce(
+            ReproduceStartRequest(
+                paper=paper,
+                run_id=session.current_run or None,
+                repo_url=paper if paper.startswith(("http://", "https://")) and "github.com" in paper else None,
+            )
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return "已有一个复现任务在跑，问我「复现结果」看进度。"
+        return f"启动失败：{exc.detail}"
+    return (
+        f"复现任务已启动（run：{resp.run_id}，目录 artifacts/{resp.run_id}/reproduction/{resp.paper_slug}/）。\n"
+        "流程：找官方 repo → 克隆进沙箱 → LLM 装环境/跑通（最多 8 轮修复）→ 宣称 vs 实测对比。\n"
+        "可能要 1~2 小时，完成后对我说「复现结果」，我把报告摘要发你。"
     )
 
 
@@ -457,6 +566,7 @@ _HANDLERS = {
     Intent.STOP_PIPELINE: _handle_stop,
     Intent.SYNC_OVERLEAF: _handle_overleaf,
     Intent.IDEATION: _handle_ideate,
+    Intent.REPRODUCE: _handle_reproduce,
     Intent.TOPIC_SELECTION: _handle_topic,
     Intent.MODIFY_CONFIG: _handle_config,
     Intent.DISCUSS_RESULTS: _handle_results,

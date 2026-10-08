@@ -609,6 +609,24 @@ class ExperimentConfig:
 
 
 @dataclass(frozen=True)
+class ReproduceConfig:
+    """论文复现模块配置（reproduction-driven research）。
+
+    复现沙箱的镜像 / GPU / 内存 / shm 直接复用 ``experiment.docker`` 段，
+    本段只控制复现流程自身的开关与预算。
+    """
+
+    enabled: bool = True
+    max_rounds: int = 8  # LLM「装环境→跑通→修复」循环上限
+    time_budget_sec: int = 7200  # 单次复现的总时间预算（wall clock）
+    # 复现的克隆代码常需在运行阶段下载数据集/权重，默认放开网络；
+    # 可改回 "setup_only" 复用实验阶段的严格网络姿态。
+    network_policy: str = "full"
+    finder_timeout_sec: int = 15  # 单个代码源（PwC/arXiv/S2）的 HTTP 超时
+    clone_timeout_sec: int = 600  # git clone 超时
+
+
+@dataclass(frozen=True)
 class MetaClawPRMConfig:
     """PRM quality gate settings for MetaClaw bridge."""
 
@@ -882,6 +900,7 @@ class RCConfig:
     )
     security: SecurityConfig = field(default_factory=SecurityConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
+    reproduce: ReproduceConfig = field(default_factory=ReproduceConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
@@ -935,6 +954,7 @@ class RCConfig:
         literature_search = data.get("literature_search") or {}
         security = data.get("security") or {}
         experiment = data.get("experiment") or {}
+        reproduce = data.get("reproduce") or {}
         export = data.get("export") or {}
         prompts = data.get("prompts") or {}
         web_search = data.get("web_search") or {}
@@ -1005,6 +1025,7 @@ class RCConfig:
                 redact_sensitive_logs=bool(security.get("redact_sensitive_logs", True)),
             ),
             experiment=_parse_experiment_config(experiment),
+            reproduce=_parse_reproduce_config(reproduce),
             export=ExportConfig(
                 target_conference=export.get("target_conference", "neurips_2025"),
                 authors=export.get("authors", "Anonymous"),
@@ -1260,6 +1281,21 @@ def _parse_literature_search_config(data: dict[str, Any]) -> LiteratureSearchCon
         s2_api_key_env=str(
             data.get("s2_api_key_env", LiteratureSearchConfig.s2_api_key_env)
         ),
+    )
+
+
+def _parse_reproduce_config(data: dict[str, Any]) -> ReproduceConfig:
+    if not data:
+        return ReproduceConfig()
+    return ReproduceConfig(
+        enabled=bool(data.get("enabled", True)),
+        max_rounds=max(1, _safe_int(data.get("max_rounds"), 8)),
+        time_budget_sec=max(60, _safe_int(data.get("time_budget_sec"), 7200)),
+        network_policy=_validate_network_policy(
+            data.get("network_policy", "full"), default="full"
+        ),
+        finder_timeout_sec=max(3, _safe_int(data.get("finder_timeout_sec"), 15)),
+        clone_timeout_sec=max(30, _safe_int(data.get("clone_timeout_sec"), 600)),
     )
 
 

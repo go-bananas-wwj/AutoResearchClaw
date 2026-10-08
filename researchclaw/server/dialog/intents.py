@@ -15,6 +15,7 @@ class Intent(str, Enum):
     STOP_PIPELINE = "stop_pipeline"
     SYNC_OVERLEAF = "sync_overleaf"
     IDEATION = "ideation"
+    REPRODUCE = "reproduce"
     CHECK_STATUS = "check_status"
     MODIFY_CONFIG = "modify_config"
     DISCUSS_RESULTS = "discuss_results"
@@ -31,6 +32,10 @@ _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
     )),
     (Intent.SYNC_OVERLEAF, re.compile(
         r"(?:overleaf|同步到?\s*overleaf|推送到?\s*overleaf)", re.IGNORECASE
+    )),
+    (Intent.REPRODUCE, re.compile(
+        r"(?:复现|reproduc|跑一下?这篇|复刻)",
+        re.IGNORECASE,
     )),
     (Intent.HELP, re.compile(
         r"(?:^\s*help\s*$|\bhow\s+to\b|\busage\b|帮助|怎么用)", re.IGNORECASE

@@ -63,6 +63,15 @@ experiment:
     min_completion_rate: 0.5
     min_conditions: 2
 
+# ── 论文复现（可选；整段缺省即有默认值，老配置不用动）──────────────
+# 选题卡片/Chat「复现这篇」走这里：找官方 repo → 沙箱克隆真跑 → 《复现报告》。
+# 沙箱镜像/GPU/内存复用上面 experiment.docker 段。
+# reproduce:
+#   enabled: true
+#   max_rounds: 8               # LLM「装环境→跑通→修复」循环上限
+#   time_budget_sec: 7200       # 单次复现总时间预算（wall clock）
+#   network_policy: "full"      # 复现代码常需运行时下载数据/权重；改 "setup_only" 复用实验的严格姿态
+
 hitl:
   enabled: true
   mode: co-pilot

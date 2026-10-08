@@ -53,4 +53,11 @@ const API = {
   ideationStart(direction) { return this.post('/ideation/start', { direction }); },
   ideationStatus() { return this.get('/ideation/status'); },
   ideationReport(runId) { return this.get(`/ideation/report${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`); },
+  reproduceStart(opts) { return this.post('/reproduce/start', opts); },
+  reproduceStatus() { return this.get('/reproduce/status'); },
+  reproduceReport(runId, slug) {
+    const q = [runId && `run_id=${encodeURIComponent(runId)}`, slug && `paper_slug=${encodeURIComponent(slug)}`].filter(Boolean).join('&');
+    return this.get(`/reproduce/report${q ? `?${q}` : ''}`);
+  },
+  reproduceStop() { return this.post('/reproduce/stop'); },
 };
