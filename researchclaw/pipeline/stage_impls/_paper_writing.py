@@ -203,7 +203,13 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     run_count = 0
     has_parsed_metrics = False
 
-    for stage_subdir in sorted(run_dir.glob("stage-*/runs")):
+    # 只用当前迭代（非版本化 stage-*/runs）的运行记录；历史迭代（stage-*_vN）
+    # 是 PIVOT/回滚前的旧方案产物，混进来会让"真实数据"约束本身被污染
+    # （端到端首跑实测：PIVOT 前 DANN/CORAL 旧指标被当作 ACTUAL EXPERIMENT
+    # DATA 注入论文 prompt，修订版据此"诚实地"写满了旧数字）。
+    _run_dirs_all = sorted(run_dir.glob("stage-*/runs"))
+    _run_dirs_current = [p for p in _run_dirs_all if "_v" not in p.parent.name]
+    for stage_subdir in (_run_dirs_current or _run_dirs_all):
         for run_file in sorted(stage_subdir.glob("*.json")):
             if run_file.name == "results.json":
                 continue
@@ -263,7 +269,11 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     _best_refine_metrics: dict[str, Any] = {}
     _best_refine_stdout = ""
     _best_refine_primary: float | None = None
-    for _rl_path in sorted(run_dir.glob("stage-13*/refinement_log.json")):
+    # 与上方 runs 收集同理：优先当前迭代（非版本化 stage-13），
+    # 历史迭代（stage-13_vN）只在当前没有日志时回退。
+    _rl_all = sorted(run_dir.glob("stage-13*/refinement_log.json"))
+    _rl_current = [p for p in _rl_all if "_v" not in p.parent.name]
+    for _rl_path in (_rl_current or _rl_all):
         try:
             _rlog = json.loads(_rl_path.read_text(encoding="utf-8"))
             for _it in _rlog.get("iterations", []):
