@@ -21,7 +21,9 @@
 - `researchclaw/reproduce/`：论文复现模块（finder/runner/compare/report），REST `/api/reproduce/*` + Chat「复现」意图 + 前端选题卡「复现这篇」按钮；产物在 `artifacts/<run_id>/reproduction/<slug>/`，`repo/` 里 `rc_` 前缀文件是复现凭证，当 baseline 用时排除。
 - `researchclaw/ideation/brief.py`：《研究任务书》注入通道——`materialize()` 把人工确认的 6 件事物化为 stage-01/02/07/08/09 产物 + `run_dir/research_brief.json`，REST `PipelineStartRequest.brief/from_stage` 从中间阶段开工；Chat BRIEF flow（`dialog/router.py` 步骤机，`session.pending` 持久化）。
 - **docker-sibling 硬件检测**：stage-01 在 `experiment.mode=docker` 且 `docker.gpu_enabled=true` 时信任配置标 GPU 可用（控制面容器看不到 GPU 是常态）；`_experiment_design.py` 的硬件档案读 `stage-01/hardware_profile.json`，不要硬编码 GPU 型号。
-- **中文先行**：`export.paper_language`（默认 `zh`，置 `en` 恢复上游英文行为）。zh 时阶段 16/17/19 用中文指令产中文论文（章节名 摘要/引言/相关工作/方法/实验/结果/讨论/局限性/结论），阶段 18/20 评审 prompt 追加中文评审要求，阶段 22 强制 `ctex` 模板（`templates/conference.py` 的 `CTEX`，ctexart+UTF8，xelatex 编译）生成 paper.tex 并另存 paper_zh.tex。长度统计走 `researchclaw/utils/text_length.py` 的 `count_words`（zh=CJK 字符+非 CJK 词，1 词≈2 字），阈值按 `scale_word_targets` 同步换算；不要在这些路径回退到 `len(text.split())`。
+- **中文先行**：`export.paper_language`（默认 `zh`，置 `en` 恢复上游英文行为）。zh 时阶段 16/17/19 用中文指令产中文论文（章节名 摘要/引言/相关工作/方法/实验/结果/讨论/局限性/结论），阶段 18/20 评审 prompt 追加中文评审要求，阶段 22 强制 `ctex` 模板（`templates/conference.py` 的 `CTEX`，ctexart+UTF8，pdflatex/xelatex 均可编译，Overleaf 默认 pdflatex 直接能编）生成 paper.tex 并另存 paper_zh.tex。长度统计走 `researchclaw/utils/text_length.py` 的 `count_words`（zh=CJK 字符+非 CJK 词，1 词≈2 字），阈值按 `scale_word_targets` 同步换算；不要在这些路径回退到 `len(text.split())`。
+- **门控控制台**：前端 sidebar「门控控制台」（`GateConsole.js`）——所有门控操作都在这里做：左栏轮询 `GET /api/hitl/waiting` 列出等待中的 run，右栏看产物全文（`GET /runs/{id}/hitl/file?path=`，run_dir 沙箱）、干预历史（`/hitl/interventions`），操作 approve/reject/skip/abort/inject/edit/rollback（respond 已扩展 `edited_files`/`rollback_to_stage`）。控制台还含「论文批注改稿」区（见下）。
+- **Overleaf 双向同步 + 批注改稿循环**：push 按语言分目录 `runs/<id>/zh/`、`runs/<id>/en/`（`sync_run_to_overleaf(language=)`，en 自动推 paper_en.tex；推送保持图表源目录名 charts/，改回 figures/ 会断链）。pull 已是真功能：`POST /api/runs/{id}/overleaf/pull` 或 Chat「拉取 Overleaf 改动」→ 拷回 `paper_annotations/<lang>/`。批注格式：Overleaf 里写 `% 批注: 意见` 注释行或直接改正文。`researchclaw/writing/`（annotations 解析 + PaperReviser 改稿 + PaperTranslator 翻译）：`POST /paper/revise` 按批注改稿（VerifiedRegistry 白名单硬约束，REJECT 数字找回或换 `---` 不静默放行，已处理批注行会删掉防重复命中），`POST /paper/translate` 中文定稿→英文 IEEEtran（数字多重集对照增删必报）。版本快照 `paper_versions/<lang>/vN.tex + base.tex`（diff 基准）。
 
 ## 端到端首跑（2026-10-08/09，rc-20261008-143654-557def）固化经验
 
@@ -29,7 +31,9 @@
 - **陈旧产物污染是头号敌人**：PIVOT/回滚后，`_read_prior_artifact`、`_promote_best_stage14`、`_collect_raw_experiment_metrics` 都可能命中旧迭代（`_vN`）数据。改代码时优先"当前迭代（非版本化目录）"语义；人工修数据后要归档旧 `stage-14_vN` 防止按数值提升假数据。
 - 阶段 12 硬失败已有自动修复重试（runner `_repair_and_retry_experiment_run`，最多 2 次）；修复循环产物在 `stage-14_repair_vN/`，重试代码回写 `stage-10/experiment/`（原件备份 `experiment_broken_backup/`）。
 - 质量门（阶段 20）会正确拦截数字不一致，但回滚目标 PAPER_OUTLINE 不含阶段 14——数据修好后要手动从 RESULT_ANALYSIS 恢复。
-- 已知待办：pdflatex 未装（无 PDF）、matplotlib 缺（无图表）、GitHub code search 401、CLI 无 TTY 时 input() EOF 被当"放弃"、PIVOT 重跑不继承 hitl_guidance、文献限流（S2/OpenAlex 建议配 key）。
+- 已知待办：pdflatex/xelatex 未装（无本地 PDF，编译验证交给 Overleaf 端）、matplotlib 缺（无图表）、GitHub code search 401、CLI 无 TTY 时 input() EOF 被当"放弃"、PIVOT 重跑不继承 hitl_guidance、文献限流（S2/OpenAlex 建议配 key）。
+- **已知待办（消毒误伤）**：`_sanitize_fabricated_data` / `_enforce_verified` 的白名单只有实验指标值（mIoU 等），超参/设置数字（学习率、batch size、种子、分辨率、时间预算）会被误替换为 `---`——改稿循环里用户让 AI 把这些填回去也会被拦。正确修法：VerifiedRegistry 增采 stage-09 exp_plan.yaml / stage-10 实验代码里声明的设置值（涉及核心结构，待与上游语义对齐后再动）。
+- **LLM 全文改写的两个坑**（2026-10-09 zh 重跑实测固化）：① 全文改稿/翻译必须按文档规模给 max_tokens（默认 4096 必截断），且要有截断守卫（`writing/reviser.py` 的 `_output_budget` + 80%/70% 阈值拒写）；② qwen 弱指令遵循会把 prompt 里的 evolution overlay（lessons + `~/.metaclaw/skills/arc-*`）当正文输出，阶段 22 有 `_strip_evolution_dump` 机械兜底，新加 LLM 全文改写路径时两类防护都要带上。
 
 ## 生效方式速查
 
