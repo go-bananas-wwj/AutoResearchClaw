@@ -469,6 +469,26 @@ async def hitl_read_file(run_id: str, path: str) -> dict[str, Any]:
     }
 
 
+@router.get("/runs/{run_id}/files")
+async def list_run_files(run_id: str) -> dict[str, Any]:
+    """列举 run 目录下的产物文件（相对路径 + 大小），供前端产物浏览器使用。"""
+    run_dir = _validated_run_dir(run_id)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    files: list[dict[str, Any]] = []
+    for p in sorted(run_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(run_dir).as_posix()
+        try:
+            files.append({"path": rel, "size": p.stat().st_size})
+        except OSError:
+            continue
+        if len(files) >= 3000:
+            break
+    return {"run_id": run_id, "files": files}
+
+
 @router.get("/runs/{run_id}/hitl/interventions")
 async def hitl_interventions(run_id: str, limit: int = 100) -> dict[str, Any]:
     """干预历史时间线（hitl/interventions.jsonl，含以往的批准/注入记录）。"""

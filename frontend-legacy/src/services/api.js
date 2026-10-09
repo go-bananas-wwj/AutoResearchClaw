@@ -44,6 +44,7 @@ const API = {
   stopPipeline() { return this.post('/pipeline/stop'); },
   listRuns() { return this.get('/runs'); },
   getRun(id) { return this.get(`/runs/${id}`); },
+  runFiles(id) { return this.get(`/runs/${id}/files`); },
   getMetrics(id) { return this.get(`/runs/${id}/metrics`); },
   listProjects() { return this.get('/projects'); },
   settingsFiles() { return this.get('/settings/files'); },

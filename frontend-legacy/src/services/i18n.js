@@ -142,6 +142,41 @@
     'Versions': '历史版本',
     'No versions yet.': '暂无历史版本。',
     'Optional extra instruction, e.g. 把讨论部分压缩一半': '可选附加指令，例：把讨论部分压缩一半',
+    /* 项目中心布局（ProjectHome / app shell） */
+    'New Research': '新研究',
+    'About': '关于',
+    'Your Projects': '你的项目',
+    'No projects yet.': '暂无项目。',
+    'Start your first research project from here.': '从这里开始你的第一个研究项目。',
+    'Waiting': '等门控',
+    'Done': '已完成',
+    'Updated': '更新于',
+    'Go handle it': '去处理',
+    'Waiting for your decision': '等待你的决定',
+    'Stages': '阶段进度',
+    'Key Metrics': '关键指标',
+    'No experiment summary yet.': '暂无实验结果摘要。',
+    'Chinese': '中文版',
+    'English': '英文版',
+    'available': '已生成',
+    'not yet': '未生成',
+    'Revise in the Interact tab.': '批注改稿在「交互」页进行。',
+    'Artifacts': '产物文件',
+    'Click a stage dir to browse its files.': '点击阶段目录浏览其中文件（只读）。',
+    'Archived / versioned dirs': '归档/版本目录',
+    'Root Files': '根目录文件',
+    'No artifacts yet.': '暂无产物。',
+    'Danger Zone': '危险区',
+    'Abort Run': '中止运行',
+    'Abort this run? If it is waiting at a gate, an abort response will be sent; otherwise the pipeline will be stopped.':
+      '确定中止该运行吗？若正在门控等待中则发送中止响应，否则直接停止流水线。',
+    'Aborted.': '已中止。',
+    'Abort failed': '中止失败',
+    'Chat with this project...': '和这个项目对话……（确认方案 / 注入想法 / 问进度）',
+    'New research — describe your topic or idea to start': '新研究——告诉我你的研究题目或想法，我帮你启动',
+    'This is the conversation bound to the current project. Confirm plans, inject ideas, or ask about progress here — I will answer in this project\'s context.':
+      '这是与当前项目绑定的对话。在这里确认方案、注入想法、询问进度——我会按这个项目的上下文回答。',
+    'Gate resolved — pipeline continues.': '门控已放行，流水线继续。',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */
@@ -165,7 +200,7 @@
   var STATUS = {
     'idle': '空闲', 'running': '运行中', 'completed': '已完成', 'failed': '失败',
     'pending': '等待中', 'unknown': '未知', 'paused': '已暂停', 'gate': '待审批',
-    'set': '已设置', 'missing': '未设置',
+    'set': '已设置', 'missing': '未设置', 'waiting': '等门控', 'no_checkpoint': '无检查点',
   };
 
   /* ---------- 模式规则（含动态数字的短语） ---------- */
@@ -178,6 +213,9 @@
     [/^(\d+)h ago$/, '$1 小时前'],
     [/^(\d+)d ago$/, '$1 天前'],
     [/^(\d+) numbers reverted to verified values$/, '$1 个数字已回退为已验证值'],
+    [/^Stage (\d+)\/(\d+)$/, '阶段 $1/$2'],
+    [/^Stage (\d+)$/, '阶段 $1'],
+    [/^Gate (approve|reject|skip|abort|inject|edit|rollback): (.*)$/, '门控 $1：$2'],
   ];
 
   /* ---------- 语言状态 ---------- */
