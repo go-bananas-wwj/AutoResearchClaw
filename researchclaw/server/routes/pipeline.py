@@ -368,6 +368,8 @@ class HITLRespondRequest(BaseModel):
     action: str  # approve | reject | edit | skip | collaborate | inject | rollback | abort
     message: str = ""
     guidance: str = ""
+    edited_files: dict[str, str] = {}  # edit 动作：相对路径 -> 新内容
+    rollback_to_stage: int | None = None  # rollback 动作：目标阶段编号
 
 
 @router.get("/runs/{run_id}/hitl/waiting")
@@ -402,6 +404,123 @@ async def hitl_respond(run_id: str, req: HITLRespondRequest) -> dict[str, Any]:
 
     write_response(
         run_dir / "hitl",
-        HumanInput(action=action, message=req.message, guidance=req.guidance),
+        HumanInput(
+            action=action,
+            message=req.message,
+            guidance=req.guidance,
+            edited_files=req.edited_files,
+            rollback_to_stage=req.rollback_to_stage,
+        ),
     )
     return {"ok": True, "run_id": run_id, "action": req.action}
+
+
+# ---------------------------------------------------------------- HITL console
+
+
+_HITL_FILE_MAX_CHARS = 200_000
+
+
+@router.get("/hitl/waiting")
+async def hitl_waiting_all() -> dict[str, Any]:
+    """列出所有正在门控处等待人工输入的 run（控制台核心数据源）。
+
+    注意路径是 /api/hitl/waiting 而不是 /api/runs/waiting——后者会被
+    先注册的 /runs/{run_id} 路由吃掉。
+    """
+    artifacts = Path("artifacts")
+    waiting: list[dict[str, Any]] = []
+    if artifacts.exists():
+        for d in sorted(artifacts.iterdir(), reverse=True):
+            if not (d.is_dir() and d.name.startswith("rc-")):
+                continue
+            p = d / "hitl" / "waiting.json"
+            if not p.is_file():
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            data["waiting"] = True
+            data["run_id"] = d.name
+            waiting.append(data)
+    return {"waiting_runs": waiting}
+
+
+@router.get("/runs/{run_id}/hitl/file")
+async def hitl_read_file(run_id: str, path: str) -> dict[str, Any]:
+    """读取 run 目录下的门控产物全文（沙箱限制在 run_dir 内，防路径穿越）。"""
+    run_dir = _validated_run_dir(run_id)
+    target = (run_dir / path).resolve()
+    if not target.is_relative_to(run_dir.resolve()):
+        raise HTTPException(status_code=400, detail=f"非法路径: {path}")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail=f"非文本文件: {path}") from None
+    truncated = len(content) > _HITL_FILE_MAX_CHARS
+    return {
+        "run_id": run_id,
+        "path": path,
+        "content": content[:_HITL_FILE_MAX_CHARS],
+        "truncated": truncated,
+    }
+
+
+@router.get("/runs/{run_id}/hitl/interventions")
+async def hitl_interventions(run_id: str, limit: int = 100) -> dict[str, Any]:
+    """干预历史时间线（hitl/interventions.jsonl，含以往的批准/注入记录）。"""
+    run_dir = _validated_run_dir(run_id)
+    p = run_dir / "hitl" / "interventions.jsonl"
+    records: list[dict[str, Any]] = []
+    if p.is_file():
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return {"run_id": run_id, "interventions": records[-limit:]}
+
+
+# ---------------------------------------------------------------- Overleaf sync (web)
+
+
+@router.post("/runs/{run_id}/overleaf/pull")
+async def overleaf_pull(run_id: str, language: str = "zh") -> dict[str, Any]:
+    """从 Overleaf 拉回用户批注/修改到 run_dir/paper_annotations/<language>/。"""
+    from researchclaw.overleaf.run_sync import pull_run_from_overleaf
+
+    run_dir = _validated_run_dir(run_id)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    config = _get_app_state().get("config")
+    try:
+        return await asyncio.to_thread(
+            pull_run_from_overleaf, run_dir, run_id, config, language
+        )
+    except Exception as exc:
+        logger.exception("overleaf pull failed for %s", run_id)
+        raise HTTPException(status_code=500, detail=f"拉取失败: {exc}") from exc
+
+
+@router.post("/runs/{run_id}/overleaf/push")
+async def overleaf_push(run_id: str, language: str | None = None) -> dict[str, Any]:
+    """把 run 的论文产物（或改稿后的最新版）推送到 Overleaf。"""
+    from researchclaw.overleaf.run_sync import sync_run_to_overleaf
+
+    run_dir = _validated_run_dir(run_id)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    config = _get_app_state().get("config")
+    try:
+        return await asyncio.to_thread(
+            sync_run_to_overleaf, run_dir, run_id, config, language
+        )
+    except Exception as exc:
+        logger.exception("overleaf push failed for %s", run_id)
+        raise HTTPException(status_code=500, detail=f"推送失败: {exc}") from exc

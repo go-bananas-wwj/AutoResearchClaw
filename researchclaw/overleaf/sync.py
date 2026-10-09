@@ -87,9 +87,10 @@ class OverleafSync:
             dst_bib = base / bib_file.name
             shutil.copy2(bib_file, dst_bib)
 
-        # Copy figures
+        # Copy figures（保持源目录名：stage-22 的 tex 里引用的是 charts/xxx.png，
+        # 若强行改名 figures/ 会导致 Overleaf 上图全断）
         if figures_dir and figures_dir.is_dir():
-            dst_figs = base / "figures"
+            dst_figs = base / figures_dir.name
             if dst_figs.exists():
                 shutil.rmtree(dst_figs)
             shutil.copytree(figures_dir, dst_figs)

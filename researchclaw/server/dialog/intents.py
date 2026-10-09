@@ -15,6 +15,7 @@ class Intent(str, Enum):
     START_PIPELINE = "start_pipeline"
     STOP_PIPELINE = "stop_pipeline"
     SYNC_OVERLEAF = "sync_overleaf"
+    PULL_OVERLEAF = "pull_overleaf"
     IDEATION = "ideation"
     REPRODUCE = "reproduce"
     CHECK_STATUS = "check_status"
@@ -34,6 +35,10 @@ _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
     )),
     (Intent.IDEATION, re.compile(
         r"(?:找选题|选个题|选题结果|选题报告|证据卡|有什么可做|有没有.*(?:选题|方向可做)|推荐.*(?:课题|题目)|ideat)",
+        re.IGNORECASE,
+    )),
+    (Intent.PULL_OVERLEAF, re.compile(
+        r"(?:拉取?|拉回|取回|同步回来).{0,6}overleaf|overleaf.{0,6}(?:改动|修改|批注)|pull.{0,12}overleaf",
         re.IGNORECASE,
     )),
     (Intent.SYNC_OVERLEAF, re.compile(

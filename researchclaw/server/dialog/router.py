@@ -737,11 +737,54 @@ async def _handle_overleaf(text: str, session: ChatSession) -> str:
     if not result.get("ok"):
         return f"同步未完成：{result.get('reason', 'unknown')}"
     note = "（内容无变化，已是最新）" if not result.get("pushed") else ""
+    folder = result.get("folder", f"runs/{run_id}/")
     return (
         f"已同步 **{run_id}** 到 Overleaf 共享项目 {note}\n"
-        f"- 位置：`runs/{run_id}/`（paper.tex + references.bib + figures/）\n"
+        f"- 位置：`{folder}/`（paper.tex + references.bib + 图表目录）\n"
         "- 在 Overleaf 打开该文件夹，把 paper.tex 设为 Main document 即可编译\n"
-        "- 之后你在 Overleaf 上的修改会经 git 双向同步，流水线内我说「拉取 Overleaf 改动」可取回"
+        "- 在 Overleaf 里用 `% 批注: 你的意见` 写批注或直接改正文，然后对我说「拉取 Overleaf 改动」取回"
+    )
+
+
+async def _handle_overleaf_pull(text: str, session: ChatSession) -> str:
+    """「拉取 Overleaf 改动」：把用户在 Overleaf 上的批注/修改拉回 run 目录。"""
+    from researchclaw.server.app import _app_state
+
+    m = re.search(r"(rc-[\w-]+)", text)
+    run_id = m.group(1) if m else session.current_run
+    if not run_id:
+        from researchclaw.dashboard.collector import DashboardCollector
+
+        runs = DashboardCollector().collect_all()
+        if not runs:
+            return "还没有任何运行记录。"
+        run_id = runs[0].run_id
+
+    run_dir = REPO_ROOT / "artifacts" / run_id
+    if not run_dir.is_dir():
+        return f"找不到 run 目录：artifacts/{run_id}"
+
+    lang = "en" if re.search(r"英文|英语|\ben\b", text, re.IGNORECASE) else "zh"
+
+    from researchclaw.overleaf.run_sync import pull_run_from_overleaf
+
+    try:
+        result = await asyncio.to_thread(
+            pull_run_from_overleaf, run_dir, run_id, _app_state["config"], lang
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("overleaf pull failed from chat")
+        return f"拉取失败：{exc}"
+
+    if not result.get("ok"):
+        return f"拉取未完成：{result.get('reason', 'unknown')}"
+    copied = result.get("copied", [])
+    if not copied:
+        return f"Overleaf 上 `{run_id}`（{lang}）没有新的改动。"
+    return (
+        f"已拉回 **{run_id}**（{lang}）的 {len(copied)} 个变更文件：\n"
+        + "\n".join(f"- `{name}`" for name in copied)
+        + f"\n存放于 `paper_annotations/{lang}/`，下一步对我说「按批注改稿」即可。"
     )
 
 
@@ -946,6 +989,7 @@ _HANDLERS = {
     Intent.START_PIPELINE: _handle_start,
     Intent.STOP_PIPELINE: _handle_stop,
     Intent.SYNC_OVERLEAF: _handle_overleaf,
+    Intent.PULL_OVERLEAF: _handle_overleaf_pull,
     Intent.IDEATION: _handle_ideate,
     Intent.REPRODUCE: _handle_reproduce,
     Intent.TOPIC_SELECTION: _handle_topic,

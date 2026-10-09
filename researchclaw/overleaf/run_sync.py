@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +38,23 @@ def _find_deliverables(run_dir: Path):
     return (tex if tex and tex.exists() else None), (bib if bib.exists() else None), figs
 
 
-def sync_run_to_overleaf(run_dir: Path, run_id: str, config: Any) -> dict[str, Any]:
-    """把指定 run 的论文产物同步到 Overleaf 共享仓库的 runs/<run_id>/ 下。"""
+def _paper_language(config: Any) -> str:
+    """读 export.paper_language（zh/en），缺省 zh（本 fork 中文先行）。"""
+    export_cfg = getattr(config, "export", None)
+    return getattr(export_cfg, "paper_language", "zh") if export_cfg else "zh"
+
+
+def sync_run_to_overleaf(
+    run_dir: Path,
+    run_id: str,
+    config: Any,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """把指定 run 的论文产物同步到 Overleaf 共享仓库。
+
+    按语言推送到 ``runs/<run_id>/<language>/``（zh 中文稿 / en 英文定稿），
+    无 language 时维持旧行为推 ``runs/<run_id>/``。
+    """
     cfg = getattr(config, "overleaf", None)
     if not cfg or not getattr(cfg, "enabled", False) or not getattr(cfg, "git_url", ""):
         return {"ok": False, "reason": "overleaf sync not enabled in config"}
@@ -47,11 +63,58 @@ def sync_run_to_overleaf(run_dir: Path, run_id: str, config: Any) -> dict[str, A
     if tex is None:
         return {"ok": False, "reason": f"no .tex found under {run_dir}"}
 
+    lang = language if language is not None else _paper_language(config)
+    subdir = f"runs/{run_id}/{lang}" if lang else f"runs/{run_id}"
+
     SHARED_DIR.parent.mkdir(parents=True, exist_ok=True)
     sync = OverleafSync(git_url=cfg.git_url, branch=cfg.branch, auto_push=True)
     sync.setup(run_dir, local_dir=SHARED_DIR)
-    pushed = sync.push_paper(tex, bib_file=bib, figures_dir=figs, subdir=f"runs/{run_id}")
-    return {"ok": True, "run_id": run_id, "folder": f"runs/{run_id}", "pushed": pushed}
+    pushed = sync.push_paper(tex, bib_file=bib, figures_dir=figs, subdir=subdir)
+    return {"ok": True, "run_id": run_id, "folder": subdir, "pushed": pushed}
+
+
+def pull_run_from_overleaf(
+    run_dir: Path,
+    run_id: str,
+    config: Any,
+    language: str = "zh",
+) -> dict[str, Any]:
+    """从 Overleaf 拉回用户批注/修改。
+
+    pull 共享克隆后，把 ``runs/<run_id>/<language>/`` 下变更过的文件拷回
+    ``run_dir/paper_annotations/<language>/``，返回变更文件列表。
+    """
+    cfg = getattr(config, "overleaf", None)
+    if not cfg or not getattr(cfg, "enabled", False) or not getattr(cfg, "git_url", ""):
+        return {"ok": False, "reason": "overleaf sync not enabled in config"}
+
+    SHARED_DIR.parent.mkdir(parents=True, exist_ok=True)
+    sync = OverleafSync(git_url=cfg.git_url, branch=cfg.branch, auto_push=False)
+    sync.setup(run_dir, local_dir=SHARED_DIR)
+    changed = sync.pull_changes()
+
+    prefix = f"runs/{run_id}/{language}/"
+    dest_dir = run_dir / "paper_annotations" / language
+    copied: list[str] = []
+    for rel in changed:
+        if not rel.startswith(prefix):
+            continue
+        src = SHARED_DIR / rel
+        if not src.is_file():
+            continue
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dst = dest_dir / rel[len(prefix):]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied.append(dst.name)
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "language": language,
+        "changed_remote": changed,
+        "copied": copied,
+        "pulled_to": str(dest_dir),
+    }
 
 
 def maybe_sync_run(run_dir: Path, run_id: str, config: Any) -> None:
