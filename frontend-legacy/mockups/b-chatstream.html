@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>概念图 B — 对话流即主页（无 Tab）</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .main { display: flex; justify-content: center; }
+  .stream { width: 100%; max-width: 820px; display: flex; flex-direction: column; gap: 14px; }
+  .prog-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); padding: 12px 16px; }
+  .prog-card .head { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .prog-card .pbar { margin-top: 8px; height: 5px; }
+  .prog-card .stages { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .prog-card .st { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: var(--bg-tertiary); color: var(--text-muted); }
+  .prog-card .st.ok { background: rgba(63,185,80,.15); color: var(--success); }
+  .prog-card .st.cur { background: rgba(210,153,34,.2); color: var(--warning); }
+  .paper-card { border: 1px solid var(--purple); background: rgba(188,140,255,.05); border-radius: var(--radius); padding: 12px 16px; }
+  .paper-card .head { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .paper-card .anno { font-size: 13px; color: var(--text-secondary); padding: 4px 0; }
+  .paper-card .anno .sec { color: var(--accent); margin-right: 6px; }
+</style>
+</head>
+<body>
+<header class="mock-header">
+  <h1>ResearchClaw</h1>
+  <span class="tag">概念图 B · 对话流即主页</span>
+  <div class="spacer"></div>
+  <span class="meta">v5.x · Connected</span>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <button class="new-btn">＋ 新研究</button>
+    <div class="proj-card active">
+      <div class="title">物理引导约束在 SAR 形变检测中的实证研究</div>
+      <div class="row"><span class="badge done">● 已完成</span><span>23/23</span></div>
+      <div class="pbar done"><div style="width:100%"></div></div>
+    </div>
+    <div class="proj-card">
+      <div class="title">城市内涝时空预测的多模态融合方法</div>
+      <div class="row"><span class="badge waiting">● 等门控</span><span>阶段 5/23</span></div>
+      <div class="pbar waiting"><div style="width:22%"></div></div>
+    </div>
+    <div class="bottom">
+      <a href="#">🛠 设置</a>
+      <a href="#">ℹ 关于</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <div class="stream">
+      <!-- 项目上下文条（可折叠） -->
+      <div class="prog-card">
+        <div class="head">
+          <strong>物理引导约束在 SAR 形变检测中的实证研究</strong>
+          <span class="badge done">已完成</span>
+          <span class="notice" style="margin-left:auto">进度/产物/管理都折叠在这里 ▸</span>
+        </div>
+        <div class="pbar done"><div style="width:100%"></div></div>
+        <div class="stages">
+          <span class="st ok">1-8 前期</span><span class="st ok">9 设计</span><span class="st ok">10 代码</span>
+          <span class="st ok">12 实验</span><span class="st ok">14 分析</span><span class="st ok">16-19 写作</span>
+          <span class="st ok">20 质量门</span><span class="st ok">22 导出</span><span class="st ok">23 引用</span>
+        </div>
+      </div>
+
+      <div class="msg ai"><div class="who">ResearchClaw</div>中文版论文已生成并同步到 Overleaf（runs/rc-…/zh/），8 个章节共 3.1 万字符。实验结论：物理引导 mIoU 0.3356±0.0015，在四条件中最低——负面结果，论文已如实陈述。你可以去 Overleaf 批注，或直接在这里告诉我要改什么。</div>
+
+      <!-- 论文批注卡片：内联在对话流里 -->
+      <div class="paper-card">
+        <div class="head">📄 论文批注 · 已从 Overleaf 拉回 3 条批注 + 1 处直接修改</div>
+        <div class="anno"><span class="sec">[方法]</span>物理约束层公式推导不够清晰，建议补充损失函数各项权重的设计依据。</div>
+        <div class="anno"><span class="sec">[结果]</span>结果表格建议增加每个条件 5 个种子的完整数据附表。</div>
+        <div class="anno"><span class="sec">[讨论]</span>应更明确解释为什么物理约束在合成数据上无效。</div>
+        <div class="anno"><span class="sec">[改]</span>「结论」→「结论与展望」</div>
+        <div class="actions" style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn primary">按批注改稿</button>
+          <button class="btn">重新拉取</button>
+          <button class="btn">翻译成英文版</button>
+        </div>
+      </div>
+
+      <div class="msg user">按批注改稿吧</div>
+      <div class="msg ai"><div class="who">ResearchClaw</div>改稿完成（v2）：3 条批注全部处理，补充了损失权重设计依据和 5 种子完整附表，讨论部分新增失效机制分析。数值保真校验通过（2 个无据数字已拦下替换为 ---）。已推回 Overleaf zh/。要现在翻译成英文版吗？</div>
+      <div class="msg user">翻译吧</div>
+      <div class="msg ai"><div class="who">ResearchClaw</div>英文版已生成（IEEEtran 格式）并推送到 Overleaf runs/rc-…/en/。数字多重集对照：0 新增 0 丢失 ✓。这个项目就完整了，可以随时开新研究。</div>
+
+      <div class="chat-input">
+        <div class="box">继续对话……（批注论文 / 问实验细节 / 开新方向）</div>
+        <button class="send">发送</button>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

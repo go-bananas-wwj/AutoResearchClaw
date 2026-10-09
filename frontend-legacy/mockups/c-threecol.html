@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>概念图 C — 三栏 IDE 式（项目 / 对话 / 上下文）</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .sidebar { width: 240px; }
+  .center { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; overflow-y: auto; }
+  .right { width: 320px; border-left: 1px solid var(--border); background: var(--bg-secondary); padding: 14px; overflow-y: auto; }
+  .right h3 { font-size: 13px; color: var(--text-secondary); margin: 14px 0 8px; }
+  .right h3:first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+<header class="mock-header">
+  <h1>ResearchClaw</h1>
+  <span class="tag">概念图 C · 三栏 IDE 式</span>
+  <div class="spacer"></div>
+  <span class="meta">v5.x · Connected</span>
+</header>
+
+<div class="layout">
+  <!-- 左栏：项目 -->
+  <nav class="sidebar">
+    <button class="new-btn">＋ 新研究</button>
+    <div class="proj-card active">
+      <div class="title">基于深度学习的 SAR 干涉影像地表形变检测方法研究</div>
+      <div class="row"><span class="badge waiting">● 等门控</span><span>9/23</span></div>
+      <div class="pbar waiting"><div style="width:39%"></div></div>
+    </div>
+    <div class="proj-card">
+      <div class="title">城市内涝时空预测的多模态融合方法</div>
+      <div class="row"><span class="badge running">● 运行中</span><span>12/23</span></div>
+      <div class="pbar"><div style="width:52%"></div></div>
+    </div>
+    <div class="bottom">
+      <a href="#">🛠 设置</a>
+      <a href="#">ℹ 关于</a>
+    </div>
+  </nav>
+
+  <!-- 中栏：对话 -->
+  <div class="center">
+    <div class="chat">
+      <div class="msg ai"><div class="who">ResearchClaw · SAR 形变检测</div>实验设计已拟定，等你确认。方案要点：4 条件对比 + 5 种子 + 主指标 mIoU，详见右栏产物 exp_plan.yaml。</div>
+      <div class="msg user">为什么种子数定为 5？统计效力够吗</div>
+      <div class="msg ai"><div class="who">ResearchClaw · SAR 形变检测</div>主要受 V100 单卡预算限制：每条件 5 种子 × 4 条件 ≈ 11 分钟/种子，总预算 3.7 小时。若接受 ~9 小时可以把种子提到 12 个，t 检验效力从 0.62 提到 0.91。要调吗？</div>
+      <div class="msg user">先按 5 跑，结果方差大再补</div>
+      <div class="msg ai"><div class="who">ResearchClaw · SAR 形变检测</div>好，按 5 种子放行。阶段 10 代码生成中。你可以随时在右边看实时进度。</div>
+    </div>
+    <div class="chat-input">
+      <div class="box">和这个项目对话……</div>
+      <button class="send">发送</button>
+    </div>
+  </div>
+
+  <!-- 右栏：上下文面板 -->
+  <aside class="right">
+    <h3>门控 · 等待决定</h3>
+    <div class="gate-card" style="max-width:100%">
+      <div class="head" style="font-size:13px">🚦 阶段 9 实验设计</div>
+      <div class="actions" style="margin-top:8px">
+        <button class="btn primary">✓ 批准</button>
+        <button class="btn">💉 注入</button>
+        <button class="btn danger">拒绝</button>
+      </div>
+    </div>
+
+    <h3>流程进度</h3>
+    <div class="stage-line"><span class="dot"></span>1-4 调研与文献</div>
+    <div class="stage-line"><span class="dot"></span>5-8 计划与综述</div>
+    <div class="stage-line cur"><span class="dot"></span>9 实验设计 ← 当前</div>
+    <div class="stage-line todo"><span class="dot"></span>10 代码生成</div>
+    <div class="stage-line todo"><span class="dot"></span>12 沙箱实验</div>
+    <div class="stage-line todo"><span class="dot"></span>14-20 分析与写作</div>
+    <div class="stage-line todo"><span class="dot"></span>22-23 导出与引用</div>
+
+    <h3>论文</h3>
+    <div class="kv"><span class="k">中文版</span><span>未开始</span></div>
+    <div class="kv"><span class="k">英文版</span><span>未开始</span></div>
+    <div class="kv"><span class="k">Overleaf</span><span class="link">打开项目 ↗</span></div>
+
+    <h3>产物文件</h3>
+    <div class="file-row">📄 stage-01/goal.md <span class="sz">1.2K</span></div>
+    <div class="file-row">📄 stage-05/candidates.jsonl <span class="sz">8.4K</span></div>
+    <div class="file-row">📄 stage-07/literature.md <span class="sz">96K</span></div>
+    <div class="file-row">📄 stage-09/exp_plan.yaml <span class="sz">3.1K</span></div>
+
+    <h3>硬件</h3>
+    <div class="kv"><span class="k">GPU</span><span>V100 32GB · 空闲</span></div>
+    <div class="kv"><span class="k">已花费</span><span class="num">$1.83 / $50</span></div>
+  </aside>
+</div>
+</body>
+</html>

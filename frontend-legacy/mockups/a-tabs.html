@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>概念图 A — 项目 + Tab（Codex 经典式）</title>
+<link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<header class="mock-header">
+  <h1>ResearchClaw</h1>
+  <span class="tag">概念图 A · 项目 + Tab</span>
+  <div class="spacer"></div>
+  <span class="meta">v5.x · Connected</span>
+</header>
+
+<div class="layout">
+  <!-- 左侧：项目列表 -->
+  <nav class="sidebar">
+    <button class="new-btn">＋ 新研究</button>
+    <div class="proj-card active">
+      <div class="title">基于深度学习的 SAR 干涉影像地表形变检测方法研究</div>
+      <div class="row"><span class="badge waiting">● 等门控</span><span>阶段 9/23</span></div>
+      <div class="pbar waiting"><div style="width:39%"></div></div>
+    </div>
+    <div class="proj-card">
+      <div class="title">城市内涝时空预测的多模态融合方法</div>
+      <div class="row"><span class="badge running">● 运行中</span><span>阶段 12/23</span></div>
+      <div class="pbar"><div style="width:52%"></div></div>
+    </div>
+    <div class="proj-card">
+      <div class="title">物理引导约束在 SAR 形变检测中的实证研究（已完成）</div>
+      <div class="row"><span class="badge done">● 已完成</span><span>23/23 · 论文 zh+en</span></div>
+      <div class="pbar done"><div style="width:100%"></div></div>
+    </div>
+    <div class="bottom">
+      <a href="#">🛠 设置</a>
+      <a href="#">ℹ 关于</a>
+    </div>
+  </nav>
+
+  <!-- 右侧：项目详情 -->
+  <main class="main">
+    <div class="proj-head">
+      <div class="title">基于深度学习的 SAR 干涉影像地表形变检测方法研究</div>
+      <div class="sub">
+        <span class="mono">rc-20261010-091532-7f3a2c</span>
+        <span class="badge waiting">等门控 · 阶段 9 实验设计</span>
+        <span>更新于 3 分钟前</span>
+      </div>
+      <div class="pbar-lg"><div style="width:39%"></div></div>
+    </div>
+
+    <div class="tabs">
+      <span class="tab">总览</span>
+      <span class="tab active">交互</span>
+      <span class="tab">管理</span>
+    </div>
+
+    <!-- 交互 tab：对话流 + 门控卡片 -->
+    <div class="chat">
+      <div class="msg ai"><div class="who">ResearchClaw</div>阶段 8 文献综述已完成，共纳入 47 篇文献（3 篇高相关）。现在进入实验设计阶段，我拟定了实验方案，请你过目。</div>
+
+      <!-- 门控卡片：插在对话流顶部 -->
+      <div class="gate-card">
+        <div class="head">🚦 门控：阶段 9 — 实验设计（EXPERIMENT_DESIGN）<span class="badge waiting">等待你的决定</span></div>
+        <div class="summary">计划对比 4 个条件：physics_guided / no_physics / no_phase / standard_cnn，每条件 5 个种子，主指标 mIoU。复现基线：Φ-Net (Rouet-Leduc 2021)。</div>
+        <div class="file">📄 exp_plan.yaml — 点击展开全文 ▸</div>
+        <div class="actions">
+          <button class="btn primary">✓ 批准</button>
+          <button class="btn">✏ 编辑产物</button>
+          <button class="btn">💉 注入纠正</button>
+          <button class="btn ghost">跳过</button>
+          <button class="btn danger">拒绝</button>
+          <button class="btn danger">中止</button>
+        </div>
+      </div>
+
+      <div class="msg user">基线只有一个够吗？再加一个 U-Net 的传统分割基线</div>
+      <div class="msg ai"><div class="who">ResearchClaw</div>有道理。我在实验计划里补充 unet_baseline 条件（5 个种子，同预算），更新后的 exp_plan.yaml 已同步到上方门控卡片，请再次确认。</div>
+      <div class="msg user">可以，批准</div>
+      <div class="msg ai"><div class="who">ResearchClaw</div>已放行。阶段 10 代码生成开始，预计 4 分钟。完成后阶段 12 会在沙箱里真实跑实验（V100 约 11 分钟）。</div>
+    </div>
+
+    <div class="chat-input">
+      <div class="box">和这个项目对话……（确认方案 / 注入想法 / 问进度）</div>
+      <button class="send">发送</button>
+    </div>
+  </main>
+</div>
+</body>
+</html>
