@@ -129,7 +129,7 @@ def create_app(
     # --- Static files (frontend) ---
     frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
     if frontend_dir.is_dir():
-        app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+        app.mount("/static", StaticFiles(directory=str(frontend_dir), html=True), name="static")
 
         # Serve index.html at root
         from fastapi.responses import FileResponse
