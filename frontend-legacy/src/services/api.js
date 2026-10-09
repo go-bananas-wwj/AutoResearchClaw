@@ -65,4 +65,22 @@ const API = {
   hitlFile(id, path) { return this.get(`/runs/${id}/hitl/file?path=${encodeURIComponent(path)}`); },
   hitlInterventions(id) { return this.get(`/runs/${id}/hitl/interventions`); },
   hitlRespond(id, body) { return this.post(`/runs/${id}/hitl/respond`, body); },
+  paperPull(id, language) {
+    return this.post(`/runs/${id}/overleaf/pull?language=${encodeURIComponent(language || 'zh')}`);
+  },
+  paperPush(id, language) {
+    return this.post(`/runs/${id}/overleaf/push?language=${encodeURIComponent(language || 'zh')}`);
+  },
+  paperAnnotations(id, language) {
+    return this.get(`/runs/${id}/paper/annotations?language=${encodeURIComponent(language || 'zh')}`);
+  },
+  paperRevise(id, language, instruction) {
+    return this.post(`/runs/${id}/paper/revise`, { language: language || 'zh', instruction: instruction || '' });
+  },
+  paperTranslate(id) {
+    return this.post(`/runs/${id}/paper/translate`, {});
+  },
+  paperVersions(id, language) {
+    return this.get(`/runs/${id}/paper/versions?language=${encodeURIComponent(language || 'zh')}`);
+  },
 };

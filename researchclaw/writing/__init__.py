@@ -6,10 +6,12 @@ from researchclaw.writing.annotations import (
     parse_annotations,
 )
 from researchclaw.writing.reviser import PaperReviser
+from researchclaw.writing.translator import PaperTranslator
 
 __all__ = [
     "parse_annotations",
     "diff_versions",
     "load_annotation_report",
     "PaperReviser",
+    "PaperTranslator",
 ]

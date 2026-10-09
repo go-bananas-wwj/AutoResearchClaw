@@ -108,6 +108,40 @@
     'Invalid stage number.': '无效的阶段编号。',
     'truncated': '已截断',
     'just now': '刚刚',
+    /* Paper Review（Overleaf 批注改稿） */
+    'Paper Review': '论文批注改稿',
+    'Language': '语言',
+    'Pull from Overleaf': '拉取 Overleaf 改动',
+    'Push to Overleaf': '推送到 Overleaf',
+    'View Annotations': '查看批注',
+    'Revise by Annotations': '按批注改稿',
+    'Translate to English': '翻译成英文版',
+    'Translating… this may take a few minutes': '翻译中…可能需要几分钟',
+    'Translate the finalized Chinese paper to English (IEEE format) and push to Overleaf en/?': '将中文定稿翻译成英文版（IEEE 格式）并推送到 Overleaf en/ 目录？',
+    'numbers added by translation': '个翻译新增的数字',
+    'numbers dropped by translation': '个翻译丢失的数字',
+    'Confirm Revise': '确认改稿',
+    'Revising… this may take a few minutes': '改稿中…可能需要几分钟',
+    'Pulled from Overleaf': '已从 Overleaf 拉取',
+    'Pushed to Overleaf': '已推送到 Overleaf',
+    'changed': '个远程文件变更',
+    'copied': '个文件复制',
+    'Revise complete': '改稿完成',
+    'applied comments': '条批注已应用',
+    'applied edits': '处修改已应用',
+    'pushed to': '已推送至',
+    'Annotations': '批注与修改',
+    'Comments': '批注',
+    'No comments.': '暂无批注。',
+    'Edits': '直接修改',
+    'No direct edits.': '暂无直接修改。',
+    'Before': '修改前',
+    'After': '修改后',
+    'No pulled user version yet — pull from Overleaf first.': '还没有拉回的用户版本——请先从 Overleaf 拉取。',
+    'Click "View Annotations" or pull from Overleaf to load the annotation report.': '点击「查看批注」或先从 Overleaf 拉取以载入批注解析报告。',
+    'Versions': '历史版本',
+    'No versions yet.': '暂无历史版本。',
+    'Optional extra instruction, e.g. 把讨论部分压缩一半': '可选附加指令，例：把讨论部分压缩一半',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */
@@ -143,6 +177,7 @@
     [/^(\d+)m ago$/, '$1 分钟前'],
     [/^(\d+)h ago$/, '$1 小时前'],
     [/^(\d+)d ago$/, '$1 天前'],
+    [/^(\d+) numbers reverted to verified values$/, '$1 个数字已回退为已验证值'],
   ];
 
   /* ---------- 语言状态 ---------- */

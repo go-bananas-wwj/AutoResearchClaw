@@ -439,6 +439,36 @@ body {
 }
 .gate-run-row:hover { background: var(--bg-tertiary); }
 
+/* Gate Console — Paper Review */
+.gate-notice { margin: 10px 0; font-size: 13px; }
+
+.gate-toggle { padding: 4px 12px; font-size: 12px; }
+.gate-toggle.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.08); }
+
+.gate-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+.gate-anno-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-secondary);
+}
+
+.gate-edit-before,
+.gate-edit-after { max-height: 160px; margin-top: 6px; }
+.gate-edit-before { color: var(--error); text-decoration: line-through; }
+.gate-edit-after { color: var(--success); }
+
+.gate-version-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
 @media (max-width: 768px) {
   .gate-layout { grid-template-columns: 1fr; }
 }

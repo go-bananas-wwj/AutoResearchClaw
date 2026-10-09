@@ -20,12 +20,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SHARED_DIR = REPO_ROOT / ".overleaf" / "papers"  # 共享克隆（已加入 .gitignore）
 
 
-def _find_deliverables(run_dir: Path):
-    """定位 run 的论文产物（tex/bib/figures），返回 (tex, bib, figures_dir)。"""
+def _find_deliverables(run_dir: Path, tex_name: str = "paper.tex"):
+    """定位 run 的论文产物（tex/bib/figures），返回 (tex, bib, figures_dir)。
+
+    tex_name 默认 paper.tex；英文定稿等场景可传 paper_en.tex。
+    """
     base = run_dir / "deliverables"
     if not base.is_dir():
         base = run_dir
-    tex = base / "paper.tex"
+    tex = base / tex_name
     if not tex.exists():
         cands = sorted(base.glob("*.tex"))
         tex = cands[0] if cands else None
@@ -49,21 +52,28 @@ def sync_run_to_overleaf(
     run_id: str,
     config: Any,
     language: str | None = None,
+    tex_name: str = "paper.tex",
 ) -> dict[str, Any]:
     """把指定 run 的论文产物同步到 Overleaf 共享仓库。
 
     按语言推送到 ``runs/<run_id>/<language>/``（zh 中文稿 / en 英文定稿），
-    无 language 时维持旧行为推 ``runs/<run_id>/``。
+    无 language 时维持旧行为推 ``runs/<run_id>/``。tex_name 指定推送哪个
+    tex（英文定稿传 paper_en.tex）；en 语言缺省自动取 paper_en.tex（不存在
+    时回退 paper.tex）。
     """
     cfg = getattr(config, "overleaf", None)
     if not cfg or not getattr(cfg, "enabled", False) or not getattr(cfg, "git_url", ""):
         return {"ok": False, "reason": "overleaf sync not enabled in config"}
 
-    tex, bib, figs = _find_deliverables(run_dir)
+    lang = language if language is not None else _paper_language(config)
+    if lang == "en" and tex_name == "paper.tex" and (
+        run_dir / "deliverables" / "paper_en.tex"
+    ).is_file():
+        tex_name = "paper_en.tex"
+
+    tex, bib, figs = _find_deliverables(run_dir, tex_name)
     if tex is None:
         return {"ok": False, "reason": f"no .tex found under {run_dir}"}
-
-    lang = language if language is not None else _paper_language(config)
     subdir = f"runs/{run_id}/{lang}" if lang else f"runs/{run_id}"
 
     SHARED_DIR.parent.mkdir(parents=True, exist_ok=True)

@@ -63,3 +63,18 @@ async def paper_versions(run_id: str, language: str = "zh") -> dict[str, Any]:
         for p in sorted(vdir.glob("*.tex")):
             versions.append({"file": p.name, "mtime": p.stat().st_mtime})
     return {"run_id": run_id, "language": language, "versions": versions}
+
+
+@router.post("/runs/{run_id}/paper/translate")
+async def paper_translate(run_id: str) -> dict[str, Any]:
+    """中文定稿 → 英文 IEEE 版（LLM 翻译 + 数值保真，可能 2-5 分钟，放线程池）。"""
+    run_dir = _validated_run_dir(run_id)
+    config = _get_app_state().get("config")
+    from researchclaw.writing.translator import PaperTranslator
+
+    try:
+        translator = PaperTranslator(config)
+        return await asyncio.to_thread(translator.translate, run_dir, run_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("paper translate failed for %s", run_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

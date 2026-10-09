@@ -16,6 +16,19 @@ const GateConsole = {
   _selectToken: 0,
   _recent: [],
   _historyRunId: null,
+  /* Paper Review 区状态 */
+  _paperRuns: [],
+  _paperRunId: null,
+  _paperLang: 'zh',
+  _paperBusy: null,           // 'pull' | 'push' | 'revise'
+  _paperNotice: null,         // {msg, isErr}
+  _paperAnnotations: undefined,  // undefined=未加载 null=加载中 object=已加载
+  _paperAnnErr: null,
+  _paperReviseOpen: false,
+  _paperReviseResult: null,   // 改稿响应或 {error}
+  _paperVersions: null,       // null=加载中
+  _paperVerErr: null,
+  _paperToken: 0,
 
   /* ---------- 生命周期 ---------- */
 
@@ -29,6 +42,10 @@ const GateConsole = {
           </div>
           <div id="gate-detail"></div>
         </div>
+        <div class="card" id="gate-paper" style="margin-top:16px">
+          <h2>Paper Review</h2>
+          <div id="gate-paper-body"><p style="color:var(--text-muted)">Loading...</p></div>
+        </div>
         <div class="card" style="margin-top:16px">
           <h2>Recent Runs</h2>
           <div id="gate-recent"><p style="color:var(--text-muted)">Loading...</p></div>
@@ -39,6 +56,7 @@ const GateConsole = {
     this._startPoll();
     this._refreshWaiting();
     this._loadRecent();
+    this._loadPaper();
   },
 
   destroy() { this._clearPoll(); },
@@ -425,6 +443,369 @@ const GateConsole = {
     if (this._historyRunId !== runId) return;
     const el2 = document.getElementById('gate-history');
     if (el2) el2.innerHTML = head + this._timelineHtml(items);
+  },
+
+  /* ---------- Paper Review：Overleaf 批注改稿 ---------- */
+
+  async _loadPaper() {
+    if (!document.getElementById('gate-paper-body')) return;
+    try {
+      const r = await API.listRuns();
+      this._paperRuns = (r.runs || []).slice(0, 20);
+    } catch (e) {
+      this._paperRuns = [];
+    }
+    if (!this._paperRunId || !this._paperRuns.some(r => r.run_id === this._paperRunId)) {
+      this._paperRunId = this._paperRuns.length ? this._paperRuns[0].run_id : null;
+    }
+    this._updatePaper();
+    if (this._paperRunId) this._paperFetchVersions();
+  },
+
+  _updatePaper() {
+    const el = document.getElementById('gate-paper-body');
+    if (el) el.innerHTML = this._paperBodyHtml();
+  },
+
+  _paperBodyHtml() {
+    if (!this._paperRuns.length) {
+      return '<p style="color:var(--text-muted)">No runs found.</p>';
+    }
+    const busy = !!this._paperBusy;
+    const opts = this._paperRuns.map(r =>
+      `<option value="${this._esc(r.run_id)}"${r.run_id === this._paperRunId ? ' selected' : ''}>${this._esc(r.run_id)}</option>`
+    ).join('');
+    const langBtn = l =>
+      `<button class="gate-btn gate-toggle${this._paperLang === l ? ' active' : ''}"${busy ? ' disabled' : ''} onclick="GateConsole._paperSetLang('${l}')">${l}</button>`;
+    const btn = (kind, label, cls) => {
+      const loading = this._paperBusy === kind;
+      const text = loading && kind === 'revise'
+        ? I18N.t('Revising… this may take a few minutes')
+        : I18N.t(label) + (loading ? ' …' : '');
+      return `<button class="${cls}"${busy ? ' disabled' : ''} onclick="GateConsole._paperAct('${kind}')">${this._esc(text)}</button>`;
+    };
+    const notice = this._paperNotice
+      ? `<div class="gate-notice" style="color:${this._paperNotice.isErr ? 'var(--error)' : 'var(--success)'}">${this._esc(this._paperNotice.msg)}</div>`
+      : '';
+    let revisePanel = '';
+    if (this._paperReviseOpen && !busy) {
+      revisePanel = `
+        <div style="margin-top:10px">
+          <textarea id="gate-paper-instruction" class="gate-textarea" rows="3"
+                    placeholder="Optional extra instruction, e.g. 把讨论部分压缩一半"></textarea>
+          <div style="margin-top:6px;display:flex;gap:8px">
+            <button class="gate-btn primary" onclick="GateConsole._paperSubmitRevise()">${I18N.t('Confirm Revise')}</button>
+            <button class="gate-btn" onclick="GateConsole._paperToggleRevise()">${I18N.t('Cancel')}</button>
+          </div>
+        </div>`;
+    }
+    if (this._paperBusy === 'revise') {
+      revisePanel = `<p style="font-size:13px;color:var(--warning);margin-top:10px">${this._esc(I18N.t('Revising… this may take a few minutes'))}</p>`;
+    }
+    if (this._paperBusy === 'translate') {
+      revisePanel = `<p style="font-size:13px;color:var(--warning);margin-top:10px">${this._esc(I18N.t('Translating… this may take a few minutes'))}</p>`;
+    }
+    return `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--text-secondary)">${I18N.t('Run:')}</span>
+        <select class="gate-input" style="font-family:var(--font-mono);font-size:12px;max-width:320px"
+                onchange="GateConsole._paperSelectRun(this.value)"${busy ? ' disabled' : ''}>${opts}</select>
+        <span style="font-size:13px;color:var(--text-secondary);margin-left:8px">${I18N.t('Language')}</span>
+        ${langBtn('zh')}${langBtn('en')}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        ${btn('pull', 'Pull from Overleaf', 'gate-btn')}
+        ${btn('push', 'Push to Overleaf', 'gate-btn')}
+        ${btn('annotate', 'View Annotations', 'gate-btn')}
+        ${btn('revise', 'Revise by Annotations', 'gate-btn primary')}
+        ${btn('translate', 'Translate to English', 'gate-btn')}
+      </div>
+      ${notice}
+      ${this._paperReviseResultHtml()}
+      ${revisePanel}
+      <h3 class="gate-h3">${I18N.t('Annotations')}</h3>
+      <div id="gate-paper-annotations">${this._paperAnnHtml()}</div>
+      <h3 class="gate-h3">${I18N.t('Versions')}</h3>
+      <div id="gate-paper-versions">${this._paperVersionsHtml()}</div>`;
+  },
+
+  _paperAnnHtml() {
+    if (this._paperAnnErr) {
+      return `<p style="color:var(--error);font-size:13px">${this._esc(this._paperAnnErr)}</p>`;
+    }
+    const a = this._paperAnnotations;
+    if (a === null) return '<p style="color:var(--text-muted);font-size:13px">Loading...</p>';
+    if (a === undefined) {
+      return '<p style="color:var(--text-muted);font-size:13px">Click "View Annotations" or pull from Overleaf to load the annotation report.</p>';
+    }
+    if (!a.has_user_version) {
+      return '<p style="color:var(--warning);font-size:13px">No pulled user version yet — pull from Overleaf first.</p>';
+    }
+    const comments = Array.isArray(a.comments) ? a.comments : [];
+    const edits = Array.isArray(a.edits) ? a.edits : [];
+    let html = `<h4 style="font-size:13px;margin:8px 0 6px">${I18N.t('Comments')} (${comments.length})</h4>`;
+    if (!comments.length) {
+      html += '<p style="color:var(--text-muted);font-size:13px">No comments.</p>';
+    } else {
+      html += comments.map(c => `
+        <div class="gate-anno-item">
+          <div style="font-size:13px">
+            ${c.section ? `<span class="gate-badge" style="margin-right:6px">${this._esc(c.section)}</span>` : ''}
+            ${this._esc(c.text || '')}
+          </div>
+          ${c.context ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${this._esc(this._trunc(c.context, 150))}</div>` : ''}
+        </div>`).join('');
+    }
+    html += `<h4 style="font-size:13px;margin:12px 0 6px">${I18N.t('Edits')} (${edits.length})</h4>`;
+    if (!edits.length) {
+      html += '<p style="color:var(--text-muted);font-size:13px">No direct edits.</p>';
+    } else {
+      html += edits.map(e => `
+        <div class="gate-anno-item">
+          ${e.section ? `<span class="gate-badge">${this._esc(e.section)}</span>` : ''}
+          <details style="margin-top:4px">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">${I18N.t('Before')} → ${I18N.t('After')}</summary>
+            <pre class="gate-pre gate-edit-before">${this._esc(this._trunc(e.before, 300))}</pre>
+            <pre class="gate-pre gate-edit-after">${this._esc(this._trunc(e.after, 300))}</pre>
+          </details>
+        </div>`).join('');
+    }
+    return html;
+  },
+
+  _paperVersionsHtml() {
+    if (this._paperVerErr) {
+      return `<p style="color:var(--error);font-size:13px">${this._esc(this._paperVerErr)}</p>`;
+    }
+    const v = this._paperVersions;
+    if (v === null) return '<p style="color:var(--text-muted);font-size:13px">Loading...</p>';
+    if (!v.length) return '<p style="color:var(--text-muted);font-size:13px">No versions yet.</p>';
+    return v.map(item => `
+      <div class="gate-version-row">
+        <span style="font-family:var(--font-mono);font-size:12px;flex:1;word-break:break-all">${this._esc(item.name)}</span>
+        <span style="color:var(--text-muted);font-size:12px">${this._esc(item.time)}</span>
+      </div>`).join('');
+  },
+
+  _paperReviseResultHtml() {
+    const r = this._paperReviseResult;
+    if (!r) return '';
+    if (r.error) {
+      return `<div class="gate-notice" style="color:var(--error)">${this._esc(r.error)}</div>`;
+    }
+    const pushedCount = Array.isArray(r.pushed) ? r.pushed.length : (r.pushed ? 1 : 0);
+    const warn = (Array.isArray(r.reverted_numbers) && r.reverted_numbers.length)
+      ? `<div style="color:var(--warning);margin-top:4px">${this._esc(I18N.t(`${r.reverted_numbers.length} numbers reverted to verified values`))}</div>`
+      : '';
+    const numWarn = (arr, labelKey) => (Array.isArray(arr) && arr.length)
+      ? `<div style="color:var(--warning);margin-top:4px">${arr.length} ${this._esc(I18N.t(labelKey))}: ${this._esc(this._trunc(arr.join(', '), 120))}</div>`
+      : '';
+    return `
+      <div class="gate-notice" style="color:var(--success)">
+        ${this._esc(I18N.t('Revise complete'))}: version ${this._esc(r.version != null ? r.version : '—')}
+        · ${this._esc(r.applied_comments != null ? r.applied_comments : 0)} ${this._esc(I18N.t('applied comments'))}
+        · ${this._esc(r.applied_edits != null ? r.applied_edits : 0)} ${this._esc(I18N.t('applied edits'))}
+        ${r.folder ? ` · ${this._esc(I18N.t('pushed to'))} ${this._esc(r.folder)} (${pushedCount})` : ''}
+        ${r.reason ? `<div style="margin-top:4px;color:var(--text-secondary)">${this._esc(r.reason)}</div>` : ''}
+        ${warn}
+        ${numWarn(r.added_numbers, 'numbers added by translation')}
+        ${numWarn(r.dropped_numbers, 'numbers dropped by translation')}
+      </div>`;
+  },
+
+  _paperResetRunState() {
+    this._paperNotice = null;
+    this._paperAnnotations = undefined;
+    this._paperAnnErr = null;
+    this._paperReviseOpen = false;
+    this._paperReviseResult = null;
+    this._paperVersions = null;
+    this._paperVerErr = null;
+  },
+
+  _paperSelectRun(runId) {
+    if (this._paperBusy || runId === this._paperRunId) return;
+    ++this._paperToken;
+    this._paperRunId = runId;
+    this._paperResetRunState();
+    this._updatePaper();
+    this._paperFetchVersions();
+  },
+
+  _paperSetLang(l) {
+    if (this._paperBusy || this._paperLang === l) return;
+    ++this._paperToken;
+    this._paperLang = l;
+    this._paperResetRunState();
+    this._updatePaper();
+    this._paperFetchVersions();
+  },
+
+  async _paperAct(kind) {
+    const runId = this._paperRunId;
+    if (!runId || this._paperBusy) return;
+    if (kind === 'revise') { this._paperToggleRevise(); return; }
+    if (kind === 'annotate') { this._paperFetchAnnotations(); return; }
+    if (kind === 'translate') { this._paperDoTranslate(); return; }
+    const token = ++this._paperToken;
+    this._paperBusy = kind;
+    this._paperNotice = null;
+    this._updatePaper();
+    try {
+      if (kind === 'pull') {
+        const r = await API.paperPull(runId, this._paperLang);
+        if (token !== this._paperToken) return;
+        const ch = (r.changed_remote || []).length;
+        const cp = (r.copied || []).length;
+        this._paperNotice = {
+          msg: `${I18N.t('Pulled from Overleaf')}: ${ch} ${I18N.t('changed')}, ${cp} ${I18N.t('copied')}`,
+          isErr: false,
+        };
+      } else if (kind === 'push') {
+        const r = await API.paperPush(runId, this._paperLang);
+        if (token !== this._paperToken) return;
+        const n = Array.isArray(r.pushed) ? r.pushed.length : (r.pushed || 0);
+        this._paperNotice = {
+          msg: `${I18N.t('Pushed to Overleaf')}: ${r.folder || ''} (${n})`,
+          isErr: false,
+        };
+      }
+    } catch (e) {
+      if (token !== this._paperToken) return;
+      this._paperNotice = { msg: this._errDetail(e), isErr: true };
+    }
+    this._paperBusy = null;
+    this._updatePaper();
+    if (kind === 'pull' && this._paperNotice && !this._paperNotice.isErr) {
+      this._paperFetchAnnotations();  // Pull 成功后自动刷新批注报告
+    }
+    this._paperFetchVersions();
+  },
+
+  async _paperDoTranslate() {
+    const runId = this._paperRunId;
+    if (!runId || this._paperBusy) return;
+    if (!confirm(I18N.t('Translate the finalized Chinese paper to English (IEEE format) and push to Overleaf en/?'))) return;
+    const token = ++this._paperToken;
+    this._paperBusy = 'translate';
+    this._paperNotice = null;
+    this._paperReviseResult = null;
+    this._updatePaper();
+    try {
+      // LLM 翻译可能 2-5 分钟：不设短超时，期间按钮禁用并显示加载态
+      const r = await API.paperTranslate(runId);
+      if (token !== this._paperToken) return;
+      this._paperReviseResult = r;
+    } catch (e) {
+      if (token !== this._paperToken) return;
+      this._paperReviseResult = { error: this._errDetail(e) };
+    }
+    this._paperBusy = null;
+    this._updatePaper();
+    this._paperFetchVersions();
+  },
+
+  _paperToggleRevise() {
+    if (this._paperBusy) return;
+    this._paperReviseOpen = !this._paperReviseOpen;
+    this._updatePaper();
+  },
+
+  async _paperSubmitRevise() {
+    const runId = this._paperRunId;
+    if (!runId || this._paperBusy) return;
+    const ta = document.getElementById('gate-paper-instruction');
+    const instruction = ta ? ta.value.trim() : '';
+    const token = ++this._paperToken;
+    this._paperBusy = 'revise';
+    this._paperNotice = null;
+    this._paperReviseResult = null;
+    this._updatePaper();
+    try {
+      // LLM 调用可能 1-3 分钟：不设短超时，期间按钮禁用并显示加载态
+      const r = await API.paperRevise(runId, this._paperLang, instruction);
+      if (token !== this._paperToken) return;
+      this._paperReviseResult = r;
+      this._paperReviseOpen = false;
+    } catch (e) {
+      if (token !== this._paperToken) return;
+      this._paperReviseResult = { error: this._errDetail(e) };
+    }
+    this._paperBusy = null;
+    this._updatePaper();
+    this._paperFetchVersions();
+  },
+
+  async _paperFetchAnnotations() {
+    const runId = this._paperRunId;
+    if (!runId) return;
+    const token = this._paperToken;
+    this._paperAnnotations = null;
+    this._paperAnnErr = null;
+    this._updatePaper();
+    try {
+      const r = await API.paperAnnotations(runId, this._paperLang);
+      if (token !== this._paperToken) return;
+      this._paperAnnotations = r;
+    } catch (e) {
+      if (token !== this._paperToken) return;
+      this._paperAnnotations = undefined;
+      this._paperAnnErr = this._errDetail(e);
+    }
+    this._updatePaper();
+  },
+
+  async _paperFetchVersions() {
+    const runId = this._paperRunId;
+    if (!runId) return;
+    const token = this._paperToken;
+    this._paperVersions = null;
+    this._paperVerErr = null;
+    this._updatePaper();
+    try {
+      const r = await API.paperVersions(runId, this._paperLang);
+      if (token !== this._paperToken) return;
+      this._paperVersions = this._paperNormVersions(r);
+    } catch (e) {
+      if (token !== this._paperToken) return;
+      this._paperVersions = [];
+      this._paperVerErr = this._errDetail(e);
+    }
+    this._updatePaper();
+  },
+
+  // 版本列表响应字段以后端为准，做容错归一化
+  _paperNormVersions(raw) {
+    const arr = Array.isArray(raw) ? raw
+      : (raw && (raw.versions || raw.snapshots || raw.files)) || [];
+    return arr.map(v => {
+      if (typeof v === 'string') return { name: v, time: '' };
+      if (!v || typeof v !== 'object') return { name: String(v), time: '' };
+      const name = v.name || v.filename || v.file || v.path || JSON.stringify(v);
+      let time = v.mtime || v.modified || v.time || v.timestamp || v.created || '';
+      if (typeof time === 'number') {
+        time = new Date(time > 1e12 ? time : time * 1000).toLocaleString();
+      }
+      return { name: String(name), time: String(time) };
+    });
+  },
+
+  _trunc(s, n) {
+    const str = String(s == null ? '' : s);
+    return str.length > n ? str.slice(0, n) + '…' : str;
+  },
+
+  // API 错误信息里尽量提取 FastAPI 的 detail 字段
+  _errDetail(e) {
+    let m = String((e && e.message) || e);
+    const i = m.indexOf('{');
+    if (i >= 0) {
+      try {
+        const d = JSON.parse(m.slice(i)).detail;
+        if (d) m = typeof d === 'string' ? d : JSON.stringify(d);
+      } catch (_) { /* 保留原始信息 */ }
+    }
+    return m;
   },
 
   /* ---------- 工具 ---------- */
