@@ -100,8 +100,22 @@ def pull_run_from_overleaf(
 
     SHARED_DIR.parent.mkdir(parents=True, exist_ok=True)
     sync = OverleafSync(git_url=cfg.git_url, branch=cfg.branch, auto_push=False)
+    # setup() 对已存在的克隆会先 pull 一次，pull_changes() 再记 old_head 就
+    # 永远看不到变更（2026-10-09 实测 changed_remote 恒为空）。所以在 setup
+    # 之前先记 HEAD，之后用 diff 计算这两个点之间的变更。
+    old_head = ""
+    if (SHARED_DIR / ".git").exists():
+        try:
+            old_head = sync._git_in(SHARED_DIR, "rev-parse", "HEAD").strip()
+        except Exception:  # noqa: BLE001
+            old_head = ""
     sync.setup(run_dir, local_dir=SHARED_DIR)
-    changed = sync.pull_changes()
+    new_head = sync._git("rev-parse", "HEAD").strip()
+    if old_head and old_head != new_head:
+        diff_output = sync._git("diff", "--name-only", old_head, new_head)
+        changed = [f.strip() for f in diff_output.splitlines() if f.strip()]
+    else:
+        changed = []
 
     prefix = f"runs/{run_id}/{language}/"
     dest_dir = run_dir / "paper_annotations" / language

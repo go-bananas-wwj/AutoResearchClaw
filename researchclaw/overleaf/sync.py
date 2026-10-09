@@ -151,6 +151,19 @@ class OverleafSync:
 
     # ── git helpers ───────────────────────────────────────────────
 
+    @staticmethod
+    def _git_in(repo_dir: Path, *args: str) -> str:
+        """Run a git command in an arbitrary repo directory (setup 前用)。"""
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0 and "conflict" not in result.stderr.lower():
+            raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+        return result.stdout
+
     def _git(self, *args: str) -> str:
         """Run a git command in the local repo directory."""
         cmd = ["git", "-C", str(self.local_dir), *args]
