@@ -52,6 +52,44 @@ _ZH_REVIEW_NOTE = (
 )
 
 
+_EVOLUTION_DUMP_START = re.compile(
+    r"^#{1,4}\s*(?:Learned?\s+Skills|Lessons)\s+from\s+Prior\s+Runs\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_EVOLUTION_DUMP_END = re.compile(
+    r"^.*(?:Use these lessons to avoid repeating past mistakes"
+    r"|Apply these skills proactively to improve quality)\.?\s*$",
+    re.MULTILINE,
+)
+
+
+def _strip_evolution_dump(text: str) -> str:
+    """剔除 LLM 把 evolution overlay（经验教训/arc-* 技能）原样写进论文的段落。
+
+    弱指令遵循模型会把 prompt 里的 overlay 当正文输出（2026-10-09 zh 重跑
+    实测：5 个 ~/.metaclaw/skills/arc-* 技能全文混进 paper.tex）。策略：
+    找 overlay 起始 heading，删到结束标记行；无结束标记则删到文末——
+    「Lessons/Skills from Prior Runs」这种章节名只可能来自 overlay，
+    正常论文不会有，误伤风险可忽略。循环处理多个 overlay 块。
+    """
+    for _ in range(5):
+        m_start = _EVOLUTION_DUMP_START.search(text)
+        if not m_start:
+            return text
+        m_end = _EVOLUTION_DUMP_END.search(text, m_start.start())
+        stripped = (
+            text[: m_start.start()] + text[m_end.end():]
+            if m_end
+            else text[: m_start.start()]
+        )
+        logger.warning(
+            "剔除 LLM 写入正文的 evolution overlay 段落（%d 字符）",
+            len(text) - len(stripped),
+        )
+        text = stripped
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Helpers imported from executor.py (not yet moved to _helpers.py).
 # Lazy-imported inside functions to avoid circular import when executor.py
@@ -1611,6 +1649,15 @@ def _execute_export_publish(
         _export_user = sp.user
         if _export_guidance:
             _export_user = _export_guidance + "\n\n" + _export_user
+        if _paper_language(config) == "zh":
+            _export_user += (
+                "\n\n重要：论文为中文定稿，全文保持中文输出（章节名、正文、图表标题），"
+                "严禁翻译成英文；仅参考文献条目与代码标识符可保留英文。"
+            )
+        _export_user += (
+            "\n\n注意：prompt 中的 Lessons/Skills（经验教训/技能条目）仅供你改进写作质量，"
+            "严禁把它们写入论文正文或作为章节输出。"
+        )
         resp = _chat_with_prompt(
             llm,
             sp.system,
@@ -1628,6 +1675,7 @@ def _execute_export_publish(
             final_paper = revised
     else:
         final_paper = revised
+    final_paper = _strip_evolution_dump(final_paper)
     if not final_paper.strip():
         final_paper = "# Final Paper\n\nNo content generated."
 
@@ -1664,14 +1712,21 @@ def _execute_export_publish(
         # Insert degradation notice after abstract
         _deg_score = _deg_signal.get("score", "N/A")
         _deg_threshold = _deg_signal.get("threshold", "N/A")
-        _deg_notice = (
-            "\n\n> **Note:** This paper was produced in degraded mode. "
-            f"Quality gate score ({_deg_score}/{_deg_threshold}) was below "
-            "threshold. Unverified numerical results in tables have been "
-            "replaced with `---` and require independent verification.\n\n"
-        )
+        if _paper_language(config) == "zh":
+            _deg_notice = (
+                "\n\n> **说明：** 本论文在降级模式下产出。"
+                f"质量门评分（{_deg_score}/{_deg_threshold}）低于阈值。"
+                "表格中未经验证的数值已替换为 `---`，需独立核实。\n\n"
+            )
+        else:
+            _deg_notice = (
+                "\n\n> **Note:** This paper was produced in degraded mode. "
+                f"Quality gate score ({_deg_score}/{_deg_threshold}) was below "
+                "threshold. Unverified numerical results in tables have been "
+                "replaced with `---` and require independent verification.\n\n"
+            )
         # Try to insert after ## Abstract section
-        _abstract_markers = ["## Abstract\n", "# Abstract\n"]
+        _abstract_markers = ["## Abstract\n", "# Abstract\n", "## 摘要\n", "# 摘要\n"]
         _notice_inserted = False
         for _marker in _abstract_markers:
             if _marker in final_paper:
