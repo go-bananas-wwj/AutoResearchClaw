@@ -15,6 +15,7 @@
     ideation: IdeationView,
     settings: SettingsView,
     wizard: WizardFlow,
+    gates: GateConsole,
   };
 
   let currentView = 'dashboard';
@@ -24,6 +25,9 @@
 
   function navigateTo(viewName) {
     if (!views[viewName]) return;
+    // 视图切换前给旧视图清理机会（定时器等）
+    const prevView = views[currentView];
+    if (prevView && prevView.destroy && viewName !== currentView) prevView.destroy();
     currentView = viewName;
 
     // Update nav

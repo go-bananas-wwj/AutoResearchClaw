@@ -86,6 +86,28 @@
     'Approve': '批准', 'Reject': '拒绝',
     'Guidance to inject (optional)': '要注入的指导意见（可选）',
     'Inject guidance': '注入指导',
+    /* GateConsole */
+    'Gate Console': '门控控制台',
+    'Waiting Gates': '等待中的门控',
+    'No gates waiting.': '暂无等待中的门控。',
+    'Select a gate from the left to view details.': '从左侧选择一个门控查看详情。',
+    'Context Summary': '上下文摘要',
+    'Output Files': '输出文件', 'No output files.': '暂无输出文件。',
+    'Intervention History': '干预历史', 'No interventions recorded.': '暂无干预记录。',
+    'Actions': '操作',
+    'Skip': '跳过', 'Abort': '中止', 'Inject': '注入', 'Edit': '编辑', 'Rollback': '回滚',
+    'Collaborate': '协作', 'Take Over': '接管', 'Resume': '恢复',
+    'Submit': '提交', 'Cancel': '取消',
+    'Target stage': '目标阶段',
+    'Edit output files, then submit.': '编辑输出文件后点击提交。',
+    'This gate is no longer waiting.': '该门控已不在等待状态。',
+    'Gate already resolved': '门控已被处理（可能已被其它会话响应）',
+    'Response sent.': '已提交响应。',
+    'Respond failed': '响应提交失败',
+    'Are you sure?': '确定执行该操作吗？',
+    'Invalid stage number.': '无效的阶段编号。',
+    'truncated': '已截断',
+    'just now': '刚刚',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */
@@ -118,6 +140,9 @@
     [/^Stage: (\d+)$/, '阶段：$1'],
     [/^Phase ([A-H])$/, '阶段组 $1'],
     [/^Stage failed: (.*)$/, '阶段失败：$1'],
+    [/^(\d+)m ago$/, '$1 分钟前'],
+    [/^(\d+)h ago$/, '$1 小时前'],
+    [/^(\d+)d ago$/, '$1 天前'],
   ];
 
   /* ---------- 语言状态 ---------- */

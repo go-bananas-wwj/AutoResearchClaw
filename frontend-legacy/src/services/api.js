@@ -60,4 +60,9 @@ const API = {
     return this.get(`/reproduce/report${q ? `?${q}` : ''}`);
   },
   reproduceStop() { return this.post('/reproduce/stop'); },
+  hitlWaiting() { return this.get('/hitl/waiting'); },
+  hitlRunWaiting(id) { return this.get(`/runs/${id}/hitl/waiting`); },
+  hitlFile(id, path) { return this.get(`/runs/${id}/hitl/file?path=${encodeURIComponent(path)}`); },
+  hitlInterventions(id) { return this.get(`/runs/${id}/hitl/interventions`); },
+  hitlRespond(id, body) { return this.post(`/runs/${id}/hitl/respond`, body); },
 };
