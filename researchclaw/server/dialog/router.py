@@ -47,9 +47,15 @@ async def route_message(raw_message: str, client_id: str) -> str:
         msg_data = json.loads(raw_message)
         text = msg_data.get("message", msg_data.get("text", raw_message))
     except (json.JSONDecodeError, TypeError):
+        msg_data = None
         text = raw_message
 
     session = _session_manager.get_or_create(client_id)
+    # 前端项目上下文绑定：消息带 run_id 时显式切换对话的当前项目
+    if isinstance(msg_data, dict):
+        rid = msg_data.get("run_id")
+        if isinstance(rid, str) and rid.startswith("rc-"):
+            session.current_run = rid
     session.add_message("user", text)
 
     # 研究任务书确认流程（BRIEF flow）进行中 → 所有消息交给步骤机（其内部处理取消/上一步）
