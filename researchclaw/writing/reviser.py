@@ -38,6 +38,12 @@ def _next_version(versions_dir: Path) -> int:
     return n + 1
 
 
+def _output_budget(prompt: str) -> int:
+    """按 prompt 规模估算输出 token 预算：全文改稿/翻译的输出与底稿同量级，
+    默认 4096 必然截断。按 ~2.5 字符/token（中英 LaTeX 混合）估算，上下限保护。"""
+    return max(8192, min(int(len(prompt) / 2.5), 16384))
+
+
 def _replace_number(line: str, value: float, repl: str) -> tuple[str, int]:
     """把行内 value 的常见书写形式替换为 repl（词边界正则）。"""
     for cand in (
@@ -105,8 +111,24 @@ class PaperReviser:
         resp = self.llm.chat(
             [{"role": "user", "content": prompt}],
             system="你是论文写作助手，按批注修改 LaTeX 论文，只输出完整 .tex 源码。",
+            max_tokens=_output_budget(prompt),
         )
         new_tex = _strip_fence(resp.content)
+        # 截断守卫：LLM 输出明显短于底稿即视为截断，不写回（2026-10-09 实测：
+        # 默认 4096 max_tokens 把 47KB 论文截到只剩 3 节还推上了 Overleaf）
+        if len(new_tex) < 0.8 * len(current):
+            logger.warning(
+                "revise 输出疑似截断（%d/%d 字符），放弃写回",
+                len(new_tex), len(current),
+            )
+            return {
+                "ok": False,
+                "reason": (
+                    f"LLM 输出被截断（{len(new_tex)}/{len(current)} 字符），"
+                    "未写回任何文件；请缩小批注范围或分批处理"
+                ),
+                "truncated": True,
+            }
 
         reverted: list[dict] = []
         fixed: list[dict] = []

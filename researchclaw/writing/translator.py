@@ -36,7 +36,12 @@ class PaperTranslator:
         self.llm = llm
 
     def translate(self, run_dir: Path, run_id: str) -> dict:
-        from researchclaw.writing.reviser import PaperReviser, _next_version, _strip_fence
+        from researchclaw.writing.reviser import (
+            PaperReviser,
+            _next_version,
+            _output_budget,
+            _strip_fence,
+        )
 
         run_dir = Path(run_dir)
         deliverables = run_dir / "deliverables"
@@ -57,8 +62,21 @@ class PaperTranslator:
                 "paper into English for an IEEE journal submission. Output "
                 "only the complete .tex source."
             ),
+            max_tokens=_output_budget(prompt),
         )
         en_tex = _strip_fence(resp.content)
+        if len(en_tex) < 0.7 * len(zh_tex):
+            logger.warning(
+                "translate 输出疑似截断（%d/%d 字符），放弃写回",
+                len(en_tex), len(zh_tex),
+            )
+            return {
+                "ok": False,
+                "reason": (
+                    f"翻译输出被截断（{len(en_tex)}/{len(zh_tex)} 字符），未写回"
+                ),
+                "truncated": True,
+            }
         en_tex = self._force_ieee_preamble(en_tex)
 
         # 数字保真两道闸：①多重集对照（翻译不得增删数字）②registry 白名单校验

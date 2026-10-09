@@ -245,7 +245,8 @@ class TestRevise:
         vdir = run_dir / "paper_versions" / "zh"
         vdir.mkdir(parents=True)
         (vdir / "v1.tex").write_text("历史快照\n", encoding="utf-8")
-        llm = _FakeLLM("新稿\n")
+        # 假输出必须足够长，否则会触发截断守卫（输出 < 底稿 80% 拒写）
+        llm = _FakeLLM("\\section{实验}\n旧稿正文。\n改后的新稿，长度足够通过截断守卫。\n")
         reviser = PaperReviser(_minimal_config(), llm=llm)
         res = reviser.revise(run_dir, "rc-20261009-000000-abc123", "zh")
         assert res["version"] == 2
@@ -266,7 +267,7 @@ class TestRevise:
         run_dir = tmp_path / "artifacts" / "rc-20261009-000000-abc123"
         (run_dir / "deliverables").mkdir(parents=True)
         (run_dir / "deliverables" / "paper.tex").write_text("原稿\n", encoding="utf-8")
-        llm = _FakeLLM("改后\n")
+        llm = _FakeLLM("改后稿。\n")
         reviser = PaperReviser(_minimal_config(), llm=llm)
         res = reviser.revise(
             run_dir, "rc-20261009-000000-abc123", "en", "把摘要改短"
@@ -277,6 +278,18 @@ class TestRevise:
         prompt = llm.calls[0]["messages"][0]["content"]
         assert "把摘要改短" in prompt
         assert "原稿" in prompt
+    def test_revise_truncated_output_aborts(self, tmp_path):
+        """LLM 输出明显短于底稿 → 判截断，不写回任何文件（2026-10-09 实测事故）。"""
+        run_dir = self._make_run_dir(tmp_path)
+        before = (run_dir / "deliverables" / "paper.tex").read_text(encoding="utf-8")
+        llm = _FakeLLM("\\section{实验}\n只写了开头就断了")
+        reviser = PaperReviser(_minimal_config(), llm=llm)
+        res = reviser.revise(run_dir, "rc-20261009-000000-abc123", "zh")
+        assert res["ok"] is False
+        assert res["truncated"] is True
+        assert (run_dir / "deliverables" / "paper.tex").read_text(
+            encoding="utf-8"
+        ) == before  # 原稿未被污染
 
 
 if __name__ == "__main__":
