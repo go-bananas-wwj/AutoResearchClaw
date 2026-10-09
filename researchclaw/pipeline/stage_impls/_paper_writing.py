@@ -114,6 +114,19 @@ def _execute_paper_outline(
             academic_style_guide=_asg,
             venue_guidance=_outline_venue_guidance,
         )
+        # 中文先行：大纲直接用中文产出（中文章节名、字符长度目标）
+        if getattr(config.export, "paper_language", "en") == "zh":
+            import dataclasses as _dc_outline
+
+            sp = _dc_outline.replace(
+                sp,
+                user=sp.user
+                + "\n\n请用简体中文撰写这份大纲：章节名使用中文"
+                "（标题、摘要、引言、相关工作、方法、实验、结果、讨论、局限性、结论），"
+                "各节长度目标按中文字符数给出（1 英文词 ≈ 2 个中文字符）。"
+                "候选标题仍需包含一个简洁的英文方法名（2-5 字符），"
+                "形式为「方法名：中文副标题」。",
+            )
         resp = _chat_with_prompt(
             llm,
             sp.system,
@@ -399,6 +412,7 @@ def _write_paper_sections(
     venue_label: str = "NeurIPS/ICML",
     venue_guidance: str = "",
     is_hep: bool = False,
+    paper_language: str = "en",
 ) -> str:
     """Write a conference-grade paper in 3 sequential LLM calls.
 
@@ -411,7 +425,11 @@ def _write_paper_sections(
       Call 1: Title + Abstract + Introduction
       Call 2: Model / Theoretical framework + Phenomenology / Computational setup
       Call 3: Results + Discussion + Conclusions (no Broader Impact, no Related Work block)
+
+    中文先行（``paper_language="zh"``，本 fork 本地适配）：ML 路径改用中文
+    指令、中文章节名，长度按中文字符计（1 英文词 ≈ 2 字）。
     """
+    _zh = paper_language == "zh" and not is_hep
     # Render writing_structure block for injection
     try:
         _writing_structure = pm.block("writing_structure")
@@ -462,7 +480,36 @@ def _write_paper_sections(
         anti_repetition_rules = ""
 
     # --- Call 1: Title + Abstract + Introduction (+ Related Work for ML) ---
-    if is_hep:
+    if _zh:
+        call1_user = (
+            f"{preamble}\n\n"
+            f"{topic_constraint}"
+            f"{citation_instruction}\n\n"
+            f"{title_guidelines}\n\n"
+            f"{academic_style_guide}\n"
+            f"{narrative_writing_rules}\n"
+            f"{anti_hedging_rules}\n"
+            f"{anti_repetition_rules}\n\n"
+            f"请用简体中文撰写一篇 {venue_label} 水平论文的以下章节，markdown 格式。"
+            "严格遵守长度要求（按中文字符计）：\n\n"
+            "1. **标题**（硬性规则：不超过 30 个汉字。先起一个简洁的方法名（2-5 个字符的英文缩写），"
+            "再按「方法名：中文副标题」组织标题。超过 30 字将被自动拒绝。禁止「无题」。）\n"
+            "2. **摘要**（300-440 字——硬性上限，不得超过 440 字。"
+            "不要出现原始指标路径或十几位小数。）\n"
+            "3. **引言**（1600-2000 字）：现实背景动机、问题定义、结合引用的研究缺口分析、"
+            "方法概述、3-4 条贡献点（此处允许列表）、论文结构安排段落。必须引用 8-12 篇文献。\n"
+            "4. **相关工作**（1200-1600 字）：按 3-4 个主题小节组织，每个小节讨论 4-5 篇文献"
+            "并规范引用。比较不同方法、指出其局限、定位本文工作。\n\n"
+            f"论文大纲：\n{outline}\n\n"
+            "输出 markdown，章节标题用 ## 且使用中文名称（## 标题、## 摘要、## 引言、## 相关工作）。"
+            "不要写参考文献章节。\n"
+            "重要：直接从「## 标题」开始。不要输出任何前言、数据核验、条件罗列或指标枚举。"
+            "论文应读起来像正式发表的稿件，而不是数据报告。\n"
+            "写作规范：专业术语首次出现时给出英文原名（如「卷积神经网络（CNN）」）；"
+            "数学公式一律用 LaTeX；引用保持 [cite_key] 格式原样；数字必须来自提供的实验数据，"
+            "严禁编造；正文一律使用简体中文（方法名、图表文件路径除外）。"
+        )
+    elif is_hep:
         call1_user = (
             f"{preamble}\n\n"
             f"{topic_constraint}"
@@ -539,7 +586,32 @@ def _write_paper_sections(
     logger.info("Stage 17: Part 1 (Title+Abstract+Intro+Related Work) — %d chars", len(part1))
 
     # --- Call 2: Method + Experiments (ML)  OR  Model + Phenomenology (HEP) ---
-    if is_hep:
+    if _zh:
+        call2_user = (
+            f"{preamble}\n\n"
+            f"{topic_constraint}"
+            f"{exp_metrics_instruction}\n\n"
+            f"{narrative_writing_rules}\n"
+            f"{anti_hedging_rules}\n\n"
+            "引用要求：「方法」一节必须引用 3-5 篇本文方法所依赖的基础技术文献；"
+            "「实验」一节必须引用各基线方法的原始文献。引用保持 [cite_key] 格式。\n"
+            f"{citation_instruction}\n\n"
+            "你正在续写一篇中文论文。已完成的章节如下：\n\n"
+            f"---\n{part1}\n---\n\n"
+            "请保持与上文一致，续写以下章节（简体中文，长度按中文字符计）：\n\n"
+            "5. **方法**（2000-3000 字）：用数学符号（$x$、$\\theta$ 等）给出形式化问题定义，"
+            "带公式的详细算法描述、分步骤流程、复杂度分析、关键设计选择的理由。"
+            "如适用，给出算法伪代码。以连贯段落叙述——方法组成部分不要用列表堆砌。\n"
+            "6. **实验**（1600-2400 字）：详细实验设置、数据集及统计信息（规模、划分、特征）、"
+            "全部基线及其实现、超参数设置（用 markdown 表格）、评测指标的数学定义、"
+            "硬件与运行时长信息。\n"
+            "表格中的方法名：使用简短缩写（4-8 字符），并在脚注中给出缩写对照。"
+            "表格单元格中禁止出现超过 20 个字符的方法名。\n\n"
+            f"论文大纲：\n{outline}\n\n"
+            "输出 markdown，章节标题用 ## 且使用中文名称（## 方法、## 实验）。"
+            "从第 1 部分结束处继续。引用保持 [cite_key] 格式；数字必须来自提供的实验数据。"
+        )
+    elif is_hep:
         call2_user = (
             f"{preamble}\n\n"
             f"{topic_constraint}"
@@ -608,7 +680,45 @@ def _write_paper_sections(
     logger.info("Stage 17: Part 2 (Method+Experiments) — %d chars", len(part2))
 
     # --- Call 3: Results + Discussion + (Limitations) + Conclusion ---
-    if is_hep:
+    if _zh:
+        call3_user = (
+            f"{preamble}\n\n"
+            f"{topic_constraint}"
+            f"{exp_metrics_instruction}\n\n"
+            f"{narrative_writing_rules}\n"
+            f"{anti_hedging_rules}\n"
+            f"{anti_repetition_rules}\n\n"
+            "引用要求：「讨论」一节与已有工作比较时必须引用 3-5 篇文献；"
+            "「结论」可引用 1-2 篇基础性文献。引用保持 [cite_key] 格式。\n"
+            f"{citation_instruction}\n\n"
+            "你正在完成一篇中文论文。已完成的章节如下：\n\n"
+            f"---\n{part1}\n\n{part2}\n---\n\n"
+            "请保持一致，撰写最后几节（简体中文，长度按中文字符计）：\n\n"
+            "7. **结果**（1200-1600 字）：\n"
+            "   - 先给出汇总结果表（表 1）：行 = 方法，列 = 指标，单元格 = 各种子下的均值 ± 标准差，"
+            "     每列最优值加粗。每张表必须有能脱离正文理解的描述性标题，禁止只写「表 1」。\n"
+            "   - 再给出分难度（易/难）的子体系表（表 2）。\n"
+            "   - 给出统计比较表（表 3）：关键方法之间的配对 t 检验。\n"
+            "   - 禁止在正文堆砌逐个种子的原始数字——先聚合再讨论。\n"
+            "   - 至少包含 2 张图，用 markdown 图片语法：![图注](charts/filename.png)；"
+            "     其中一张必须是性能对比图。图必须在正文中被引用（「如图 1 所示，……」）。\n"
+            "8. **讨论**（800-1200 字）：关键发现的解读、意外结果、与已有工作的比较"
+            "（此处必须引用 3-5 篇文献！）、实际意义。\n"
+            "9. **局限性**（400-600 字）：如实说明适用范围、数据集、方法上的局限。"
+            "所有保留意见集中写在这里——论文其他部分不要分散出现。\n"
+            "10. **结论**（200-400 字上限——硬性限制）：2-3 句话概括贡献，1 句话说明主要发现，"
+            "1-2 句话给出 2-3 个具体的未来方向。不要重复「结果」中的具体数字，不要复述摘要。"
+            "好的结论简短且面向未来。\n\n"
+            "全部章节的格式硬性规则：\n"
+            "- 以连贯的学术段落叙述，不要用列表堆砌\n"
+            "- 禁止粘贴原始指标路径（如 'config/method_name/seed_3/primary_metric'）\n"
+            "- 数字最多保留 4 位小数\n"
+            "- 每张表必须有描述性标题（不能只是「表 1」）\n"
+            "- 伪代码用 \\begin{algorithm}，不要用 \\begin{verbatim}\n\n"
+            "输出 markdown，章节标题用 ## 且使用中文名称（## 结果、## 讨论、## 局限性、## 结论）。"
+            "不要写参考文献章节。"
+        )
+    elif is_hep:
         call3_user = (
             f"{preamble}\n\n"
             f"{topic_constraint}"
@@ -709,7 +819,7 @@ def _write_paper_sections(
     # the actual paper.  The preamble typically starts with "## Tested Conditions"
     # or similar headings and ends before "## Title".
     import re as _re_strip
-    _title_match = _re_strip.search(r"^## Title\b", draft, _re_strip.MULTILINE)
+    _title_match = _re_strip.search(r"^## (?:Title|标题)\b", draft, _re_strip.MULTILINE)
     if _title_match and _title_match.start() > 200:
         _stripped = draft[_title_match.start():]
         logger.info(
@@ -718,7 +828,9 @@ def _write_paper_sections(
         )
         draft = _stripped
 
-    total_words = len(draft.split())
+    from researchclaw.utils.text_length import count_words as _cw_draft
+
+    total_words = _cw_draft(draft, "zh" if _zh else "en")
     logger.info("Stage 17: Full draft — %d chars, ~%d words", len(draft), total_words)
 
     return draft
@@ -732,6 +844,8 @@ def _write_paper_sections(
 _BULLET_LENIENT_SECTIONS = frozenset({
     "introduction", "limitations", "limitation",
     "limitations and future work", "abstract",
+    # 中文先行
+    "引言", "绪论", "局限性", "局限", "局限性与展望", "摘要",
 })
 
 # Main body sections used for balance ratio check.
@@ -744,6 +858,8 @@ _BALANCE_SECTIONS = frozenset({
 def _validate_draft_quality(
     draft: str,
     stage_dir: Path | None = None,
+    *,
+    language: str = "en",
 ) -> dict[str, Any]:
     """Validate a paper draft for section balance and prose quality.
 
@@ -752,11 +868,19 @@ def _validate_draft_quality(
     2. Bullet-point / numbered-list density per section.
     3. Largest-to-smallest main-section word-count ratio.
 
+    中文先行（``language="zh"``）：长度按中文字符计，目标区间同步换算。
+
     Returns a dict with ``section_analysis``, ``overall_warnings``, and
     ``revision_directives``.  Optionally writes ``draft_quality.json`` to
     *stage_dir*.
     """
     from researchclaw.prompts import SECTION_WORD_TARGETS, _SECTION_TARGET_ALIASES
+    from researchclaw.utils.text_length import count_words as _cw
+    from researchclaw.utils.text_length import scale_word_targets as _swt
+
+    _zh = language == "zh"
+    _targets = _swt(SECTION_WORD_TARGETS, language)
+    _unit = "字" if _zh else "words"
 
     _heading_re = re.compile(r"^(#{1,4})\s+(.+)$", re.MULTILINE)
     matches = list(_heading_re.finditer(draft))
@@ -793,7 +917,7 @@ def _validate_draft_quality(
         else:
             # Add subsection words to parent
             _subsection_words[_current_parent] = (
-                _subsection_words.get(_current_parent, 0) + len(sec["body"].split())
+                _subsection_words.get(_current_parent, 0) + _cw(sec["body"], language)
             )
 
     for sec in sections_data:
@@ -802,44 +926,51 @@ def _validate_draft_quality(
         heading_lower: str = sec["heading_lower"]
         body: str = sec["body"]
         # BUG-24: Include subsection words in the parent's word count
-        word_count = len(body.split()) + _subsection_words.get(heading_lower, 0)
+        word_count = _cw(body, language) + _subsection_words.get(heading_lower, 0)
         canon = heading_lower
-        if canon not in SECTION_WORD_TARGETS:
+        if canon not in _targets:
             canon = _SECTION_TARGET_ALIASES.get(heading_lower, "")
         entry: dict[str, Any] = {
             "heading": sec["heading"],
             "word_count": word_count,
             "canonical": canon,
         }
-        if canon and canon in SECTION_WORD_TARGETS:
-            lo, hi = SECTION_WORD_TARGETS[canon]
+        if canon and canon in _targets:
+            lo, hi = _targets[canon]
             entry["target"] = [lo, hi]
             if word_count < int(lo * 0.7):
                 overall_warnings.append(
                     f"{sec['heading']} is severely under target "
-                    f"({word_count} words, target {lo}-{hi})"
+                    f"({word_count} {_unit}, target {lo}-{hi})"
                 )
                 revision_directives.append(
-                    f"EXPAND {sec['heading']} from {word_count} to {lo}+ words. "
+                    f"EXPAND {sec['heading']} from {word_count} to {lo}+ {_unit}. "
                     f"Add substantive content \u2014 do NOT pad with filler."
+                    if not _zh else
+                    f"扩写「{sec['heading']}」：从 {word_count} {_unit}扩写到 {lo}+ {_unit}。"
+                    f"补充实质性内容——禁止注水凑字数。"
                 )
                 entry["status"] = "severely_short"
             elif word_count < lo:
                 overall_warnings.append(
                     f"{sec['heading']} is under target "
-                    f"({word_count} words, target {lo}-{hi})"
+                    f"({word_count} {_unit}, target {lo}-{hi})"
                 )
                 revision_directives.append(
-                    f"Expand {sec['heading']} from {word_count} to {lo}+ words."
+                    f"Expand {sec['heading']} from {word_count} to {lo}+ {_unit}."
+                    if not _zh else
+                    f"扩写「{sec['heading']}」：从 {word_count} {_unit}扩写到 {lo}+ {_unit}。"
                 )
                 entry["status"] = "short"
             elif word_count > int(hi * 1.3):
                 overall_warnings.append(
                     f"{sec['heading']} exceeds target "
-                    f"({word_count} words, target {lo}-{hi})"
+                    f"({word_count} {_unit}, target {lo}-{hi})"
                 )
                 revision_directives.append(
-                    f"Compress {sec['heading']} from {word_count} to {hi} words or fewer."
+                    f"Compress {sec['heading']} from {word_count} to {hi} {_unit} or fewer."
+                    if not _zh else
+                    f"压缩「{sec['heading']}」：从 {word_count} {_unit}压缩到 {hi} {_unit}以内。"
                 )
                 entry["status"] = "long"
             else:
@@ -917,24 +1048,36 @@ def _validate_draft_quality(
     for sec in sections_data:
         hl = sec["heading_lower"]
         body_text: str = sec["body"]
-        wc = len(body_text.split())
-        if hl == "abstract" and wc > 250:
-            overall_warnings.append(
-                f"Abstract is too long: {wc} words (target: 150-220 words)"
-            )
-            revision_directives.append(
-                f"COMPRESS the Abstract from {wc} to 150-220 words. "
-                f"Remove raw metric values, redundant context, and self-references."
-            )
-        if hl in ("conclusion", "conclusions", "conclusion and future work"):
-            if wc > 300:
+        wc = _cw(body_text, language)
+        if hl in ("abstract", "摘要"):
+            _abs_max = 500 if _zh else 250
+            _abs_range = "300-440 字" if _zh else "150-220 words"
+            if wc > _abs_max:
                 overall_warnings.append(
-                    f"Conclusion is too long: {wc} words (target: 100-200 words)"
+                    f"Abstract is too long: {wc} {_unit} (target: {_abs_range})"
                 )
                 revision_directives.append(
-                    f"COMPRESS the Conclusion from {wc} to 100-200 words. "
+                    f"COMPRESS the Abstract from {wc} to {_abs_range}. "
+                    f"Remove raw metric values, redundant context, and self-references."
+                    if not _zh else
+                    f"压缩「摘要」：从 {wc} 字压缩到 {_abs_range}。"
+                    f"删除原始指标数值、冗余背景和自指表述。"
+                )
+        if hl in ("conclusion", "conclusions", "conclusion and future work",
+                  "结论", "总结"):
+            _con_max = 600 if _zh else 300
+            _con_range = "200-400 字" if _zh else "100-200 words"
+            if wc > _con_max:
+                overall_warnings.append(
+                    f"Conclusion is too long: {wc} {_unit} (target: {_con_range})"
+                )
+                revision_directives.append(
+                    f"COMPRESS the Conclusion from {wc} to {_con_range}. "
                     f"Do NOT repeat specific metric values from Results. "
                     f"Summarize findings in 2-3 sentences, then 2-3 future directions."
+                    if not _zh else
+                    f"压缩「结论」：从 {wc} 字压缩到 {_con_range}。"
+                    f"不要重复「结果」中的具体数值；2-3 句话概括发现，再给 2-3 个未来方向。"
                 )
 
     # --- Raw metric path detection (log dumps in prose) ---
@@ -1035,13 +1178,15 @@ def _validate_draft_quality(
         )
 
     # --- Related work depth check ---
-    _rw_headings = {"related work", "related works", "background", "literature review"}
+    _rw_headings = {"related work", "related works", "background", "literature review",
+                    "相关工作", "研究现状", "文献综述"}
     rw_body = ""
     for sec in sections_data:
         if sec["heading_lower"] in _rw_headings and sec["level"] <= 2:
             rw_body = sec["body"]
             break
-    if rw_body and len(rw_body.split()) > 50:
+    # 比较句式正则只覆盖英文，中文稿跳过该比例检查（避免误报）
+    if rw_body and _cw(rw_body, language) > 50 and not _zh:
         _comparative_pats = re.compile(
             r"\b(unlike|in contrast|whereas|while .+ focus|"
             r"however|differ(?:s|ent)|our (?:method|approach) .+ instead|"
@@ -1064,15 +1209,22 @@ def _validate_draft_quality(
             )
 
     # --- Statistical rigor check (result sections) ---
-    _results_headings = {"results", "experiments", "experimental results", "evaluation"}
+    _results_headings = {"results", "experiments", "experimental results", "evaluation",
+                         "结果", "实验", "实验结果"}
     results_body = ""
     for sec in sections_data:
         if sec["heading_lower"] in _results_headings and sec["level"] <= 2:
             results_body += sec["body"] + "\n"
-    if results_body and len(results_body.split()) > 100:
-        has_std = bool(re.search(r"\u00b1|\\pm|\bstd\b|\\std\b|standard deviation", results_body, re.IGNORECASE))
-        has_ci = bool(re.search(r"confidence interval|\bCI\b|95%|p-value|p\s*<", results_body, re.IGNORECASE))
-        has_seeds = bool(re.search(r"(?:seed|run|trial)s?\s*[:=]\s*\d|averaged?\s+over\s+\d+\s+(?:seed|run|trial)", results_body, re.IGNORECASE))
+    if results_body and _cw(results_body, language) > 100:
+        # 中文稿同样检查统计报告要素（±/标准差、置信区间、多种子）
+        if _zh:
+            has_std = bool(re.search(r"\u00b1|\\pm|标准差|方差|误差棒", results_body))
+            has_ci = bool(re.search(r"置信区间|显著性|p\s*[<值]|95%", results_body, re.IGNORECASE))
+            has_seeds = bool(re.search(r"种子|seed|多次运行|重复实验", results_body, re.IGNORECASE))
+        else:
+            has_std = bool(re.search(r"\u00b1|\\pm|\bstd\b|\\std\b|standard deviation", results_body, re.IGNORECASE))
+            has_ci = bool(re.search(r"confidence interval|\bCI\b|95%|p-value|p\s*<", results_body, re.IGNORECASE))
+            has_seeds = bool(re.search(r"(?:seed|run|trial)s?\s*[:=]\s*\d|averaged?\s+over\s+\d+\s+(?:seed|run|trial)", results_body, re.IGNORECASE))
         if not has_std and not has_ci and not has_seeds:
             overall_warnings.append(
                 "No statistical measures found in results (no std, CI, p-values, or multi-seed reporting)"
@@ -2302,12 +2454,13 @@ def _execute_paper_draft(
             venue_label=_paper_venue_label,
             venue_guidance=_paper_venue_guidance,
             is_hep=_paper_is_hep,
+            paper_language=getattr(config.export, "paper_language", "en"),
         )
 
         # R7: Strip LLM-generated References section — it often fabricates arXiv IDs.
         import re as _re_r7
         ref_pattern = _re_r7.compile(
-            r'^(#{1,2}\s*References.*)', _re_r7.MULTILINE | _re_r7.DOTALL
+            r'^(#{1,2}\s*(?:References|参考文献).*)', _re_r7.MULTILINE | _re_r7.DOTALL
         )
         ref_match = ref_pattern.search(draft)
         if ref_match:
@@ -2362,7 +2515,11 @@ Generated: {_utcnow_iso()}
     (stage_dir / "paper_draft.md").write_text(draft, encoding="utf-8")
 
     # Validate draft quality (section balance + bullet density)
-    _validate_draft_quality(draft, stage_dir=stage_dir)
+    _validate_draft_quality(
+        draft,
+        stage_dir=stage_dir,
+        language=getattr(config.export, "paper_language", "en"),
+    )
 
     # --- HITL: Read human guidance for paper draft ---
     guidance_file = stage_dir / "hitl_guidance.md"

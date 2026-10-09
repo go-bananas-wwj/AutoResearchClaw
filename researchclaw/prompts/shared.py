@@ -54,6 +54,27 @@ _SECTION_TARGET_ALIASES: dict[str, str] = {
     "broader impacts": "broader impact",
     "societal impact": "broader impact",
     "ethical considerations": "broader impact",
+    # 中文先行：中文章节名 → canonical
+    "摘要": "abstract",
+    "引言": "introduction",
+    "绪论": "introduction",
+    "相关工作": "related work",
+    "研究现状": "related work",
+    "文献综述": "related work",
+    "方法": "method",
+    "研究方法": "method",
+    "实验": "experiments",
+    "实验设计": "experiments",
+    "实验设置": "experiments",
+    "结果": "results",
+    "实验结果": "results",
+    "结果与分析": "results",
+    "讨论": "discussion",
+    "结论": "conclusion",
+    "总结": "conclusion",
+    "局限": "limitations",
+    "局限性": "limitations",
+    "局限性与展望": "limitations",
 }
 
 # -- Reusable blocks -----------------------------------------------------

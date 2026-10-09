@@ -543,6 +543,30 @@ _KNOWN_SECTION_NAMES = {
     "methods compared",
     "common protonet backbone",
     "preference optimization backbone",
+    # 中文先行：中文论文章节名（heading_lower 对中文无大小写变化）
+    "摘要",
+    "引言",
+    "绪论",
+    "相关工作",
+    "研究现状",
+    "文献综述",
+    "方法",
+    "研究方法",
+    "实验",
+    "实验设计",
+    "实验设置",
+    "实验结果",
+    "结果",
+    "结果与分析",
+    "讨论",
+    "结论",
+    "总结",
+    "局限性",
+    "局限",
+    "参考文献",
+    "致谢",
+    "附录",
+    "贡献",
 }
 
 
@@ -590,7 +614,9 @@ def _separate_heading_body(heading: str) -> tuple[str, str]:
     for name in sorted(_KNOWN_SECTION_NAMES, key=len, reverse=True):
         if rest_lower.startswith(name) and len(rest) > len(name) + 1:
             after = rest[len(name) :]
-            if after and after[0] in " \t":
+            # 中文标题与正文连写时无空格分隔，CJK 名不要求空白边界
+            _name_is_cjk = any("一" <= ch <= "鿿" for ch in name)
+            if after and (after[0] in " \t" or _name_is_cjk):
                 return (num_prefix + rest[: len(name)]).strip(), after.strip()
 
     # Word-count heuristic for unknown subsection headings.
@@ -686,6 +712,13 @@ _TITLE_SKIP = {
     "appendix",
     "acknowledgments",
     "acknowledgements",
+    # 中文先行
+    "标题",
+    "摘要",
+    "参考文献",
+    "附录",
+    "致谢",
+    "目录",
 }
 
 # T1.1: Headings that are NOT valid paper titles (tables, figures, etc.)
@@ -706,7 +739,7 @@ def _extract_title(sections: list[_Section], raw_md: str) -> str:
     # Look for an explicit "# Title" or "## Title" section whose body is the
     # actual title, or whose heading is "## Title Actual Paper Title".
     for sec in sections:
-        if sec.level in (1, 2) and sec.heading_lower == "title":
+        if sec.level in (1, 2) and sec.heading_lower in ("title", "标题"):
             # The body often starts with **Bold Title** on the first line
             first_line = sec.body.split("\n")[0].strip()
             # Strip bold markers
@@ -714,8 +747,13 @@ def _extract_title(sections: list[_Section], raw_md: str) -> str:
             if first_line and not _is_bad_title(first_line):
                 return first_line
         # Handle "## Title Actual Paper Title" pattern (title embedded in heading)
-        if sec.level in (1, 2) and sec.heading_lower.startswith("title ") and len(sec.heading) > 6:
-            return sec.heading[6:].strip()
+        for _tprefix in ("title ", "标题 ", "标题:", "标题："):
+            if (
+                sec.level in (1, 2)
+                and sec.heading_lower.startswith(_tprefix)
+                and len(sec.heading) > len(_tprefix)
+            ):
+                return sec.heading[len(_tprefix) :].strip()
 
     # Fallback: first H1/H2 heading that isn't a meta-heading or artefact
     for sec in sections:
@@ -752,13 +790,18 @@ def _is_bad_title(candidate: str) -> bool:
 def _extract_abstract(sections: list[_Section]) -> str:
     """Extract abstract text from sections."""
     for sec in sections:
-        if sec.heading_lower == "abstract":
+        if sec.heading_lower in ("abstract", "摘要"):
             return sec.body
         # IMP-17 fallback: heading may still contain body text if
         # _separate_heading_body didn't recognise the pattern.
         if sec.heading_lower.startswith("abstract ") and len(sec.heading) > 20:
             extra = sec.heading[len("Abstract") :].strip()
             return extra + ("\n\n" + sec.body if sec.body else "")
+        # 中文：「摘要 正文…」或行内「摘要：正文…」
+        for _aprefix in ("摘要 ", "摘要:", "摘要："):
+            if sec.heading_lower.startswith(_aprefix) and len(sec.heading) > len(_aprefix) + 1:
+                extra = sec.heading[len(_aprefix) :].strip()
+                return extra + ("\n\n" + sec.body if sec.body else "")
     return ""
 
 
@@ -766,7 +809,7 @@ def _extract_abstract(sections: list[_Section]) -> str:
 # Body building
 # ---------------------------------------------------------------------------
 
-_SKIP_HEADINGS = {"title", "abstract"}
+_SKIP_HEADINGS = {"title", "abstract", "标题", "摘要"}
 
 
 def _build_body(sections: list[_Section], *, title: str = "") -> str:
@@ -1604,6 +1647,23 @@ _SECTION_ALIASES: dict[str, str] = {
     "background": "related work",
     "literature review": "related work",
     "prior work": "related work",
+    # 中文先行：中文章节名 → canonical
+    "引言": "introduction",
+    "绪论": "introduction",
+    "相关工作": "related work",
+    "研究现状": "related work",
+    "文献综述": "related work",
+    "方法": "method",
+    "研究方法": "method",
+    "实验": "experiment",
+    "实验设计": "experiment",
+    "实验设置": "experiment",
+    "结果": "result",
+    "实验结果": "result",
+    "结果与分析": "result",
+    "讨论": "discussion",
+    "结论": "conclusion",
+    "总结": "conclusion",
 }
 
 
@@ -1619,7 +1679,9 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
     _has_title = any(
         sec.level in (1, 2) and sec.heading_lower not in ("abstract", "introduction",
             "related work", "method", "methods", "methodology", "experiments",
-            "results", "discussion", "conclusion", "limitations", "references")
+            "results", "discussion", "conclusion", "limitations", "references",
+            "摘要", "引言", "绪论", "相关工作", "方法", "实验", "结果", "讨论",
+            "结论", "局限性", "参考文献")
         for sec in sections
     )
     if not _has_title:
@@ -1656,6 +1718,10 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
         "limitation": "limitations",
         "limitations and future work": "limitations",
         "limitations and broader impact": "limitations",
+        # 中文先行
+        "局限": "limitations",
+        "局限性": "limitations",
+        "局限性与展望": "limitations",
     }
     found_extras: set[str] = set()
     for sec in sections:
@@ -1665,7 +1731,7 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
                 found_extras.add(hl)
             elif hl in _extra_aliases:
                 found_extras.add(_extra_aliases[hl])
-            elif "limitation" in hl:
+            elif "limitation" in hl or "局限" in hl:
                 found_extras.add("limitations")
     missing_extras = _required_extras - found_extras
     if missing_extras:
@@ -1675,21 +1741,33 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
         )
 
     # T1.5: Abstract length and quality checks
+    from researchclaw.utils.text_length import count_words as _cw, scale_word_targets as _swt
+
+    # 中文稿按字符计（语言由内容自动判定），阈值同步换算
+    _all_text_for_lang = " ".join(sec.body for sec in sections)
+    _cc_lang = "zh" if re.search(r"[\u4e00-\u9fff]", _all_text_for_lang) else "en"
+    _len_unit = "字" if _cc_lang == "zh" else "words"
+
     abstract_text = ""
     for sec in sections:
-        if sec.heading_lower == "abstract":
+        if sec.heading_lower in ("abstract", "摘要"):
             abstract_text = sec.body
             break
     if abstract_text:
-        word_count = len(abstract_text.split())
-        if word_count > 300:
+        _abs_lo, _abs_hi = (300, 500) if _cc_lang == "zh" else (150, 250)
+        word_count = _cw(abstract_text, _cc_lang)
+        if _cc_lang == "en" and word_count > 300:
             warnings.append(
                 f"Abstract is {word_count} words (conference limit: 150-250). "
                 f"Must be shortened."
             )
-        elif word_count < 150:
+        elif _cc_lang == "zh" and word_count > 600:
             warnings.append(
-                f"Abstract is only {word_count} words (expected 150-250 for conferences)."
+                f"摘要过长：{word_count} 字（建议 300-500 字），请压缩。"
+            )
+        elif word_count < _abs_lo:
+            warnings.append(
+                f"Abstract is only {word_count} {_len_unit} (expected {_abs_lo}-{_abs_hi})."
             )
         # Detect raw variable names / metric key dumps
         raw_vars = re.findall(r"\b\w+_\w+/\w+(?:_\w+)*\s*=", abstract_text)
@@ -1717,10 +1795,11 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
             )
 
     # Word count check
-    total_words = sum(len(sec.body.split()) for sec in sections)
-    if total_words < 2000:
+    total_words = sum(_cw(sec.body, _cc_lang) for sec in sections)
+    _total_floor = 4000 if _cc_lang == "zh" else 2000
+    if total_words < _total_floor:
         warnings.append(
-            f"Paper body is only {total_words} words "
+            f"Paper body is only {total_words} {_len_unit} "
             f"(expected 5,000-6,500 for conference paper). "
             f"Content may be severely truncated."
         )
@@ -1728,6 +1807,8 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
 
     # Per-section word count check (safety net during LaTeX conversion)
     from researchclaw.prompts import SECTION_WORD_TARGETS, _SECTION_TARGET_ALIASES
+
+    _word_targets = _swt(SECTION_WORD_TARGETS, _cc_lang)
 
     for sec in sections:
         if sec.level not in (1, 2) or not sec.heading:
@@ -1737,8 +1818,8 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
             canon = _SECTION_TARGET_ALIASES.get(sec.heading_lower, "")
         if not canon or canon not in SECTION_WORD_TARGETS:
             continue
-        lo, hi = SECTION_WORD_TARGETS[canon]
-        wc = len(sec.body.split())
+        lo, hi = _word_targets[canon]
+        wc = _cw(sec.body, _cc_lang)
         if wc < int(lo * 0.6):
             warnings.append(
                 f"Section '{sec.heading}' is only {wc} words "
@@ -1753,7 +1834,8 @@ def check_paper_completeness(sections: list[_Section]) -> list[str]:
     # Bullet density check for body sections
     _bullet_re_cc = re.compile(r"^\s*[-*]\s+", re.MULTILINE)
     _numbered_re_cc = re.compile(r"^\s*\d+\.\s+", re.MULTILINE)
-    _bullet_ok_sections = {"introduction", "limitations", "limitation", "abstract"}
+    _bullet_ok_sections = {"introduction", "limitations", "limitation", "abstract",
+                           "引言", "局限性", "局限", "摘要"}
     for sec in sections:
         if sec.level not in (1, 2) or not sec.heading:
             continue

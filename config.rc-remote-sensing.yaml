@@ -96,6 +96,7 @@ knowledge_base:
 export:
   target_conference: "tgrs"      # IEEE TGRS（遥感 ML 的 SCI 一区目标刊，IEEEtran 双栏）；可选 neurips_2025 / iclr_2026 / icml_2026
   authors: "Anonymous"             # 定稿前替换；AI 辅助按期刊政策如实披露
+  paper_language: "zh"             # 中文先行：写作/导出直接产中文论文（ctex 模板，xelatex）；置 en 恢复英文
 
 overleaf:
   enabled: true

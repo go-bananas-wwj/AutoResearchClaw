@@ -686,6 +686,9 @@ class ExportConfig:
     target_conference: str = "neurips_2025"
     authors: str = "Anonymous"
     bib_file: str = "references"
+    # 本 fork 默认中文先行："zh" 写作/导出阶段直接产出中文论文（ctex 模板）；
+    # 置 "en" 恢复上游英文行为
+    paper_language: str = "zh"
 
 
 @dataclass(frozen=True)
@@ -1030,6 +1033,7 @@ class RCConfig:
                 target_conference=export.get("target_conference", "neurips_2025"),
                 authors=export.get("authors", "Anonymous"),
                 bib_file=export.get("bib_file", "references"),
+                paper_language=export.get("paper_language", "zh"),
             ),
             prompts=PromptsConfig(
                 custom_file=prompts.get("custom_file", ""),

@@ -51,13 +51,29 @@ class CompileResult:
     attempts: int = 0
 
 
+def _detect_engine(tex_path: Path) -> str:
+    """按 tex 源文件的 documentclass 选择编译引擎。
+
+    ctex 中文文档类（ctexart/ctexrep/ctexbook）需要 xelatex（xeCJK），
+    其余维持 pdflatex。
+    """
+    try:
+        src = tex_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "pdflatex"
+    if re.search(r"\\documentclass(?:\[[^\]]*\])?\{ctex(?:art|rep|book)", src):
+        return "xelatex"
+    return "pdflatex"
+
+
 def compile_latex(
     tex_path: Path,
     *,
     max_attempts: int = 3,
     timeout: int = 120,
+    engine: str = "auto",
 ) -> CompileResult:
-    """Compile *tex_path* with pdflatex, auto-fixing common errors.
+    """Compile *tex_path* with pdflatex (or xelatex for ctex), auto-fixing common errors.
 
     Parameters
     ----------
@@ -68,17 +84,23 @@ def compile_latex(
         Maximum compile→fix cycles.
     timeout:
         Seconds before killing a stuck pdflatex process.
+    engine:
+        ``"auto"`` 按 documentclass 自动选择（ctex → xelatex）；
+        也可显式传 ``"pdflatex"`` / ``"xelatex"``。
 
     Returns
     -------
     CompileResult
         Contains success flag, log excerpt, errors found, and fixes applied.
     """
-    if not shutil.which("pdflatex"):
+    if engine == "auto":
+        engine = _detect_engine(tex_path)
+    if not shutil.which(engine):
+        # 引擎缺失时维持原有降级行为：返回失败报告而不抛异常
         return CompileResult(
             success=False,
-            log_excerpt="pdflatex not found on PATH",
-            errors=["pdflatex not installed"],
+            log_excerpt=f"{engine} not found on PATH",
+            errors=[f"{engine} not installed"],
         )
 
     result = CompileResult(success=False)
@@ -106,9 +128,9 @@ def compile_latex(
         # Pass 1: generate .aux (needed by bibtex). Use nonstopmode (NOT
         # halt-on-error) so .aux is written even when there are non-fatal
         # errors like missing figures or overfull hboxes.
-        log_text, pass1_ok = _run_pdflatex(work_dir, tex_name, timeout)
+        log_text, pass1_ok = _run_pdflatex(work_dir, tex_name, timeout, engine=engine)
         if log_text is None:
-            result.errors.append(f"pdflatex failed on pass 1 (attempt {attempt})")
+            result.errors.append(f"{engine} failed on pass 1 (attempt {attempt})")
             break
 
         # BibTeX: always run after pass 1 — it only needs .aux + .bib.
@@ -118,7 +140,7 @@ def compile_latex(
 
         # Passes 2-3: resolve cross-references and bibliography
         for _pass in (2, 3):
-            pass_log, _ = _run_pdflatex(work_dir, tex_name, timeout)
+            pass_log, _ = _run_pdflatex(work_dir, tex_name, timeout, engine=engine)
             if pass_log is not None:
                 log_text = pass_log  # keep final pass log for error analysis
 
@@ -746,8 +768,10 @@ def _run_pdflatex(
     work_dir: Path,
     tex_name: str,
     timeout: int = 120,
+    *,
+    engine: str = "pdflatex",
 ) -> tuple[str | None, bool]:
-    """Run a single pdflatex pass with ``-interaction=nonstopmode``.
+    """Run a single pdflatex/xelatex pass with ``-interaction=nonstopmode``.
 
     Returns ``(log_text, success)``.  *log_text* is ``None`` only on
     hard failures (timeout, binary missing).
@@ -760,13 +784,13 @@ def _run_pdflatex(
     """
     try:
         proc = subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", tex_name],
+            [engine, "-interaction=nonstopmode", tex_name],
             cwd=work_dir,
             capture_output=True,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("pdflatex timed out after %ds", timeout)
+        logger.warning("%s timed out after %ds", engine, timeout)
         return None, False
     except FileNotFoundError:
         return None, False

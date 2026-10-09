@@ -33,6 +33,8 @@ class ConferenceTemplate:
     columns: int  # 1 or 2
     style_download_url: str
     preamble_extra: str = ""
+    # IEEEkeywords 块内容；为空则 ieee 分支不输出 keywords 环境（如 ctex 中文稿）
+    keywords: str = ""
 
     def render_preamble(
         self,
@@ -97,6 +99,11 @@ class ConferenceTemplate:
 
         if self.author_format == "ieee":
             # IEEEtran journal layout: \maketitle first, then abstract + IEEEkeywords
+            keywords_block = (
+                f"\n\\begin{{IEEEkeywords}}\n{self.keywords}\n\\end{{IEEEkeywords}}\n"
+                if self.keywords
+                else ""
+            )
             return (
                 f"{style_comment}"
                 f"{docclass_line}"
@@ -113,10 +120,7 @@ class ConferenceTemplate:
                 f"\\begin{{abstract}}\n"
                 f"{abstract}\n"
                 f"\\end{{abstract}}\n"
-                f"\n"
-                f"\\begin{{IEEEkeywords}}\n"
-                f"Remote sensing, deep learning, machine learning\n"
-                f"\\end{{IEEEkeywords}}\n"
+                f"{keywords_block}"
             )
 
         return (
@@ -567,6 +571,38 @@ TGRS = ConferenceTemplate(
         "create-your-ieee-journal-article/authoring-tools-and-templates/"
     ),
     # IEEEtran.cls / IEEEtran.bst 随 TeX Live 发行，无需额外下载样式文件
+    keywords="Remote sensing, deep learning, machine learning",
+)
+
+
+# ---------------------------------------------------------------------------
+# 中文先行（本 fork 本地适配）：ctex 中文论文模板，xelatex 编译
+# ---------------------------------------------------------------------------
+
+CTEX = ConferenceTemplate(
+    name="ctex",
+    display_name="中文论文（ctexart / XeLaTeX）",
+    year=2026,
+    document_class="ctexart",
+    style_package="",
+    style_options="UTF8",
+    # ctexart 已处理中文与字体；不加载 inputenc/fontenc/lmodern（与 xeCJK 冲突）
+    extra_packages=(
+        "geometry",
+        "amsmath",
+        "amssymb",
+        "amsfonts",
+        "graphicx",
+        "booktabs",
+        "multirow",
+        "hyperref",
+        "url",
+    ),
+    author_format="generic",
+    bib_style="plain",
+    columns=1,
+    style_download_url="",
+    preamble_extra="\\usepackage[margin=1in]{geometry}",
 )
 
 
@@ -599,6 +635,10 @@ CONFERENCE_REGISTRY: dict[str, ConferenceTemplate] = {
     "prl": PRL,
     "prx": PRX,
     "epjc": EPJC,
+    # 中文论文模板（本 fork）
+    "ctex": CTEX,
+    "ctexart": CTEX,
+    "zh": CTEX,
 }
 
 

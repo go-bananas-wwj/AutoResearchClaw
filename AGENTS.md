@@ -21,6 +21,7 @@
 - `researchclaw/reproduce/`：论文复现模块（finder/runner/compare/report），REST `/api/reproduce/*` + Chat「复现」意图 + 前端选题卡「复现这篇」按钮；产物在 `artifacts/<run_id>/reproduction/<slug>/`，`repo/` 里 `rc_` 前缀文件是复现凭证，当 baseline 用时排除。
 - `researchclaw/ideation/brief.py`：《研究任务书》注入通道——`materialize()` 把人工确认的 6 件事物化为 stage-01/02/07/08/09 产物 + `run_dir/research_brief.json`，REST `PipelineStartRequest.brief/from_stage` 从中间阶段开工；Chat BRIEF flow（`dialog/router.py` 步骤机，`session.pending` 持久化）。
 - **docker-sibling 硬件检测**：stage-01 在 `experiment.mode=docker` 且 `docker.gpu_enabled=true` 时信任配置标 GPU 可用（控制面容器看不到 GPU 是常态）；`_experiment_design.py` 的硬件档案读 `stage-01/hardware_profile.json`，不要硬编码 GPU 型号。
+- **中文先行**：`export.paper_language`（默认 `zh`，置 `en` 恢复上游英文行为）。zh 时阶段 16/17/19 用中文指令产中文论文（章节名 摘要/引言/相关工作/方法/实验/结果/讨论/局限性/结论），阶段 18/20 评审 prompt 追加中文评审要求，阶段 22 强制 `ctex` 模板（`templates/conference.py` 的 `CTEX`，ctexart+UTF8，xelatex 编译）生成 paper.tex 并另存 paper_zh.tex。长度统计走 `researchclaw/utils/text_length.py` 的 `count_words`（zh=CJK 字符+非 CJK 词，1 词≈2 字），阈值按 `scale_word_targets` 同步换算；不要在这些路径回退到 `len(text.split())`。
 
 ## 端到端首跑（2026-10-08/09，rc-20261008-143654-557def）固化经验
 

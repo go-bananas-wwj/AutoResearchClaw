@@ -40,6 +40,18 @@ from researchclaw.prompts import PromptManager
 logger = logging.getLogger(__name__)
 
 
+def _paper_language(config: RCConfig) -> str:
+    """论文写作语言（本 fork「中文先行」适配）："zh" 或 "en"。"""
+    return getattr(config.export, "paper_language", "en") or "en"
+
+
+# 中文稿评审/质量门统一附加语（评分 JSON 键名保持英文）
+_ZH_REVIEW_NOTE = (
+    "\n\n注意：论文为中文撰写，请用中文评审；评分 JSON 的 "
+    "verdict/strengths/weaknesses/required_actions 字段用中文填写（键名保持英文）。"
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers imported from executor.py (not yet moved to _helpers.py).
 # Lazy-imported inside functions to avoid circular import when executor.py
@@ -212,6 +224,8 @@ def _execute_peer_review(
         # theorist/phenomenologist/experimentalist). No adapter overlay.
         _review_system = sp.system
         _review_user = sp.user + _quality_suffix
+        if _paper_language(config) == "zh":
+            _review_user += _ZH_REVIEW_NOTE
         resp = _chat_with_prompt(
             _review_llm,
             _review_system,
@@ -312,7 +326,12 @@ def _execute_paper_revision(
 ) -> StageResult:
     draft = _read_prior_artifact(run_dir, "paper_draft.md") or ""
     reviews = _read_prior_artifact(run_dir, "reviews.md") or ""
-    draft_word_count = len(draft.split())
+    from researchclaw.utils.text_length import count_words as _cw19
+
+    _rev_zh = _paper_language(config) == "zh"
+    _rev_lang = "zh" if _rev_zh else "en"
+    _unit19 = "字" if _rev_zh else "words"
+    draft_word_count = _cw19(draft, _rev_lang)
 
     # R4-2: Collect real metrics for anti-fabrication guard in revision
     # BUG-47: _collect_raw_experiment_metrics returns tuple[str, bool], must unpack
@@ -373,6 +392,14 @@ def _execute_paper_revision(
         # prompt bank; no adapter overlay.
         _revision_system = sp.system
         _revision_user = sp.user
+        # 中文先行：修订稿必须保持中文与中文章节名
+        if _rev_zh:
+            _revision_user += (
+                "\n\n注意：论文为中文撰写，修订稿必须保持简体中文与中文章节名"
+                "（摘要、引言、相关工作、方法、实验、结果、讨论、局限性、结论），"
+                "长度要求按中文字符计（1 英文词 ≈ 2 个中文字符），"
+                "引用保持 [cite_key] 格式不变。"
+            )
         # R10-Fix2: Ensure max_tokens is sufficient for full paper revision
         revision_max_tokens = sp.max_tokens
         if revision_max_tokens and draft_word_count > 0:
@@ -396,54 +423,75 @@ def _execute_paper_revision(
             retries=2,
         )
         revised = resp.content
-        revised_word_count = len(revised.split())
+        revised_word_count = _cw19(revised, _rev_lang)
         # Length guard: if revision is shorter than 80% of draft, retry once
         if draft_word_count > 500 and revised_word_count < int(draft_word_count * 0.8):
             logger.warning(
-                "Paper revision (%d words) is shorter than draft (%d words). "
+                "Paper revision (%d %s) is shorter than draft (%d %s). "
                 "Retrying with stronger length enforcement.",
                 revised_word_count,
+                _unit19,
                 draft_word_count,
+                _unit19,
             )
-            retry_user = (
-                f"CRITICAL LENGTH REQUIREMENT: The draft is {draft_word_count} words. "
-                f"Your revision MUST be at least {draft_word_count} words — ideally longer. "
-                f"Do NOT summarize or condense ANY section. Copy each section verbatim "
-                f"and ONLY make targeted improvements to address reviewer comments. "
-                f"If a section has no reviewer comments, include it UNCHANGED.\n\n"
-                + _revision_user
-            )
+            if _rev_zh:
+                retry_user = (
+                    f"长度硬性要求：原稿约 {draft_word_count} 字。"
+                    f"修订稿不得少于 {draft_word_count} 字——应更长。"
+                    "不得概括或压缩任何章节。逐节保留原文，只针对评审意见做定点修改。"
+                    "没有评审意见的章节原样保留。\n\n"
+                    + _revision_user
+                )
+            else:
+                retry_user = (
+                    f"CRITICAL LENGTH REQUIREMENT: The draft is {draft_word_count} words. "
+                    f"Your revision MUST be at least {draft_word_count} words — ideally longer. "
+                    f"Do NOT summarize or condense ANY section. Copy each section verbatim "
+                    f"and ONLY make targeted improvements to address reviewer comments. "
+                    f"If a section has no reviewer comments, include it UNCHANGED.\n\n"
+                    + _revision_user
+                )
             resp2 = _chat_with_prompt(
                 llm, _revision_system, retry_user,
                 json_mode=sp.json_mode, max_tokens=revision_max_tokens,
             )
             revised2 = resp2.content
-            revised2_word_count = len(revised2.split())
+            revised2_word_count = _cw19(revised2, _rev_lang)
             if revised2_word_count >= int(draft_word_count * 0.8):
                 revised = revised2
             elif revised2_word_count > revised_word_count:
                 # Retry improved but still not enough — use the longer version
                 revised = revised2
                 logger.warning(
-                    "Retry improved (%d → %d words) but still shorter than draft (%d).",
+                    "Retry improved (%d → %d %s) but still shorter than draft (%d).",
                     revised_word_count,
                     revised2_word_count,
+                    _unit19,
                     draft_word_count,
                 )
             else:
                 # Both attempts produced short output — preserve full original draft
                 logger.warning(
-                    "Retry also produced short output (%d words). "
+                    "Retry also produced short output (%d %s). "
                     "Falling back to FULL ORIGINAL DRAFT to prevent content loss.",
                     revised2_word_count,
+                    _unit19,
                 )
                 # Extract useful revision points as appendix
-                revision_words = revised.split()
-                revision_summary = (
-                    " ".join(revision_words[:500]) + "\n\n*(Revision summary truncated)*"
-                    if len(revision_words) > 500
-                    else revised
-                )
+                if _rev_zh:
+                    # 中文按字符截断（split() 对无空格中文失效）
+                    revision_summary = (
+                        revised[:1000] + "\n\n*(修订摘要已截断)*"
+                        if len(revised) > 1000
+                        else revised
+                    )
+                else:
+                    revision_words = revised.split()
+                    revision_summary = (
+                        " ".join(revision_words[:500]) + "\n\n*(Revision summary truncated)*"
+                        if len(revision_words) > 500
+                        else revised
+                    )
                 if revision_summary.strip():
                     # Save revision notes to internal file, not paper body
                     (stage_dir / "revision_notes_internal.md").write_text(
@@ -574,10 +622,13 @@ def _execute_quality_gate(
             quality_threshold=str(config.research.quality_threshold),
             revised=paper_for_eval + _exp_context,
         )
+        _gate_user = sp.user
+        if _paper_language(config) == "zh":
+            _gate_user += _ZH_REVIEW_NOTE
         resp = _chat_with_prompt(
             _judge_llm,
             sp.system,
-            sp.user,
+            _gate_user,
             json_mode=sp.json_mode,
             max_tokens=sp.max_tokens,
         )
@@ -2170,6 +2221,16 @@ def _execute_export_publish(
                 _conf_name,
             )
         tpl = get_template(_conf_name)
+        # 中文先行：zh 模式强制使用 ctex 中文模板（xelatex 编译），
+        # 覆盖 target_conference 与 hep 自动选择
+        _zh_export = _paper_language(config) == "zh"
+        if _zh_export and tpl.name != "ctex":
+            tpl = get_template("ctex")
+            logger.info(
+                "Stage 22: paper_language=zh — overriding template '%s' with "
+                "'ctex' (中文论文模板).",
+                _conf_name,
+            )
         # Use the latex-citation-processed version if available
         tex_source = final_paper_latex
         # Append NeurIPS-style checklist only for ML conference targets.
@@ -2489,6 +2550,16 @@ def _execute_export_publish(
                         _tex_path.write_text(_tex_content, encoding="utf-8")
         except Exception as _compile_exc:  # noqa: BLE001
             logger.debug("Stage 22: Compile verification skipped: %s", _compile_exc)
+
+        # 中文先行：另存 paper_zh.tex 副本（paper.tex 保持 deliverables 打包兼容）
+        if _zh_export:
+            _final_tex = stage_dir / "paper.tex"
+            if _final_tex.exists():
+                import shutil as _shutil_zh
+
+                _shutil_zh.copy2(_final_tex, stage_dir / "paper_zh.tex")
+                artifacts.append("paper_zh.tex")
+                logger.info("Stage 22: Saved Chinese copy paper_zh.tex")
     except Exception as exc:  # noqa: BLE001
         logger.error("LaTeX generation failed: %s", exc, exc_info=True)
 
