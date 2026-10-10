@@ -1,7 +1,8 @@
 """研究任务书（Research Brief）—— Chat 多轮确认产物 → 流水线 stage 产物物化。
 
-用户在 Chat 里逐步确认 6 件事（题目/科学问题/调研结论/假设/实验范围/目标会议），
-打包成 ResearchBrief；``materialize()`` 把它写成 run_dir 下的标准 stage 产物
+用户在 Chat 里收到 AI 一次性起草的完整任务书草案（plan-mode 风格：题目/科学问题/
+调研结论/假设/实验范围/目标会议，AI 推断的字段带标注），整体审阅、回复修改意见迭代，
+确认后打包成 ResearchBrief；``materialize()`` 把它写成 run_dir 下的标准 stage 产物
 （stage-01/02/07/08[/09]），并返回建议的 ``from_stage``，使流水线可以从中间
 阶段原生启动（``execute_pipeline(from_stage=...)``），跳过已人工确认的前期阶段。
 
@@ -136,8 +137,8 @@ def _render_goal_md(brief: ResearchBrief) -> str:
     )
     return f"""# SMART Research Goal（人工确认 · 研究任务书）
 
-> 本文件由研究任务书物化生成：以下内容已经过用户在对话中逐步确认，
-> 非 LLM 自动起草。来源存证见 run_dir/research_brief.json。
+> 本文件由研究任务书物化生成：AI 起草的草案已经过用户在对话中整体审阅与修改确认。
+> 来源存证见 run_dir/research_brief.json。
 
 ## **Topic**
 {brief.topic}

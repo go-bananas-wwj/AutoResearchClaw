@@ -58,7 +58,7 @@ async def route_message(raw_message: str, client_id: str) -> str:
             session.current_run = rid
     session.add_message("user", text)
 
-    # 研究任务书确认流程（BRIEF flow）进行中 → 所有消息交给步骤机（其内部处理取消/上一步）
+    # 研究任务书确认流程（BRIEF flow）进行中 → 所有消息交给审阅机（其内部处理确认/修改/取消）
     if session.pending.get("flow") == "brief":
         reply = await _handle_brief_flow(text, session)
         session.add_message("assistant", reply)
@@ -341,101 +341,186 @@ async def _handle_reproduce(text: str, session: ChatSession) -> str:
     )
 
 
-# ---------------------------------------------------------------- BRIEF flow（研究任务书）
+# ---------------------------------------------------------------- BRIEF flow（研究任务书，plan-mode 风格）
 
-# 6 个确认槽位：(key, 中文标签, 提问语)
-_BRIEF_SLOTS: list[tuple[str, str, str]] = [
-    ("topic", "研究题目", "用一句话说明**研究题目**（越具体越好）"),
-    ("scientific_question", "核心科学问题", "这项研究要回答的**核心科学问题**是什么（一句话、可检验）？"),
-    ("survey_summary", "调研结论与研究空白", "相关文献的**调研结论和研究空白**是什么？"),
-    ("hypotheses", "研究假设", "你提出的**可检验假设**是什么（可以有多条，逐条说）？"),
-    ("experiment_scope", "实验范围/数据/指标", "**实验怎么做**：范围、数据集、基线、评价指标（含方向，如 mIoU 越高越好）？"),
-    ("target_conference", "目标会议/期刊", "**目标投稿会议或期刊**（如 IEEE TGRS、NeurIPS）？"),
+# 6 个槽位：(key, 中文标签)。一次性生成完整草案，用户整体审阅、逐条提修改意见（类 Codex plan mode），
+# 不再逐槽位问答。
+_BRIEF_SLOTS: list[tuple[str, str]] = [
+    ("topic", "研究题目"),
+    ("scientific_question", "核心科学问题"),
+    ("survey_summary", "调研结论与研究空白"),
+    ("hypotheses", "研究假设"),
+    ("experiment_scope", "实验范围/数据/指标"),
+    ("target_conference", "目标会议/期刊"),
 ]
 
-_BRIEF_EXTRACT_SCHEMAS: dict[str, str] = {
-    "topic": '{"value": "研究题目（保留原文语言，一句话）"}',
-    "scientific_question": '{"value": "核心科学问题（一句话、可检验）"}',
-    "survey_summary": '{"value": "调研结论与研究空白（保留要点，200 字内）"}',
-    "hypotheses": '{"value": ["假设1", "假设2"]}',
-    "experiment_scope": (
-        '{"scope": "实验范围/设计描述", "datasets": ["数据集1"], '
-        '"metrics": [{"metric_key": "指标名", "direction": "maximize 或 minimize"}]}'
-    ),
-    "target_conference": '{"value": "目标会议/期刊名"}',
-}
+_BRIEF_LABELS: dict[str, str] = dict(_BRIEF_SLOTS)
+
+_BRIEF_FULL_SCHEMA = (
+    '{"topic": "研究题目（一句话）", '
+    '"scientific_question": "核心科学问题（一句话、可检验）", '
+    '"survey_summary": "调研结论与研究空白（要点式，200 字内）", '
+    '"hypotheses": ["可检验假设1", "假设2"], '
+    '"experiment_scope": {"scope": "实验范围/设计描述", "datasets": ["数据集1"], '
+    '"metrics": [{"metric_key": "指标名", "direction": "maximize 或 minimize"}]}, '
+    '"target_conference": "目标会议/期刊名", '
+    '"inferred": ["以上字段中用户没有明说、由你推断补全的 key 列表"]}'
+)
+
+_BRIEF_REVIEW_HINT = (
+    "----------\n"
+    "✏️ 要改哪里直接说（如「目标会议改成 NeurIPS」「假设加一条：…」「第 2 条重写：…」），我改完发你新版；\n"
+    "👍 全部满意回复「**确认**」，立即物化并启动流水线（co-pilot，门控处再把关）；\n"
+    "🔄 推倒重来：「重新生成：补充说明…」；\n"
+    "✋ 退出：「取消」。"
+)
 
 
-def _brief_fallback_value(slot_key: str, text: str) -> Any:
-    """LLM 抽取失败时兜底：原文直接作为槽位内容。"""
-    t = text.strip()
-    if slot_key == "hypotheses":
-        return [t] if t else []
-    if slot_key == "experiment_scope":
-        return {"scope": t, "datasets": [], "metrics": []}
-    return t
+def _brief_slot_filled(key: str, val: Any) -> bool:
+    """槽位是否有实质内容。"""
+    if key == "experiment_scope":
+        return bool(
+            isinstance(val, dict)
+            and (val.get("scope") or val.get("datasets") or val.get("metrics"))
+        )
+    if isinstance(val, list):
+        return bool(val)
+    return bool(str(val or "").strip())
 
 
-def _brief_normalize_value(slot_key: str, data: Any) -> Any:
-    """把 LLM json_mode 输出规整成槽位值；取不出内容时返回假值。"""
+def _brief_normalize_full(data: Any) -> tuple[dict[str, Any], list[str]]:
+    """把 LLM 整稿 JSON 规整成 collected 槽位字典 + inferred（AI 推断）列表。"""
+    collected: dict[str, Any] = {k: "" for k, _ in _BRIEF_SLOTS}
+    collected["hypotheses"] = []
+    collected["experiment_scope"] = {"scope": "", "datasets": [], "metrics": []}
     if not isinstance(data, dict):
-        return None
-    if slot_key == "experiment_scope":
-        scope = str(data.get("scope") or "").strip()
-        datasets = [
-            str(d).strip() for d in (data.get("datasets") or []) if str(d).strip()
-        ]
-        metrics: list[dict[str, str]] = []
-        for m in data.get("metrics") or []:
-            if isinstance(m, str) and m.strip():
-                metrics.append({"metric_key": m.strip(), "direction": ""})
-            elif isinstance(m, dict) and m.get("metric_key"):
-                direction = str(m.get("direction") or "").lower()
-                metrics.append(
-                    {
-                        "metric_key": str(m["metric_key"]).strip(),
-                        "direction": direction
-                        if direction in ("maximize", "minimize")
-                        else "",
-                    }
-                )
-        if not (scope or datasets or metrics):
-            return None
-        return {"scope": scope, "datasets": datasets, "metrics": metrics}
-    value = data.get("value")
-    if slot_key == "hypotheses":
-        if isinstance(value, str):
-            value = [value]
-        items = [str(h).strip() for h in (value or []) if str(h).strip()]
-        return items or None
-    text_value = str(value or "").strip()
-    return text_value or None
+        return collected, []
+    for key in ("topic", "scientific_question", "survey_summary", "target_conference"):
+        collected[key] = str(data.get(key) or "").strip()
+    hyps = data.get("hypotheses")
+    if isinstance(hyps, str):
+        hyps = [hyps]
+    collected["hypotheses"] = [str(h).strip() for h in (hyps or []) if str(h).strip()]
+    scope = data.get("experiment_scope")
+    if isinstance(scope, str):
+        scope = {"scope": scope}
+    scope = scope if isinstance(scope, dict) else {}
+    metrics: list[dict[str, str]] = []
+    for m in scope.get("metrics") or []:
+        if isinstance(m, str) and m.strip():
+            metrics.append({"metric_key": m.strip(), "direction": ""})
+        elif isinstance(m, dict) and m.get("metric_key"):
+            direction = str(m.get("direction") or "").lower()
+            metrics.append(
+                {
+                    "metric_key": str(m["metric_key"]).strip(),
+                    "direction": direction
+                    if direction in ("maximize", "minimize")
+                    else "",
+                }
+            )
+    collected["experiment_scope"] = {
+        "scope": str(scope.get("scope") or "").strip(),
+        "datasets": [
+            str(d).strip() for d in (scope.get("datasets") or []) if str(d).strip()
+        ],
+        "metrics": metrics,
+    }
+    inferred = [k for k in (data.get("inferred") or []) if k in _BRIEF_LABELS]
+    return collected, inferred
 
 
-async def _brief_extract(slot_key: str, text: str, session: ChatSession) -> Any:
-    """用 LLM（json_mode）从用户自然语言里抽取当前槽位内容；失败回退原文。"""
-    label = dict((k, lbl) for k, lbl, _ in _BRIEF_SLOTS)[slot_key]
-    prompt = (
-        f"用户正在逐步确认一份《研究任务书》，当前要确认的槽位是「{label}」。\n"
-        f"用户的原话：\n{text}\n\n"
-        f"请把原话里属于「{label}」的内容抽取出来（不要编造原话没有的信息；"
-        "指标方向只有 maximize/minimize 两种，越高越好=maximize）。\n"
-        f"严格输出 JSON，格式：{_BRIEF_EXTRACT_SCHEMAS[slot_key]}"
-    )
+async def _brief_llm_json(prompt: str, max_tokens: int = 8192) -> dict[str, Any] | None:
+    """整稿 LLM 调用（json_mode）；推理型模型会消耗思考 token，预算给足。失败返回 None。"""
     try:
         client = _llm()
         resp = await asyncio.to_thread(
             client.chat,
             [{"role": "user", "content": prompt}],
             json_mode=True,
-            max_tokens=800,
+            max_tokens=max_tokens,
         )
-        value = _brief_normalize_value(slot_key, json.loads(resp.content))
-        if value:
-            return value
+        data = json.loads(resp.content)
+        return data if isinstance(data, dict) else None
     except Exception:  # noqa: BLE001
-        logger.debug("brief slot extraction failed, fallback to raw text", exc_info=True)
-    return _brief_fallback_value(slot_key, text)
+        logger.debug("brief full-draft LLM call failed", exc_info=True)
+        return None
+
+
+async def _brief_generate_full(
+    seed: str, session: ChatSession, prefill: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """一次性起草完整任务书：用户原话 + 近期对话 + 预填材料（权威）→ 6 槽位整稿。"""
+    history = "\n".join(
+        f"{'用户' if m['role'] == 'user' else '助手'}：{m['content']}"
+        for m in session.get_context(last_n=6)
+    )
+    known = {k: v for k, v in prefill.items() if _brief_slot_filled(k, v)}
+    prompt = (
+        "你是科研项目规划助手。请根据下面的材料，一次性起草一份完整的《研究任务书》草稿。\n\n"
+        f"【用户最新输入】\n{seed}\n\n"
+        + (f"【近期对话】\n{history}\n\n" if history else "")
+        + (
+            "【已有材料】（权威内容，将原样保留，请在其基础上补全其余字段）\n"
+            + json.dumps(known, ensure_ascii=False)
+            + "\n\n"
+            if known
+            else ""
+        )
+        + "要求：\n"
+        "- 六个字段都尽量填完整、具体、可执行；用户没明说的可以合理推断，"
+        "并把推断的字段 key 写进 inferred 列表（用户明说或已有材料给出的不要列进去）。\n"
+        "- 不要编造具体数值结果；指标方向只有 maximize/minimize 两种（越高越好=maximize）。\n"
+        "- 用中文填写。\n"
+        f"严格输出 JSON，格式：{_BRIEF_FULL_SCHEMA}"
+    )
+    data = await _brief_llm_json(prompt)
+    collected, inferred = _brief_normalize_full(data)
+    # 预填材料权威：硬覆盖对应槽位，且不算推断
+    for key, val in known.items():
+        collected[key] = val
+        if key in inferred:
+            inferred.remove(key)
+    if not collected.get("topic") and seed.strip():
+        # LLM 彻底失败兜底：用户原话当题目，其余留空待用户补
+        collected["topic"] = seed.strip()[:120]
+    return collected, inferred
+
+
+async def _brief_apply_revision(
+    collected: dict[str, Any], instruction: str
+) -> tuple[dict[str, Any], list[str]] | None:
+    """把用户修改意见应用到整稿：LLM 输出更新后的完整任务书。
+
+    返回 (合并后的 collected, 变更的槽位 key 列表)；抽不出有效修改返回 None。
+    """
+    prompt = (
+        "你是科研项目规划助手。这是一份《研究任务书》草稿的当前内容（JSON）：\n"
+        f"{json.dumps(collected, ensure_ascii=False)}\n\n"
+        f"【用户的修改意见】\n{instruction}\n\n"
+        "请输出修改后的完整任务书：只按意见改动相关字段，其余原样保留；"
+        "意见里明确给出的字段不再是推断（inferred 列表相应去掉）。\n"
+        "不要编造具体数值结果；用中文。\n"
+        f"严格输出 JSON，格式：{_BRIEF_FULL_SCHEMA}"
+    )
+    data = await _brief_llm_json(prompt)
+    if data is None:
+        return None
+    new_collected, _ = _brief_normalize_full(data)
+    merged = dict(collected)
+    changed: list[str] = []
+    for key, _label in _BRIEF_SLOTS:
+        new_val = new_collected.get(key)
+        if not _brief_slot_filled(key, new_val):
+            continue  # LLM 丢空的槽位保留旧值
+        if json.dumps(new_val, ensure_ascii=False, sort_keys=True) != json.dumps(
+            collected.get(key), ensure_ascii=False, sort_keys=True
+        ):
+            changed.append(key)
+        merged[key] = new_val
+    if not changed:
+        return None
+    return merged, changed
 
 
 def _brief_format_value(value: Any) -> str:
@@ -463,11 +548,20 @@ def _brief_format_value(value: Any) -> str:
     return str(value or "（空）")
 
 
-def _brief_confirm_prompt(label: str, draft: Any) -> str:
-    return (
-        f"我理解你要确认的**{label}**是：\n\n{_brief_format_value(draft)}\n\n"
-        "确认吗？可回复：**确认** / **修改：……** / **上一步** / **取消**"
-    )
+def _brief_format_full(collected: dict[str, Any], inferred: Any = ()) -> str:
+    """整稿回显：6 个槽位一次列全，空位标待补充，AI 推断位标重点核对。"""
+    inferred_set = set(inferred or ())
+    lines = ["**《研究任务书》草案**", ""]
+    for i, (key, label) in enumerate(_BRIEF_SLOTS, 1):
+        val = collected.get(key)
+        if _brief_slot_filled(key, val):
+            tag = " `（AI 推断，请重点核对）`" if key in inferred_set else ""
+            body = _brief_format_value(val)
+        else:
+            tag = ""
+            body = "（待补充——直接告诉我即可）"
+        lines.append(f"{i}. **{label}**{tag}\n{body}")
+    return "\n\n".join(lines)
 
 
 def _load_ideation_card(rank: int) -> tuple[dict[str, Any] | None, str]:
@@ -587,77 +681,88 @@ async def _finalize_brief(session: ChatSession) -> str:
 
 
 async def _handle_brief_flow(text: str, session: ChatSession) -> str:
-    """BRIEF 步骤机：逐槽位抽取 → 回显确认 → 前进/回退/取消。"""
+    """BRIEF 审阅机（plan-mode）：确认启动 / 修改意见整稿更新 / 重新生成 / 取消。"""
     pending = session.pending
     collected = pending.setdefault("collected", {})
+    inferred = list(pending.get("inferred") or [])
 
     # 取消
     if re.search(r"(?:\bcancel\b|取消|算了|先不弄|退出确认)", text, re.IGNORECASE):
         session.pending.clear()
         return "好的，已取消任务书确认。想重新开始就说「开始确认」。"
 
-    step = int(pending.get("step", 0))
-    step = max(0, min(step, len(_BRIEF_SLOTS) - 1))
-    key, label, ask = _BRIEF_SLOTS[step]
+    # 确认 → 物化并启动
+    if re.search(
+        r"^\s*(?:确认|对的?|是的?|没问题|可以|ok|okay|confirm|yes)\s*[。！!]*\s*$",
+        text,
+        re.IGNORECASE,
+    ):
+        if not str(collected.get("topic") or "").strip():
+            return (
+                "研究题目还是空的——先告诉我一句题目（或直接给修改意见），再确认启动。\n\n"
+                + _brief_format_full(collected, inferred)
+                + "\n\n"
+                + _BRIEF_REVIEW_HINT
+            )
+        return await _finalize_brief(session)
 
-    # 上一步
-    if re.search(r"(?:上一步|退回|返回上一个|go\s*back)", text, re.IGNORECASE):
-        if step == 0 and "draft" not in pending:
-            return "已经在第一步（研究题目）了。" + ask
-        pending.pop("draft", None)
-        prev_step = step - 1 if step > 0 else 0
-        pending["step"] = prev_step
-        pkey, plabel, pask = _BRIEF_SLOTS[prev_step]
-        current = _brief_format_value(collected.get(pkey))
+    # 重新生成：可带补充说明
+    m = re.match(r"^\s*(?:重新生成|推倒重来|重来)\s*[:：]?\s*(.*)$", text, re.S)
+    if m:
+        guidance = m.group(1).strip()
+        seed = guidance or json.dumps(collected, ensure_ascii=False)
+        new_collected, new_inferred = await _brief_generate_full(seed, session, collected)
+        pending["collected"] = new_collected
+        pending["inferred"] = new_inferred
         return (
-            f"好，回到第 {prev_step + 1}/6 步——**{plabel}**。\n"
-            f"当前记录：\n{current}\n\n{pask}"
+            "🔄 已重新起草：\n\n"
+            + _brief_format_full(new_collected, new_inferred)
+            + "\n\n"
+            + _BRIEF_REVIEW_HINT
         )
 
-    draft = pending.get("draft")
-    if draft is not None:
-        # 等待确认中
-        if re.search(r"^\s*(?:确认|对的?|是的?|没问题|可以|ok|okay|confirm|yes)\s*[。！!]*\s*$", text, re.IGNORECASE):
-            collected[key] = draft
-            pending.pop("draft", None)
-            next_step = step + 1
-            pending["step"] = next_step
-            if next_step >= len(_BRIEF_SLOTS):
-                return await _finalize_brief(session)
-            nkey, nlabel, nask = _BRIEF_SLOTS[next_step]
-            prefill_note = ""
-            if collected.get(nkey):
-                prefill_note = f"\n（当前已有记录：{_brief_format_value(collected[nkey])}，直接回复新内容可覆盖）\n"
-            return f"已记录**{label}**。\n\n第 {next_step + 1}/6 步——{nask}{prefill_note}"
-        # 修改：显式前缀或直接补充新内容，都重新抽取
-        m = re.match(r"^\s*(?:修改|改为|改成|不对[:，,]?)\s*[:：]?\s*(.+)$", text, re.S)
-        new_text = m.group(1) if m else text
-        new_draft = await _brief_extract(key, new_text, session)
-        pending["draft"] = new_draft
-        return _brief_confirm_prompt(label, new_draft)
-
-    # 本槽位首次作答 → 抽取并回显确认
-    draft = await _brief_extract(key, text, session)
-    pending["draft"] = draft
-    return _brief_confirm_prompt(label, draft)
+    # 其余一律视为修改意见 → 整稿更新
+    result = await _brief_apply_revision(collected, text)
+    if result is None:
+        return (
+            "这条意见我没理解到位，任务书保持原样。换个说法试试，例如"
+            "「目标会议改成 NeurIPS」「假设加一条：…」「第 2 条重写：…」。\n\n"
+            + _brief_format_full(collected, inferred)
+            + "\n\n"
+            + _BRIEF_REVIEW_HINT
+        )
+    new_collected, changed = result
+    pending["collected"] = new_collected
+    inferred = [k for k in inferred if k not in changed]
+    pending["inferred"] = inferred
+    changed_labels = "、".join(_BRIEF_LABELS[k] for k in changed)
+    return (
+        f"✏️ 已按你的意见更新（改动：{changed_labels}）：\n\n"
+        + _brief_format_full(new_collected, inferred)
+        + "\n\n"
+        + _BRIEF_REVIEW_HINT
+    )
 
 
 async def _handle_brief(text: str, session: ChatSession) -> str:
-    """「开始确认/定题/就选第 N 个」：初始化 BRIEF flow（可从选题卡片/复现预填）。"""
+    """「开始确认/定题/就选第 N 个」：一次性起草完整《研究任务书》供整体审阅（plan-mode 风格）。
+
+    可从选题证据卡/复现基线预填；预填材料权威，原样保留。
+    """
     if session.pending.get("flow") == "brief":
         return await _handle_brief_flow(text, session)
 
-    collected: dict[str, Any] = {}
+    prefill: dict[str, Any] = {}
     source_ideation_run = ""
-    prefill_note = ""
+    notes: list[str] = []
 
     m = re.search(r"第\s*(\d+)\s*个", text)
     if m:
         card, run_name = _load_ideation_card(int(m.group(1)))
         if card:
             source_ideation_run = run_name
-            collected["topic"] = str(card.get("question") or "")
-            collected["scientific_question"] = str(card.get("question") or "")
+            prefill["topic"] = str(card.get("question") or "")
+            prefill["scientific_question"] = str(card.get("question") or "")
             evidence = [e for e in (card.get("gap_evidence") or []) if e]
             parts = []
             if card.get("note_zh"):
@@ -666,48 +771,40 @@ async def _handle_brief(text: str, session: ChatSession) -> str:
                 parts.append("缺口证据：" + "；".join(evidence[:3]))
             if card.get("novelty_hint"):
                 parts.append("新颖性：" + str(card["novelty_hint"]))
-            collected["survey_summary"] = "\n".join(parts)
-            prefill_note = (
-                f"\n已从选题报告 **{run_name}** 的第 {m.group(1)} 张证据卡预填前 3 项，"
-                "我们直接从第 4 步（研究假设）开始；说「上一步」可回看修改。"
-            )
+            prefill["survey_summary"] = "\n".join(parts)
+            notes.append(f"已纳入选题报告 **{run_name}** 的第 {m.group(1)} 张证据卡（前 3 项原样保留）。")
         else:
-            prefill_note = "\n（没找到对应的选题证据卡，从头开始确认。）"
+            notes.append("（没找到对应的选题证据卡，按你的描述起草。）")
 
     reproduced_baseline = ""
     if re.search(r"复现", text):
         reproduced_baseline = _latest_reproduction_ref()
+        if reproduced_baseline:
+            notes.append(
+                f"已关联最近的复现基线：{reproduced_baseline}（将作为 our reproduction 写入实验计划）。"
+            )
 
-    # 第一个未预填的槽位
-    step = 0
-    for i, (skey, _lbl, _ask) in enumerate(_BRIEF_SLOTS):
-        if not collected.get(skey):
-            step = i
-            break
-    else:
-        step = len(_BRIEF_SLOTS) - 1
-
+    collected, inferred = await _brief_generate_full(text, session, prefill)
     session.pending = {
         "flow": "brief",
-        "step": step,
+        "mode": "review",
         "collected": collected,
+        "inferred": inferred,
         "source_ideation_run": source_ideation_run,
         "reproduced_baseline": reproduced_baseline,
     }
-    key, label, ask = _BRIEF_SLOTS[step]
-    baseline_note = (
-        f"\n已关联最近的复现基线：{reproduced_baseline}（将作为 our reproduction 写入实验计划）。"
-        if reproduced_baseline
-        else ""
+    intro = (
+        "好，不逐条问你了——我根据你的描述和现有材料一次性起草了完整的**《研究任务书》**，"
+        "你直接在整体上审阅修改："
     )
+    if notes:
+        intro += "\n" + "\n".join(notes)
     return (
-        "好，开始确认**《研究任务书》**。我会跟你逐步确认 6 件事：\n"
-        "①研究题目 ②核心科学问题 ③调研结论/空白 ④研究假设 ⑤实验范围/数据/指标 ⑥目标会议。\n"
-        "每步我会先复述我的理解请你确认；全部确认后物化为流水线产物并启动（co-pilot 模式）。"
-        "随时可说「取消」退出。"
-        + prefill_note
-        + baseline_note
-        + f"\n\n第 {step + 1}/6 步——{ask}"
+        intro
+        + "\n\n"
+        + _brief_format_full(collected, inferred)
+        + "\n\n"
+        + _BRIEF_REVIEW_HINT
     )
 
 
@@ -956,10 +1053,10 @@ _SYSTEM_PROMPT = (
     "2) 对话通道：用户在这里聊 insight/研究问题——你可以启发式追问帮他把想法聊成"
     "具体题目，题目明确后调用启动（用户说「开始/跑起来」即启动同一条流水线）。\n"
     "你能实际做的事：启动/停止运行、查状态、看结果、切换主模型与兜底模型、回答科研问题。\n"
-    "**研究任务书（BRIEF）通道**：用户说「开始确认/定题/确认选题」时，进入 6 步确认流程"
-    "（研究题目→科学问题→调研结论/空白→假设→实验范围/数据/指标→目标会议）；"
-    "流程中你的角色是引导用户把每件事说具体（可检验、可衡量），全部确认后系统会"
-    "把任务书物化为流水线产物并从中间阶段启动。选题引擎的证据卡可以预填前 3 步。\n"
+    "**研究任务书（BRIEF）通道**：用户说「开始确认/定题/确认选题」时，系统一次性起草完整任务书草案"
+    "（研究题目/科学问题/调研结论/假设/实验范围/目标会议，AI 推断的字段会标注），"
+    "用户整体审阅、直接回复修改意见迭代，「确认」后物化为流水线产物并从中间阶段启动；"
+    "选题引擎的证据卡会作为权威材料预填。不要替用户逐条提问。\n"
     "你做不到（如实说明）：在门控节点代替用户审批——那在终端 researchclaw attach 做。\n"
     "回答简洁（≤250字），要步骤时用列表。"
 )

@@ -2,7 +2,7 @@
 
 不依赖 GPU / LLM / 网络 / Docker / fastapi：覆盖 materialize 产物落盘与
 stage-9 schema 守卫兼容、suggest_from_stage 逻辑、baseline_repo 拷贝排除规则、
-选题产物复用、BRIEF 步骤机状态流转（mock LLM）、PipelineStartRequest 新字段
+选题产物复用、BRIEF 整稿审阅流程（plan-mode，mock LLM）、PipelineStartRequest 新字段
 （fastapi/pydantic 缺失时自动跳过）。
 pytest 缺失时也可直接 ``python3 tests/test_brief.py`` 跑全部用例。
 """
@@ -249,27 +249,29 @@ class _FakeResp:
 
 
 class _FakeLLM:
-    """按抽取 prompt 里的槽位标签返回固定 JSON。"""
+    """整稿模式 fake：起草与修改都返回固定完整任务书 JSON（处理修改意见时目标会议换成 NeurIPS）。"""
 
-    _ANSWERS = {
-        "研究题目": {"value": "用边缘保持先验改进小样本遥感地物分割"},
-        "核心科学问题": {"value": "边缘保持先验能否提升小样本分割边界质量？"},
-        "调研结论与研究空白": {"value": "现有方法忽略边界约束。"},
-        "研究假设": {"value": ["H1: 边缘损失提升边界 F1"]},
-        "实验范围/数据/指标": {
+    _DRAFT = {
+        "topic": "用边缘保持先验改进小样本遥感地物分割",
+        "scientific_question": "边缘保持先验能否提升小样本分割边界质量？",
+        "survey_summary": "现有方法忽略边界约束。",
+        "hypotheses": ["H1: 边缘损失提升边界 F1"],
+        "experiment_scope": {
             "scope": "2 数据集 3 基线",
             "datasets": ["iSAID"],
             "metrics": [{"metric_key": "mIoU", "direction": "maximize"}],
         },
-        "目标会议/期刊": {"value": "IEEE TGRS"},
+        "target_conference": "IEEE TGRS",
+        "inferred": ["survey_summary", "target_conference"],
     }
 
     def chat(self, messages, system=None, json_mode=False, max_tokens=600):
         prompt = messages[-1]["content"]
-        for label, answer in self._ANSWERS.items():
-            if label in prompt:
-                return _FakeResp(json.dumps(answer, ensure_ascii=False))
-        return _FakeResp('{"value": ""}')
+        draft = dict(self._DRAFT)
+        if "修改意见" in prompt:
+            draft["target_conference"] = "NeurIPS"
+            draft["inferred"] = ["survey_summary"]
+        return _FakeResp(json.dumps(draft, ensure_ascii=False))
 
 
 class _FakeStartResp:
@@ -296,55 +298,41 @@ class TestBriefFlow:
         self.last_brief = None
         return router
 
-    def test_state_transitions(self):
+    def test_plan_mode_full_draft_once(self):
+        """进入流程即一次性给出完整草案（不逐步提问），并标注 AI 推断字段。"""
         router = self._setup()
         session = _new_session()
 
         reply = asyncio.run(router._handle_brief("开始确认", session))
         assert session.pending.get("flow") == "brief"
-        assert session.pending.get("step") == 0
-        assert "第 1/6 步" in reply
+        assert "step" not in session.pending
+        for label in ("研究题目", "核心科学问题", "调研结论", "研究假设", "实验范围", "目标会议"):
+            assert label in reply
+        assert "AI 推断" in reply
+        assert "确认" in reply
+        collected = session.pending["collected"]
+        assert collected["topic"] == "用边缘保持先验改进小样本遥感地物分割"
 
-        reply = asyncio.run(router._handle_brief_flow("题目是遥感分割", session))
-        assert "确认吗" in reply
-        assert session.pending.get("draft")
-
-        reply = asyncio.run(router._handle_brief_flow("确认", session))
-        assert session.pending.get("step") == 1
-        assert "第 2/6 步" in reply
-
-        # 修改路径：重新抽取并再次要求确认
-        reply = asyncio.run(router._handle_brief_flow("修改：换个问法", session))
-        assert "确认吗" in reply
-        assert session.pending.get("step") == 1
-
-        # 上一步
-        reply = asyncio.run(router._handle_brief_flow("上一步", session))
-        assert session.pending.get("step") == 0
-        assert "第 1/6 步" in reply
-
-        # 取消
-        reply = asyncio.run(router._handle_brief_flow("取消", session))
-        assert not session.pending
-        assert "已取消" in reply
-
-    def test_full_flow_starts_pipeline(self):
+    def test_revision_updates_whole_draft(self):
+        """修改意见 → 整稿更新：只改指定字段，其余保留，改动字段移出 inferred。"""
         router = self._setup()
         session = _new_session()
         asyncio.run(router._handle_brief("开始确认", session))
-        answers = [
-            "题目是遥感分割",
-            "问题是边界质量",
-            "调研结论是缺边界约束",
-            "假设边缘损失有效",
-            "iSAID 上跑 mIoU",
-            "投 TGRS",
-        ]
-        reply = ""
-        for ans in answers:
-            asyncio.run(router._handle_brief_flow(ans, session))
-            reply = asyncio.run(router._handle_brief_flow("确认", session))
-        # 六次确认后 pending 清空，启动被调用
+
+        reply = asyncio.run(router._handle_brief_flow("目标会议改成 NeurIPS", session))
+        assert "NeurIPS" in reply
+        assert "改动：目标会议/期刊" in reply
+        collected = session.pending["collected"]
+        assert collected["target_conference"] == "NeurIPS"
+        assert collected["topic"] == "用边缘保持先验改进小样本遥感地物分割"  # 其余保留
+        assert "target_conference" not in session.pending["inferred"]
+
+    def test_confirm_starts_pipeline(self):
+        router = self._setup()
+        session = _new_session()
+        asyncio.run(router._handle_brief("开始确认", session))
+        reply = asyncio.run(router._handle_brief_flow("确认", session))
+        # 一次确认后 pending 清空，启动被调用
         assert not session.pending
         assert self.last_brief is not None
         assert "rc-20990101-000000-abcdef" in reply
@@ -356,8 +344,16 @@ class TestBriefFlow:
         assert brief.target_conference == "IEEE TGRS"
         assert session.current_run == "rc-20990101-000000-abcdef"
 
+    def test_cancel(self):
+        router = self._setup()
+        session = _new_session()
+        asyncio.run(router._handle_brief("开始确认", session))
+        reply = asyncio.run(router._handle_brief_flow("取消", session))
+        assert not session.pending
+        assert "已取消" in reply
+
     def test_fallback_when_llm_empty(self):
-        """LLM 抽不出内容时回退原文作为槽位值。"""
+        """LLM 起草失败时：用户原话兜底为题目，其余槽位留空标待补充。"""
         from researchclaw.server.dialog import router
 
         class _EmptyLLM:
@@ -366,11 +362,11 @@ class TestBriefFlow:
 
         router._llm_client = _EmptyLLM()
         session = _new_session()
-        asyncio.run(router._handle_brief("开始确认", session))
-        reply = asyncio.run(
-            router._handle_brief_flow("我的题目是小样本分割", session)
-        )
-        assert "我的题目是小样本分割" in reply
+        reply = asyncio.run(router._handle_brief("开始确认：我想做城市内涝制图", session))
+        collected = session.pending["collected"]
+        assert "城市内涝" in collected["topic"]
+        assert not collected["hypotheses"]
+        assert "待补充" in reply
 
 
 class TestIdeationPrefill:
@@ -407,12 +403,14 @@ class TestIdeationPrefill:
             finally:
                 router.REPO_ROOT = old_root
             collected = session.pending.get("collected") or {}
+            # 证据卡为权威材料：硬覆盖 LLM 起草值
+            assert collected.get("topic") == "Q1 科学问题"
             assert collected.get("scientific_question") == "Q1 科学问题"
             assert "证据甲" in (collected.get("survey_summary") or "")
             assert session.pending.get("source_ideation_run") == "id-test-1"
-            # 前 3 槽预填 → 直接到第 4 步
-            assert session.pending.get("step") == 3
-            assert "第 4/6 步" in reply
+            # 整稿一次给出，不再分步
+            assert "step" not in session.pending
+            assert "研究假设" in reply
 
 
 # ---------------------------------------------------------------------------
