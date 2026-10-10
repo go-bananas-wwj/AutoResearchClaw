@@ -18,6 +18,14 @@ from typing import Any
 
 import yaml
 
+from researchclaw.ideation.landscape import (
+    build_landscape,
+    critical_reading,
+    format_shortlist,
+    latest_ideation_run,
+    load_shortlist,
+    save_paper_note,
+)
 from researchclaw.server.dialog.intents import Intent, classify_intent
 from researchclaw.server.dialog.session import ChatSession, SessionManager
 
@@ -180,8 +188,39 @@ async def _handle_stop(text: str, session: ChatSession) -> str:
 
 
 async def _handle_ideate(text: str, session: ChatSession) -> str:
-    """「找选题」：启动/查询选题引擎（Stage 1-8 + 证据卡）。"""
+    """「找选题」：启动/查询选题引擎（Stage 1-8 + 证据卡）；「讲一下现状」：领域图景讲解。"""
     from fastapi import HTTPException
+
+    # 讲解分支：「讲一下现状/别人怎么做的」→ 领域图景叙事 + 编号短名单
+    if re.search(r"(?:领域现状|文献综述|领域图景|讲一下现状|别人.{0,6}怎么做)", text):
+        from researchclaw.server.routes.ideation import ideation_status
+
+        st = await ideation_status()
+        if st.get("status") == "running":
+            return (
+                f"选题引擎还在跑（{st.get('run_id')}，方向：{st.get('direction')}）。"
+                "文献扫描通常 10–30 分钟，跑完我再给你讲。"
+            )
+        run_dir = latest_ideation_run(REPO_ROOT)
+        if run_dir is None:
+            return (
+                "还没有文献扫描结果。先给我一个方向跑一次扫描，"
+                "比如「找选题：遥感嵌入+灾害预警」，扫完我就能给你讲这个领域别人是怎么做的。"
+            )
+        narrative = await asyncio.to_thread(build_landscape, run_dir, _llm())
+        if not narrative:
+            return (
+                f"选题 run {run_dir.name} 里没有可用的论文短名单，"
+                "建议换个方向重新跑一次「找选题：方向」。"
+            )
+        papers = load_shortlist(run_dir)
+        return (
+            narrative
+            + "\n\n---\n\n**扫描到的代表论文**（想深入哪篇：「精读第 N 篇」我帮你批判性提问；"
+            "「复现第 N 篇」进沙箱真跑一遍）：\n"
+            + format_shortlist(papers[:10])
+            + "\n\n有感觉了就说「开始确认」，我结合这些材料一次性起草完整《研究任务书》给你审。"
+        )
 
     # 查询结果分支
     if re.search(r"结果|报告|证据卡|出来了吗|好了吗|咋样了", text):
@@ -209,7 +248,12 @@ async def _handle_ideate(text: str, session: ChatSession) -> str:
                 lines.append(f"  缺口证据：{ev[:120]}")
             if c.get("novelty_hint"):
                 lines.append(f"  新颖性：{c['novelty_hint'][:120]}")
-        lines.append("\n看中哪个，说「开始研究：那个题目」我就启动完整流水线。")
+        lines.append(
+            "\n下一步可以这样走：\n"
+            "- 「讲一下现状」→ 我按扫描到的论文讲一遍这个领域别人是怎么做的\n"
+            "- 「精读第 N 篇」/「复现第 N 篇」→ 从阅读/复现里提炼问题和可升级点\n"
+            "- 看中第 N 个候选问题 → 说「就选第 N 个，开始确认」，我一次性起草完整任务书给你审"
+        )
         return "\n".join(lines)
 
     # 启动分支
@@ -234,8 +278,67 @@ async def _handle_ideate(text: str, session: ChatSession) -> str:
         return f"启动失败：{exc.detail}"
     return (
         f"选题引擎已启动（{resp.run_id}，方向：{direction}）。\n"
-        "它会真实扫描文献找缺口，通常 10–30 分钟。"
-        "完成后对我说「选题结果」，我把候选科学问题和证据卡发你。"
+        "它会真实扫描文献找缺口，通常 10–30 分钟。\n"
+        "完成后对我说「讲一下现状」，我先给你讲这个领域别人是怎么做的；"
+        "或说「选题结果」直接看候选科学问题和证据卡。"
+    )
+
+
+def _resolve_shortlist_paper(n: int) -> tuple[str, str]:
+    """把「第 N 篇」解析为选题短名单里的论文标识（arXiv id > DOI/URL > 标题）。
+
+    返回 (paper_ref, error_msg)；paper_ref 为空时 error_msg 给出原因。
+    """
+    run_dir = latest_ideation_run(REPO_ROOT)
+    if run_dir is None:
+        return "", "还没有文献扫描结果——先「找选题：方向」跑一次扫描，才有「第 N 篇」可指。"
+    papers = load_shortlist(run_dir)
+    if not (1 <= n <= len(papers)):
+        return "", f"短名单里只有 {len(papers)} 篇（最近一次扫描 {run_dir.name}），第 {n} 篇不存在。"
+    p = papers[n - 1]
+    ref = str(p.get("arxiv_id") or "").strip()
+    if not ref:
+        url = str(p.get("url") or "").strip()
+        doi = str(p.get("doi") or "").strip()
+        if doi:
+            ref = f"https://doi.org/{doi}"
+        elif url:
+            ref = url
+    if not ref:
+        ref = str(p.get("title") or "").strip()
+    return ref, ""
+
+
+async def _handle_paper_read(text: str, session: ChatSession) -> str:
+    """「精读第 N 篇」：对选题短名单里的论文做批判性精读，产出问题与可升级点。"""
+    run_dir = latest_ideation_run(REPO_ROOT)
+    if run_dir is None:
+        return (
+            "还没有文献扫描结果。先给我一个方向，比如「找选题：遥感嵌入+灾害预警」，"
+            "扫完我说「讲一下现状」给你讲领域图景，再逐篇精读。"
+        )
+    papers = load_shortlist(run_dir)
+    m = re.search(r"第\s*(\d+)\s*篇", text)
+    if not m:
+        return (
+            f"最近一次扫描（{run_dir.name}）的短名单共 {len(papers)} 篇：\n"
+            + format_shortlist(papers[:10])
+            + "\n\n说「精读第 N 篇」，我给你讲它怎么做、关键假设、可质疑的问题和可升级点。"
+        )
+    idx = int(m.group(1))
+    if not (1 <= idx <= len(papers)):
+        return f"短名单只有 {len(papers)} 篇，第 {idx} 篇不存在。说「精读」我把列表再发你一遍。"
+    paper = papers[idx - 1]
+    note = await asyncio.to_thread(critical_reading, paper, _llm())
+    if not note:
+        return "这篇的精读笔记没生成出来（LLM 调用失败），稍后再试一次。"
+    path = save_paper_note(run_dir, idx, paper, note)
+    return (
+        f"**精读：{paper.get('title') or '(无标题)'}**\n\n"
+        + note
+        + f"\n\n---\n笔记已存 `{path.relative_to(REPO_ROOT)}`。\n"
+        f"这些问题可以直接变成假设——说「开始确认」我起草完整任务书给你审；"
+        f"想先验证它的宣称是否可靠，说「复现第 {idx} 篇」。"
     )
 
 
@@ -294,22 +397,39 @@ async def _handle_reproduce(text: str, session: ChatSession) -> str:
         issues = rep.get("issues") or {}
         if issues:
             total = sum(len(v) for v in issues.values())
-            lines.append(f"- 问题清单 {total} 条（{ '/'.join(f'{k}:{len(v)}' for k, v in issues.items()) }）")
+            lines.append(f"- **问题清单（{total} 条）**：")
+            for k, v in issues.items():
+                for it in v[:2]:
+                    lines.append(f"  - [{k}] {str(it)[:100]}")
         opps = rep.get("opportunities") or []
         if opps:
-            lines.append(f"- 改进机会 {len(opps)} 条，第一条：{opps[0].get('hypothesis')}")
+            lines.append(f"- **可升级的 insight（{len(opps)} 条改进机会）**：")
+            for o in opps[:3]:
+                lines.append(
+                    f"  - {str(o.get('issue', ''))[:80]}\n    → {str(o.get('hypothesis', ''))[:100]}"
+                )
         report_md = st.get("report_md") or "reproduction_report.md"
         lines.append(f"- 完整报告：`{report_md}`")
+        lines.append(
+            "- 这些问题和 insight 可以直接变成任务书里的假设——"
+            "说「开始确认」，我结合这份复现报告一次性起草完整《研究任务书》给你审。"
+        )
         return "\n".join(lines)
 
-    # 启动分支：解析论文标识（arXiv id / URL / GitHub 链接 / 标题）
+    # 启动分支：解析论文标识（arXiv id / URL / GitHub 链接 / 标题 / 「第 N 篇」指选题短名单）
     paper = ""
     m = re.search(r"(https?://\S+|\b\d{4}\.\d{4,5}(?:v\d+)?\b)", text)
     if m:
         paper = m.group(1)
     else:
-        m = re.search(r"复现\s*[:：]?\s*(.+)", text)
-        paper = (m.group(1).strip() if m else "").strip("。")
+        m_nth = re.search(r"第\s*(\d+)\s*篇", text)
+        if m_nth:
+            paper, err = _resolve_shortlist_paper(int(m_nth.group(1)))
+            if not paper:
+                return err
+        else:
+            m = re.search(r"复现\s*[:：]?\s*(.+)", text)
+            paper = (m.group(1).strip() if m else "").strip("。")
     if len(paper) < 4:
         session.pending["awaiting"] = "reproduce"
         return (
@@ -601,6 +721,25 @@ def _latest_reproduction_ref() -> str:
     return ref if (REPO_ROOT / ref).is_dir() else ""
 
 
+def _reproduction_findings(ref: str) -> str:
+    """读复现报告的 issues + opportunities，格式化成任务书起草的接地材料。"""
+    path = REPO_ROOT / ref / "reproduction_report.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    lines: list[str] = []
+    for category, items in (report.get("issues") or {}).items():
+        for it in items[:2]:
+            lines.append(f"- 问题[{category}]：{str(it)[:120]}")
+    for opp in (report.get("opportunities") or [])[:4]:
+        lines.append(
+            f"- 改进机会：{str(opp.get('issue', ''))[:80]}"
+            f" → {str(opp.get('hypothesis', ''))[:100]}"
+        )
+    return "\n".join(lines)
+
+
 async def _start_brief_pipeline(brief: Any) -> tuple[Any | None, str]:
     """用任务书启动流水线（独立成函数便于测试 mock）。"""
     from fastapi import HTTPException
@@ -777,14 +916,21 @@ async def _handle_brief(text: str, session: ChatSession) -> str:
             notes.append("（没找到对应的选题证据卡，按你的描述起草。）")
 
     reproduced_baseline = ""
+    seed = text
     if re.search(r"复现", text):
         reproduced_baseline = _latest_reproduction_ref()
         if reproduced_baseline:
             notes.append(
                 f"已关联最近的复现基线：{reproduced_baseline}（将作为 our reproduction 写入实验计划）。"
             )
+            findings = _reproduction_findings(reproduced_baseline)
+            if findings:
+                seed += (
+                    "\n\n【复现发现的问题与改进机会（真实实验证据，"
+                    "调研结论/假设优先从这里提炼，不算推断）】\n" + findings
+                )
 
-    collected, inferred = await _brief_generate_full(text, session, prefill)
+    collected, inferred = await _brief_generate_full(seed, session, prefill)
     session.pending = {
         "flow": "brief",
         "mode": "review",
@@ -1053,6 +1199,10 @@ _SYSTEM_PROMPT = (
     "2) 对话通道：用户在这里聊 insight/研究问题——你可以启发式追问帮他把想法聊成"
     "具体题目，题目明确后调用启动（用户说「开始/跑起来」即启动同一条流水线）。\n"
     "你能实际做的事：启动/停止运行、查状态、看结果、切换主模型与兜底模型、回答科研问题。\n"
+    "**调研→insight 引导链路**：「找选题：方向」真实扫描文献（OpenAlex/S2/arXiv）→"
+    "「讲一下现状」按扫描到的论文讲解领域图景（别人怎么做的）→「精读第 N 篇」批判性提问"
+    "（关键假设/可质疑问题/可升级点）→「复现第 N 篇」沙箱真跑验证宣称指标、产出问题清单与改进机会"
+    "→「开始确认」把这些接地材料一次性起草成完整任务书。按这个顺序引导用户。\n"
     "**研究任务书（BRIEF）通道**：用户说「开始确认/定题/确认选题」时，系统一次性起草完整任务书草案"
     "（研究题目/科学问题/调研结论/假设/实验范围/目标会议，AI 推断的字段会标注），"
     "用户整体审阅、直接回复修改意见迭代，「确认」后物化为流水线产物并从中间阶段启动；"
@@ -1076,7 +1226,13 @@ async def _handle_help(text: str, session: ChatSession) -> str:
         "- 「到哪一步了」/ 「结果怎么样」→ 状态与指标\n"
         "- 「停止」→ 中止当前运行\n"
         "- 「把主模型换成 qwen-plus」→ 切换模型（含备份+热更新）\n"
-        "- 随便聊 → 我按研究助理身份回答（已接入大模型）"
+        "- 随便聊 → 我按研究助理身份回答（已接入大模型）\n\n"
+        "调研→insight 引导链路（推荐这样起步）：\n"
+        "- 「找选题：方向」→ 真实扫描文献找缺口，产出候选科学问题+证据卡\n"
+        "- 「讲一下现状」→ 我按扫描到的论文讲一遍这个领域别人是怎么做的\n"
+        "- 「精读第 N 篇」→ 批判性提问：关键假设/可质疑的问题/可升级点\n"
+        "- 「复现第 N 篇」→ 沙箱真跑验证宣称指标，产出问题清单与改进机会\n"
+        "- 「开始确认」→ 我一次性起草完整《研究任务书》，你整体审阅修改后确认启动"
     )
 
 
@@ -1095,6 +1251,7 @@ _HANDLERS = {
     Intent.PULL_OVERLEAF: _handle_overleaf_pull,
     Intent.IDEATION: _handle_ideate,
     Intent.REPRODUCE: _handle_reproduce,
+    Intent.PAPER_READ: _handle_paper_read,
     Intent.TOPIC_SELECTION: _handle_topic,
     Intent.MODIFY_CONFIG: _handle_config,
     Intent.DISCUSS_RESULTS: _handle_results,

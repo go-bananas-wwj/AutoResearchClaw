@@ -18,6 +18,7 @@ class Intent(str, Enum):
     PULL_OVERLEAF = "pull_overleaf"
     IDEATION = "ideation"
     REPRODUCE = "reproduce"
+    PAPER_READ = "paper_read"
     CHECK_STATUS = "check_status"
     MODIFY_CONFIG = "modify_config"
     DISCUSS_RESULTS = "discuss_results"
@@ -34,7 +35,8 @@ _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
         re.IGNORECASE,
     )),
     (Intent.IDEATION, re.compile(
-        r"(?:找选题|选个题|选题结果|选题报告|证据卡|有什么可做|有没有.*(?:选题|方向可做)|推荐.*(?:课题|题目)|ideat)",
+        r"(?:找选题|选个题|选题结果|选题报告|证据卡|有什么可做|有没有.*(?:选题|方向可做)|推荐.*(?:课题|题目)|ideat"
+        r"|领域现状|文献综述|领域图景|讲一下现状|别人.{0,6}怎么做)",
         re.IGNORECASE,
     )),
     (Intent.PULL_OVERLEAF, re.compile(
@@ -46,6 +48,11 @@ _INTENT_PATTERNS: list[tuple[Intent, re.Pattern[str]]] = [
     )),
     (Intent.REPRODUCE, re.compile(
         r"(?:复现|reproduc|跑一下?这篇|复刻)",
+        re.IGNORECASE,
+    )),
+    (Intent.PAPER_READ, re.compile(
+        r"(?:精读|细读|批判性|读一?下?第\s*\d+\s*篇|第\s*\d+\s*篇.{0,8}(?:问题|局限|怎么做|方法)"
+        r"|(?:这篇|该篇).{0,8}(?:问题|局限|怎么做|方法|假设))",
         re.IGNORECASE,
     )),
     (Intent.HELP, re.compile(
