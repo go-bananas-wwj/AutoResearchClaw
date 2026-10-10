@@ -23,7 +23,7 @@ llm:
   provider: "openai-compatible"
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"   # 百炼 OpenAI 兼容端点
   api_key_env: "DASHSCOPE_API_KEY"
-  primary_model: "deepseek-v4-pro"         # 规划/写作主链（DeepSeek-V4-Pro，1M ctx，2026-10 换用）
+  primary_model: "deepseek-v4.1-flash"     # 规划/写作主链（DeepSeek-V4.1-Flash，1M ctx，便宜档，2026-10 换用）
   fallback_models:
     - "qwen-plus"                          # 摘要/压缩等便宜档
 
