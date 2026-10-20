@@ -12,7 +12,10 @@ from fastapi import APIRouter
 router = APIRouter(prefix="/api", tags=["projects"])
 
 _TOTAL_STAGES = 23
-_TOPIC_RE = re.compile(r"^#\s*\*\*Topic\*\*[:：]\s*(.+?)\s*$", re.MULTILINE)
+_TOPIC_RE = re.compile(r"^#+\s*\*\*Topic\*\*[:：]\s*(.+?)\s*$", re.MULTILINE)
+# brief.materialize() renders "## **Topic**" as a heading with the value on the
+# next line; accept that shape too (otherwise the project list shows a blank name).
+_TOPIC_SECTION_RE = re.compile(r"^#+\s*\*\*Topic\*\*\s*\n+(.+?)\s*$", re.MULTILINE)
 
 
 def _read_topic(run_dir: Path) -> str:
@@ -20,7 +23,8 @@ def _read_topic(run_dir: Path) -> str:
     goal = run_dir / "stage-01" / "goal.md"
     if goal.is_file():
         try:
-            m = _TOPIC_RE.search(goal.read_text(encoding="utf-8", errors="replace")[:4000])
+            text = goal.read_text(encoding="utf-8", errors="replace")[:4000]
+            m = _TOPIC_RE.search(text) or _TOPIC_SECTION_RE.search(text)
             if m:
                 return m.group(1)
         except OSError:
