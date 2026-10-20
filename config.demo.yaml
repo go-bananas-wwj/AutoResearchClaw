@@ -1,0 +1,110 @@
+# AutoResearchClaw × 遥感：本地 V100 部署用配置模板
+# 用法：复制为 config.rc-remote-sensing.yaml，填好 API key 环境变量后：
+#   researchclaw run --config config.rc-remote-sensing.yaml --topic "..." --mode co-pilot
+project:
+  name: "rs-autoresearch"
+  mode: "full-auto"            # HITL 由下方 hitl 段控制
+
+research:
+  topic: "在这里写你的研究问题（粒度示例：用 XX 先验改进小样本遥感地物分割）"
+  domains:
+    - "remote-sensing"
+    - "computer-vision"
+  daily_paper_count: 12
+  quality_threshold: 4.0
+
+runtime:
+  timezone: "Asia/Shanghai"
+  max_parallel_tasks: 1        # 单张 V100：串行跑实验，防显存互踩；多卡再调大
+  approval_timeout_hours: 24
+  retry_limit: 2
+
+llm:
+  provider: "openai-compatible"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"   # 百炼 OpenAI 兼容端点
+  api_key_env: "DASHSCOPE_API_KEY"
+  primary_model: "qwen-plus"     # 规划/写作主链（DeepSeek-V4.1-Flash，1M ctx，便宜档，2026-10 换用）
+  fallback_models:
+    - "qwen-plus"                          # 摘要/压缩等便宜档
+
+literature_search:
+  sources: ["openalex", "semantic_scholar", "arxiv"]
+  max_results_per_query: 40
+  # 强烈建议申请 Semantic Scholar 免费 key（提速 Stage 4 数倍）：
+  # s2_api_key_env: "S2_API_KEY"
+
+experiment:
+  code_agent:
+    enabled: false
+  mode: "docker"               # V100 走沙箱容器隔离；改 "sandbox" 可直用宿主 venv
+  scale: "smoke"               # 规模诚实标签：smoke(≤5min)/pilot(分钟-小时)/full(全尺寸)，论文强制声明
+  time_budget_sec: 300         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
+  max_iterations: 5
+  metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致
+  metric_direction: "maximize"
+  docker:
+    image: "researchclaw/sandbox-rs:latest"   # 见 Dockerfile.remote-sensing
+    network_policy: "setup_only"
+    gpu_enabled: true
+    memory_limit_mb: 24576                    # V100 32GB，留余量给系统与宿主
+    auto_install_deps: true
+  ssh_remote:
+    host: ""                       # 远程 GPU 主机（填了即可把 experiment.mode 切到 ssh_remote）
+    user: ""
+    # key_path: "/home/claw/.ssh/id_rsa"   # 容器内路径（compose 已只读挂载 ~/.ssh）
+    # gpu_ids: [0]
+    # setup_commands: ["pip install torch"]
+  sandbox:
+    python_path: "python3"   # 容器内解释器（仅 simulated/回退用；实验走 docker 模式）
+    gpu_required: true
+    allowed_imports: [math, random, json, csv, numpy, scipy, torch, torchvision,
+                      sklearn, cv2, rasterio, geopandas, torchgeo, segmentation_models_pytorch,
+                      timm, albumentations, kornia, matplotlib, yaml]
+    max_memory_mb: 24576
+  repair:
+    enabled: true
+    max_cycles: 3
+    min_completion_rate: 0.5
+    min_conditions: 2
+
+hitl:
+  enabled: true
+  mode: co-pilot               # 官方消融实验里效果最好的模式
+  cost_budget_usd: 50.0        # API 花费护栏，超限自动暂停
+  notifications:
+    on_pause: true
+    on_quality_drop: true
+    channels: ["terminal"]
+  timeouts:
+    default_human_timeout_sec: 86400
+    auto_proceed_on_timeout: false
+
+security:
+  hitl_required_stages: [5, 9, 20]
+  allow_publish_without_approval: false
+  redact_sensitive_logs: true
+
+notifications:
+  channel: "console"
+  target: ""
+  on_stage_start: true
+  on_stage_fail: true
+  on_gate_required: true
+
+knowledge_base:
+  backend: "markdown"
+  root: "docs/kb"
+
+export:
+  target_conference: "tgrs"      # IEEE TGRS（遥感 ML 的 SCI 一区目标刊，IEEEtran 双栏）；可选 neurips_2025 / iclr_2026 / icml_2026
+  authors: "Anonymous"             # 定稿前替换；AI 辅助按期刊政策如实披露
+  paper_language: "zh"             # 中文先行：写作/导出直接产中文论文（ctex 模板，xelatex）；置 en 恢复英文
+
+overleaf:
+  enabled: true
+  git_url: "https://git.overleaf.com/6abf1ff4f69d58b37f570e1a"
+  branch: "main"
+  auto_push: true
+
+metaclaw_bridge:
+  enabled: true                    # 跨 run 教训沉淀，第一周建议开着
