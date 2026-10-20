@@ -88,6 +88,8 @@ class LLMConfig:
     # MetaClaw bridge: fallback URL if primary (proxy) is unreachable
     fallback_url: str = ""
     fallback_api_key: str = ""
+    # "" | "enabled" | "disabled" — reasoning-model control (DeepSeek V4 etc.)
+    thinking: str = ""
 
 
 class LLMClient:
@@ -162,6 +164,7 @@ class LLMClient:
             fallback_models=list(rc_config.llm.fallback_models or []),
             fallback_url=fallback_url,
             fallback_api_key=fallback_api_key,
+            thinking=getattr(rc_config.llm, "thinking", "") or "",
             timeout_sec=getattr(rc_config.llm, "timeout_sec", 600),
         )
         client = cls(config)
@@ -498,6 +501,15 @@ class LLMClient:
                     body["max_completion_tokens"] = max(max_tokens, reasoning_min)
                 else:
                     body["max_tokens"] = max_tokens
+
+            # Reasoning-model control (DeepSeek V4 etc.): without this the
+            # model spends max_tokens on hidden reasoning and returns empty
+            # content, which callers then parse as a failed response.
+            if (
+                self._normalize_wire_api(self.config.wire_api) != "responses"
+                and self.config.thinking in ("enabled", "disabled")
+            ):
+                body["thinking"] = {"type": self.config.thinking}
 
             if json_mode:
                 # Many OpenAI-compatible providers don't support the

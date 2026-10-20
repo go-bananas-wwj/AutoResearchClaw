@@ -21,11 +21,12 @@ runtime:
 
 llm:
   provider: "openai-compatible"
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"   # 百炼 OpenAI 兼容端点
-  api_key_env: "DASHSCOPE_API_KEY"
-  primary_model: "deepseek-v4.1-flash"     # 规划/写作主链（DeepSeek-V4.1-Flash，1M ctx，便宜档，2026-10 换用）
+  base_url: "https://api.deepseek.com/v1"   # 百炼 OpenAI 兼容端点
+  api_key_env: "DEEPSEEK_API_KEY"
+  thinking: "disabled"   # 关推理，避免 max_tokens 被思考过程吃光
+  primary_model: "deepseek-flash"     # 规划/写作主链（DeepSeek-V4.1-Flash，1M ctx，便宜档，2026-10 换用）
   fallback_models:
-    - "qwen-plus"                          # 摘要/压缩等便宜档
+    - "deepseek-v4-pro"                          # 摘要/压缩等便宜档
 
 literature_search:
   sources: ["openalex", "semantic_scholar", "arxiv"]
@@ -106,3 +107,4 @@ overleaf:
 
 metaclaw_bridge:
   enabled: true                    # 跨 run 教训沉淀，第一周建议开着
+  proxy_url: "https://api.deepseek.com/v1"
