@@ -85,6 +85,16 @@
     },
 
     startNewResearch() {
+      // Step 1: 创新点审核 —— 先选卡片，再建 run
+      this.view = 'ideation';
+      this.newMode = false;
+      this.currentProject = null;
+      this._renderMain();
+      this._renderSidebar();
+    },
+
+    startNewResearchChat() {
+      // 旧路径：跳过审核，直接进对话
       this.view = 'home';
       this.newMode = true;
       this.currentProject = null;
@@ -127,6 +137,12 @@
           <div id="settings-host"></div>`;
         SettingsView.render(document.getElementById('settings-host'));
         this._active = SettingsView;
+        return;
+      }
+
+      if (this.view === 'ideation') {
+        IdeationView.render(main);
+        this._active = IdeationView;
         return;
       }
 

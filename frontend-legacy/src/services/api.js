@@ -52,6 +52,8 @@ const API = {
   settingsSave(name, content) { return this.put('/settings/file', { name, content }); },
   settingsEnv() { return this.get('/settings/env'); },
   ideationStart(direction) { return this.post('/ideation/start', { direction }); },
+  ideaCards(direction, n) { return this.post('/ideation/cards', { direction: direction, n: n || 4 }); },
+  ideaConfirm(payload) { return this.post('/ideation/confirm', payload); },
   ideationStatus() { return this.get('/ideation/status'); },
   ideationReport(runId) { return this.get(`/ideation/report${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`); },
   reproduceStart(opts) { return this.post('/reproduce/start', opts); },
