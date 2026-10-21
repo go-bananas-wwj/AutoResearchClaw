@@ -296,6 +296,8 @@ class LLMClient:
                         truncated=resp.truncated,
                         raw=resp.raw,
                     )
+                from researchclaw.cost_tracker import get_global_tracker
+                get_global_tracker().record(resp, messages)
                 return resp
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Model %s failed: %s. Trying next.", m, exc)

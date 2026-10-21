@@ -111,7 +111,8 @@ class CostGuard:
             from researchclaw.cost_tracker import get_global_tracker
 
             tracker = get_global_tracker()
-            return tracker.total_cost_usd
+            if run_dir is None or getattr(tracker, "path", None) is not None:
+                return tracker.total_cost_usd
         except Exception:
             pass
 

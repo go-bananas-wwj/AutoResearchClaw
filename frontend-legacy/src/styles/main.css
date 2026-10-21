@@ -731,6 +731,32 @@ button, a { touch-action: manipulation; }
 .idea-prompt-block { margin-top: 16px; }
 .idea-prompt-block summary { font-size: 13px; font-weight: 500; cursor: pointer; }
 .idea-prompt-block pre { max-height: none; margin-top: 12px; }
+.ideation-workspace { max-width: 1180px; margin: 0 auto; }
+.ideation-heading, .ideation-heading > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ideation-heading { justify-content: space-between; margin-bottom: 12px; }
+.ideation-heading h2 { font-size: 25px; letter-spacing: -0.5px; }
+.ideation-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; font-size: 12px; color: var(--text-muted); }
+.ideation-steps span { border-radius: 9px; padding: 7px 12px; background: var(--bg-tertiary); }
+.ideation-steps .active { color: var(--accent); background: var(--accent-soft); }
+.ideation-intake label { display: block; font-size: 14px; font-weight: 500; }
+.ideation-intake textarea { margin: 12px 0; min-height: 110px; }
+.ideation-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.ideation-alert { padding: 12px 16px; margin: 12px 0; border-radius: 12px; background: var(--warning-soft); color: var(--warning); font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+.ideation-supplement { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.ideation-supplement input[type="text"] { flex: 1; min-width: 160px; }
+.literature-list { margin-top: 16px; max-height: 65vh; overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+.literature-paper { padding: 18px 0; border-top: 1px solid var(--border); }
+.literature-paper h3 { font-size: 15px; line-height: 1.65; margin: 8px 0; overflow-wrap: anywhere; }
+.literature-paper-head { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; font-size: 12px; }
+.literature-paper-head input { accent-color: var(--accent); margin-right: 6px; }
+.ideation-workspace a { color: var(--accent); }
+.ideation-workspace summary { cursor: pointer; font-size: 14px; font-weight: 500; }
+.ideation-workspace textarea + button { margin-top: 12px; }
+.ideation-landscape { white-space: pre-wrap; line-height: 1.9; font-size: 14px; margin-top: 16px; }
+.ideation-evidence { border-left: 3px solid var(--border); margin: 16px 0; padding: 10px 14px; background: var(--bg-primary); font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ideation-evidence small { color: var(--text-muted); }
+.ideation-side-card { width: 100%; margin-top: 8px; }
+.ideation-workspace .idea-cards { margin-bottom: 20px; }
 
 @media (max-width: 768px) {
   .proj-sidebar { padding: 12px 16px; gap: 8px; }

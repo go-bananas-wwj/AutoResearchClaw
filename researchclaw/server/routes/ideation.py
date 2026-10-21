@@ -1,346 +1,285 @@
-"""Ideation REST 路由——选题引擎的浏览器/对话入口。
-
-跑 Stage 1–8（文献扫描→缺口分析→候选问题+查新），随后用
-researchclaw.ideation.report 生成证据卡 ideation_report.json。
-模式与 routes/pipeline.py 一致：单租户、后台 executor、轮询状态。
-"""
-
+"""Evidence-first ideation sessions with two explicit human reviews."""
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import hashlib
 import json
-import logging
-from datetime import datetime, timezone
+import re
+import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+from researchclaw.ideation.service import IdeationService
+from researchclaw.ideation.store import SessionError, now
 
 router = APIRouter(prefix="/api", tags=["ideation"])
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_confirm_lock = asyncio.Lock()
+
+
+def get_service() -> IdeationService:
+    from researchclaw.server.app import _app_state
+    if "ideation_service" not in _app_state:
+        _app_state["ideation_service"] = IdeationService(REPO_ROOT / "artifacts/ideation", _app_state["config"])
+    return _app_state["ideation_service"]
+
+
+def invoke(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except SessionError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+def public(data):
+    result = dict(data)
+    result["reading"] = {pid: {k: v for k, v in note.items() if k != "passages"}
+                         for pid, note in data.get("reading", {}).items()}
+    return result
 
 
 class IdeationStartRequest(BaseModel):
-    """请求体：选题方向（自然语言）。"""
-
-    direction: str
+    direction: str = Field(min_length=4, max_length=4000)
 
 
 class IdeationStartResponse(BaseModel):
-    run_id: str
+    session_id: str
+    run_id: str  # compatibility alias, NOT a formal rc-* run
     status: str
     output_dir: str
 
 
-_state: dict[str, Any] | None = None
-_task: asyncio.Task[Any] | None = None
-_lock = asyncio.Lock()
+class VersionRequest(BaseModel):
+    revision: int = Field(ge=1)
 
 
-def _get_app_state() -> dict[str, Any]:
-    from researchclaw.server.app import _app_state
+class LiteratureReview(VersionRequest):
+    selected_paper_ids: list[str]
+    required_paper_ids: list[str] = Field(default_factory=list)
+    feedback: str = Field(default="", max_length=4000)
 
-    return _app_state
+
+class ScopeRequest(VersionRequest):
+    direction: str = Field(min_length=4, max_length=4000)
 
 
-@router.post("/ideation/start", response_model=IdeationStartResponse)
-async def start_ideation(req: IdeationStartRequest) -> IdeationStartResponse:
-    """启动一次选题运行（Stage 1-8 + 证据卡）。"""
-    global _state, _task
+class PaperRequest(VersionRequest):
+    reference: str = Field(min_length=4, max_length=2000)
 
-    direction = req.direction.strip()
-    if len(direction) < 4:
-        raise HTTPException(status_code=400, detail="direction 太短")
 
-    async with _lock:
-        if _state and _state.get("status") == "running":
-            raise HTTPException(status_code=409, detail="一次选题运行正在进行中")
+class CardRequest(VersionRequest):
+    feedback: str = Field(default="", max_length=8000)
 
-        config = _get_app_state()["config"]
-        config = dataclasses.replace(
-            config, research=dataclasses.replace(config.research, topic=direction)
-        )
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        dhash = hashlib.sha256(direction.encode()).hexdigest()[:6]
-        run_id = f"id-{ts}-{dhash}"
-        run_dir = REPO_ROOT / "artifacts" / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
+class ConfirmRequest(VersionRequest):
+    card_id: str
 
-        _state = {
-            "run_id": run_id,
-            "status": "running",
-            "direction": direction,
-            "output_dir": str(run_dir),
-        }
 
-    async def _run() -> None:
-        global _state
+@router.post("/ideation/sessions")
+async def create_session(req: IdeationStartRequest):
+    return public(invoke(get_service().create, req.direction))
+
+
+@router.get("/ideation/sessions")
+async def list_sessions():
+    fields = ("session_id", "direction", "status", "phase", "revision", "updated_at", "run_id")
+    return {"sessions": [{k: s.get(k) for k in fields} for s in get_service().store.list()]}
+
+
+@router.get("/ideation/sessions/{sid}")
+async def session_detail(sid: str):
+    return public(invoke(get_service().snapshot, sid))
+
+
+@router.post("/ideation/sessions/{sid}/literature-review")
+async def review_literature(sid: str, req: LiteratureReview):
+    return public(invoke(get_service().review_literature, sid, req.revision,
+                         req.selected_paper_ids, req.required_paper_ids, req.feedback))
+
+
+@router.post("/ideation/sessions/{sid}/scope")
+async def revise_scope(sid: str, req: ScopeRequest):
+    return public(invoke(get_service().revise_scope, sid, req.revision, req.direction))
+
+
+@router.post("/ideation/sessions/{sid}/papers")
+async def add_paper(sid: str, req: PaperRequest):
+    service = get_service()
+    data = invoke(service.snapshot, sid)
+    invoke(service.store.require_revision, data, req.revision)
+    invoke(service._editable, data)
+    try:
+        paper = await asyncio.to_thread(service.sources.resolve, req.reference)
+    except Exception as exc:
+        raise HTTPException(400, "论文元数据获取失败，请检查 DOI/URL 或改用 PDF。") from exc
+    return public(invoke(service.add_paper, sid, req.revision, paper))
+
+
+@router.post("/ideation/sessions/{sid}/papers/upload")
+async def upload_paper(sid: str, revision: int, request: Request):
+    service = get_service()
+    data = invoke(service.snapshot, sid)
+    invoke(service.store.require_revision, data, revision)
+    invoke(service._editable, data)
+    content = bytearray()
+    async for chunk in request.stream():
+        content.extend(chunk)
+        if len(content) > 25 * 1024 * 1024:
+            raise HTTPException(413, "PDF最大25MB")
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(400, "请选择有效 PDF 文件")
+    relative = "uploads/" + uuid.uuid4().hex + ".pdf"
+    path = service.store.directory(sid) / relative
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(content)
+    try:
+        doc = await asyncio.to_thread(service.sources.pdf_document, path)
+        from researchclaw.ideation.sources import paper_record
+        filename = Path(unquote(request.headers.get("X-Filename", "用户论文.pdf"))).name
+        paper = paper_record({"title": doc.get("title") or filename, "abstract": doc.get("abstract", ""),
+            "source": "user_pdf", "uploaded_pdf": relative, "content_hash": hashlib.sha256(content).hexdigest(),
+            "year": 0}, source="user_pdf")
+        return public(invoke(service.add_paper, sid, revision, paper))
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(400, "PDF解析失败，请提供含可提取正文的PDF。") from exc
+
+
+@router.post("/ideation/sessions/{sid}/cards")
+async def regenerate_cards(sid: str, req: CardRequest):
+    return public(invoke(get_service().regenerate, sid, req.revision, req.feedback))
+
+
+@router.post("/ideation/sessions/{sid}/resume")
+async def resume_session(sid: str, req: VersionRequest):
+    return public(invoke(get_service().resume, sid, req.revision))
+
+
+@router.post("/ideation/sessions/{sid}/stop")
+async def stop_session(sid: str):
+    return public(invoke(get_service().stop, sid))
+
+
+def _check_data_access(card):
+    from researchclaw.ideation.sources import PublicRedirect
+    from researchclaw.web._ssrf import check_url_ssrf
+    import urllib.request
+    sources = card.get("data_sources") or []
+    if not sources or len(sources) > 5 or any(s.get("availability") != "public" or not s.get("url") for s in sources):
+        raise SessionError("数据可得性未确认：请在修改意见中补充公开数据来源后重新生成，不会用虚构数据启动实验。")
+    for source in sources:
+        url = source["url"]
+        if check_url_ssrf(url):
+            raise SessionError("数据来源须为公共地址。")
         try:
-            from researchclaw.adapters import AdapterBundle
-            from researchclaw.pipeline.runner import execute_pipeline
-            from researchclaw.pipeline.stages import Stage
-
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: execute_pipeline(
-                    run_dir=run_dir,
-                    run_id=run_id,
-                    config=config,
-                    adapters=AdapterBundle(),
-                    to_stage=Stage.HYPOTHESIS_GEN,
-                    auto_approve_gates=True,
-                ),
-            )
-            from researchclaw.ideation.report import build_ideation_report
-
-            report = await loop.run_in_executor(
-                None, lambda: build_ideation_report(run_dir, config)
-            )
-            if _state:
-                _state["status"] = "completed" if report.get("ok") else "failed"
-                _state["cards"] = len(report.get("cards", []))
-                if not report.get("ok"):
-                    _state["error"] = report.get("reason")
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Ideation run failed")
-            if _state:
-                _state["status"] = "failed"
-                _state["error"] = str(exc)
-
-    _task = asyncio.create_task(_run())
-    return IdeationStartResponse(run_id=run_id, status="running", output_dir=str(run_dir))
+            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "ResearchClaw/0.5"})
+            with urllib.request.build_opener(PublicRedirect()).open(req, timeout=20) as response:
+                if response.status >= 400:
+                    raise ValueError("unavailable")
+        except Exception as exc:
+            raise SessionError("数据来源无法访问或需要登录，请补充可用数据入口后重试。") from exc
 
 
-@router.get("/ideation/status")
-async def ideation_status() -> dict[str, Any]:
-    """当前/最近一次选题运行状态。"""
-    if not _state:
-        return {"status": "idle"}
-    return _state
-
-
-@router.get("/ideation/report")
-async def ideation_report(run_id: str | None = None) -> dict[str, Any]:
-    """读取证据卡（默认当前 run；可指定历史 id-xxx run）。"""
-    rid = run_id or (_state or {}).get("run_id")
-    if not rid:
-        raise HTTPException(status_code=404, detail="还没有选题运行记录")
-    if not rid.startswith("id-"):
-        raise HTTPException(status_code=400, detail="run_id 必须是 id- 开头的选题 run")
-    path = REPO_ROOT / "artifacts" / rid / "ideation_report.json"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"证据卡尚未生成：{rid}")
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-@router.post("/ideation/stop")
-async def stop_ideation() -> dict[str, str]:
-    """中止当前选题运行。"""
-    global _state, _task
-    if not _task or not _state or _state.get("status") != "running":
-        raise HTTPException(status_code=404, detail="没有进行中的选题运行")
-    _task.cancel()
-    _state["status"] = "stopped"
-    return {"status": "stopped"}
-
-
-# ---------------------------------------------------------------------------
-# Step 1 — 创新点审核（IdeaSpark 模式库 + DeepSeek）
-# ---------------------------------------------------------------------------
-
-class IdeaCardsRequest(BaseModel):
-    direction: str
-    n: int = 4
-
-
-class IdeaConfirmRequest(BaseModel):
-    direction: str
-    card: dict[str, Any]
-    auto_start: bool = True
-    auto_approve: bool = True
-    # Step 1 只跑"到实验完成为止"；传 null 才跑完整 23 阶段
-    to_stage: str | None = "EXPERIMENT_RUN"
+@router.post("/ideation/sessions/{sid}/confirm")
+async def confirm_session(sid: str, req: ConfirmRequest):
+    from researchclaw.server.routes.pipeline import PipelineStartRequest, start_pipeline
+    async with _confirm_lock:
+        service = get_service()
+        data, card = invoke(service.confirmation, sid, req.revision, req.card_id)
+        if data.get("run_id"):
+            return {"run_id": data["run_id"], "started": True, "from_stage": "EXPERIMENT_DESIGN"}
+        data["status"] = "handoff"
+        if not any(r.get("type") == "idea" and r.get("revision") == req.revision and r.get("card_id") == req.card_id for r in data["reviews"]):
+            data["reviews"].append({"type": "idea", "revision": req.revision, "card_id": req.card_id, "at": now()})
+        service.store.save(data)
+        try:
+            await asyncio.to_thread(_check_data_access, card)
+            brief, snapshot = await asyncio.to_thread(service.export, data, card)
+            key = f"{sid}:{req.revision}:{req.card_id}"
+            response = await start_pipeline(PipelineStartRequest(topic=card["title"], brief=brief,
+                from_stage="EXPERIMENT_DESIGN", auto_approve=True, idempotency_key=key))
+        except SessionError as exc:
+            data.update(status="blocked", missing=[str(exc)])
+            service.store.save(data)
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            data.update(status="blocked", missing=[str(getattr(exc, "detail", "科研交接失败，请重试。"))])
+            service.store.save(data)
+            raise
+        data.update(run_id=response.run_id, confirmed_card_id=req.card_id, status="completed", phase="handed_off", missing=[])
+        data["reviews"].append({"type": "idea", "revision": req.revision, "card_id": req.card_id,
+                                "run_id": response.run_id, "at": now()})
+        service.store.save(data)
+        return {"run_id": response.run_id, "started": True, "from_stage": "EXPERIMENT_DESIGN"}
 
 
 @router.get("/ideation/prompt")
-async def idea_prompt() -> dict[str, Any]:
-    """只读展示实际生成模板与参数，不调用模型、不创建研究项目。"""
-    from researchclaw.ideation.cards import GENERATION_OPTIONS, PATTERNS, build_prompt
+async def idea_prompt():
+    from researchclaw.ideation.prompts import PROMPTS, OUTPUT_TOKENS
+    from researchclaw.ideation.cards import PATTERNS
+    service = get_service()
+    return {"stages": PROMPTS, "output_tokens": OUTPUT_TOKENS, "model": service.config.llm.primary_model,
+            "retrieval": True, "pattern_catalog": PATTERNS,
+            "budget_basis": "预算为保守预留：输入$5/百万tokens、输出$25/百万tokens，非供应商账单。"}
 
-    system, user = build_prompt("（你输入的研究方向）", 4)
-    config = _get_app_state()["config"]
-    return {
-        "system": system,
-        "user": user,
-        "model": config.llm.primary_model,
-        "generation": GENERATION_OPTIONS,
-        "retrieval": False,
-        "pattern_catalog": PATTERNS,
-    }
+
+@router.post("/ideation/start", response_model=IdeationStartResponse)
+async def start_ideation(req: IdeationStartRequest):
+    data = invoke(get_service().create, req.direction)
+    return IdeationStartResponse(session_id=data["session_id"], run_id=data["session_id"], status=data["status"],
+        output_dir=str(get_service().store.directory(data["session_id"])))
+
+
+@router.get("/ideation/status")
+async def ideation_status(session_id: str | None = None):
+    service = get_service()
+    rows = service.store.list()
+    data = invoke(service.snapshot, session_id) if session_id else (rows[0] if rows else None)
+    return public(data) if data else {"status": "idle"}
+
+
+@router.get("/ideation/report")
+async def ideation_report(run_id: str | None = None, session_id: str | None = None):
+    sid = session_id or run_id
+    if sid and sid.startswith("id-"):
+        if not re.fullmatch(r"id-\d{8}-\d{6}-[a-f0-9]+", sid):
+            raise HTTPException(400, "无效历史调研编号")
+        path = REPO_ROOT / "artifacts" / sid / "ideation_report.json"
+        if not path.is_file():
+            raise HTTPException(404, "历史调研不存在")
+        return json.loads(path.read_text())
+    return await ideation_status(sid)
+
+
+@router.post("/ideation/stop")
+async def stop_ideation(session_id: str | None = None):
+    state = await ideation_status(session_id)
+    if not state.get("session_id"):
+        raise HTTPException(404, "没有调研会话")
+    return await stop_session(state["session_id"])
+
+
+class LegacyCardsRequest(BaseModel):
+    session_id: str | None = None
+    revision: int | None = None
+    feedback: str = ""
+    card_id: str | None = None
 
 
 @router.post("/ideation/cards")
-async def idea_cards(req: IdeaCardsRequest) -> dict[str, Any]:
-    """根据自然语言方向生成创新点卡片（不建 run，纯审核用）。"""
-    from researchclaw.ideation.cards import PATTERNS, generate_cards
-    from researchclaw.llm.client import LLMClient
-
-    direction = (req.direction or "").strip()
-    if len(direction) < 4:
-        raise HTTPException(status_code=400, detail="研究方向太短，至少 4 个字符")
-
-    config = _get_app_state()["config"]
-    llm = LLMClient.from_rc_config(config)
-    loop = asyncio.get_event_loop()
-    try:
-        cards = await loop.run_in_executor(
-            None, lambda: generate_cards(direction, llm, max(3, min(int(req.n), 5)))
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("idea card generation failed")
-        raise HTTPException(status_code=500, detail=f"生成失败：{exc}") from exc
-
-    return {
-        "direction": direction,
-        "model": getattr(getattr(llm, "config", None), "primary_model", ""),
-        "cards": cards,
-        "pattern_catalog": PATTERNS,
-    }
+async def idea_cards(req: LegacyCardsRequest):
+    if not req.session_id or req.revision is None:
+        raise HTTPException(409, "请先创建调研会话并审核文献；不再支持无证据直接生成卡片。")
+    return await regenerate_cards(req.session_id, CardRequest(revision=req.revision, feedback=req.feedback))
 
 
 @router.post("/ideation/confirm")
-async def idea_confirm(req: IdeaConfirmRequest) -> dict[str, Any]:
-    """用户选中的卡片 -> 物化成任务书 ->（可选）立即从实验阶段启动。"""
-    import dataclasses
-    import hashlib
-    from datetime import datetime, timezone
-
-    from researchclaw.adapters import AdapterBundle
-    from researchclaw.ideation.brief import materialize
-    from researchclaw.ideation.cards import _normalize_card, card_to_brief
-    from researchclaw.pipeline.runner import execute_pipeline
-    from researchclaw.pipeline.stages import Stage
-
-    state = _get_app_state()
-    config = state["config"]
-    card = _normalize_card(req.card or {})
-    if not card.get("title") or not card.get("method"):
-        raise HTTPException(status_code=400, detail="卡片缺少 title 或 method")
-
-    brief = card_to_brief(card, getattr(config.export, "target_conference", ""))
-    config = dataclasses.replace(
-        config, research=dataclasses.replace(config.research, topic=brief.topic)
-    )
-    if brief.metrics:
-        first = brief.metrics[0]
-        over: dict[str, Any] = {}
-        if first.get("metric_key"):
-            over["metric_key"] = first["metric_key"]
-        if first.get("direction") in ("increase", "maximize"):
-            over["metric_direction"] = "maximize"
-        elif first.get("direction") in ("decrease", "minimize"):
-            over["metric_direction"] = "minimize"
-        if over:
-            config = dataclasses.replace(
-                config, experiment=dataclasses.replace(config.experiment, **over)
-            )
-
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    topic_hash = hashlib.sha256(brief.topic.encode()).hexdigest()[:6]
-    run_id = f"rc-{ts}-{topic_hash}"
-    run_dir = REPO_ROOT / "artifacts" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    loop = asyncio.get_event_loop()
-    from_stage = await loop.run_in_executor(
-        None, lambda: materialize(run_dir, brief, config)
-    )
-
-    # 卡片里的基线/方法/消融覆盖物化出的 exp_plan
-    plan_overrides: dict[str, Any] = {}
-    if card.get("baselines"):
-        plan_overrides["baselines"] = card["baselines"]
-    if plan_overrides:
-        import yaml as _yaml
-
-        plan_path = run_dir / "stage-09" / "exp_plan.yaml"
-        if plan_path.is_file():
-            _plan = _yaml.safe_load(plan_path.read_text(encoding="utf-8")) or {}
-            _plan.update(plan_overrides)
-            plan_path.write_text(
-                _yaml.dump(_plan, default_flow_style=False, allow_unicode=True),
-                encoding="utf-8",
-            )
-
-    # 存证：原始方向 + 选中的卡片 + 任务书
-    (run_dir / "idea_card.json").write_text(
-        json.dumps(
-            {"direction": req.direction, "card": card, "confirmed_at": datetime.now(timezone.utc).isoformat()},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    # docker-sibling 部署：控制面看不到 GPU，显式写硬件档案
-    s1 = run_dir / "stage-01"
-    s1.mkdir(parents=True, exist_ok=True)
-    (s1 / "hardware_profile.json").write_text(
-        json.dumps(
-            {"has_gpu": True, "gpu_type": "cuda", "gpu_name": "NVIDIA Tesla V100-PCIE-32GB",
-             "vram_mb": 32768, "tier": "high", "warning": ""},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    if req.auto_start:
-        async def _run() -> None:
-            adapters = AdapterBundle()
-            if not req.auto_approve:
-                try:
-                    from researchclaw.hitl.presets import copilot_preset
-                    from researchclaw.hitl.session import HITLSession
-
-                    hitl_cfg = getattr(config, "hitl", None) or copilot_preset()
-                    adapters.hitl = HITLSession(run_id=run_id, config=hitl_cfg, run_dir=run_dir)
-                except Exception:  # noqa: BLE001
-                    logger.warning("HITL session setup failed", exc_info=True)
-            kb_root = Path(config.knowledge_base.root) if config.knowledge_base.root else None
-            to_stage = None
-            if req.to_stage:
-                raw = req.to_stage.strip().upper().replace("STAGE-", "")
-                to_stage = Stage[raw] if raw in Stage.__members__ else None
-            await loop.run_in_executor(
-                None,
-                lambda: execute_pipeline(
-                    run_dir=run_dir,
-                    run_id=run_id,
-                    config=config,
-                    adapters=adapters,
-                    from_stage=from_stage,
-                    to_stage=to_stage,
-                    auto_approve_gates=req.auto_approve,
-                    skip_noncritical=True,
-                    kb_root=kb_root,
-                ),
-            )
-
-        asyncio.create_task(_run())
-
-    return {
-        "run_id": run_id,
-        "output_dir": str(run_dir),
-        "from_stage": from_stage.name,
-        "topic": brief.topic,
-        "started": req.auto_start,
-    }
+async def idea_confirm(req: LegacyCardsRequest):
+    if not req.session_id or req.revision is None or not req.card_id:
+        raise HTTPException(409, "确认须引用已审查会话的当前版本和卡片ID，不能提交任意卡片启动科研。")
+    return await confirm_session(req.session_id, ConfirmRequest(revision=req.revision, card_id=req.card_id))

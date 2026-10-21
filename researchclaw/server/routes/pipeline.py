@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ class PipelineStartRequest(BaseModel):
     brief: dict[str, Any] | None = None
     # 显式指定起始阶段（Stage 名或编号），优先级高于 brief 的建议值
     from_stage: str | None = None
+    idempotency_key: str | None = None
 
 
 def _parse_from_stage(raw: str) -> "Any":
@@ -73,6 +75,7 @@ class PipelineStartResponse(BaseModel):
 _active_run: dict[str, Any] | None = None
 _run_task: asyncio.Task[Any] | None = None
 _run_lock = asyncio.Lock()
+_run_cancel_event: threading.Event | None = None
 
 
 def _get_app_state() -> dict[str, Any]:
@@ -84,10 +87,18 @@ def _get_app_state() -> dict[str, Any]:
 @router.post("/pipeline/start", response_model=PipelineStartResponse)
 async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
     """Start a new pipeline run."""
-    global _active_run, _run_task
+    global _active_run, _run_task, _run_cancel_event
 
     async with _run_lock:
-        if _active_run and _active_run.get("status") == "running":
+        if req.idempotency_key:
+            if not _re.fullmatch(r"is-[a-f0-9]{20}:\d+:r\d+-c\d+", req.idempotency_key):
+                raise HTTPException(400, detail="无效的调研交接标识")
+            for origin in Path("artifacts").glob("rc-*/ideation_origin.json"):
+                record = json.loads(origin.read_text())
+                if record.get("key") == req.idempotency_key:
+                    return PipelineStartResponse(run_id=origin.parent.name,
+                        status=(_active_run or {}).get("status", "interrupted"), output_dir=str(origin.parent))
+        if _active_run and _active_run.get("status") in ("running", "stopping"):
             raise HTTPException(status_code=409, detail="A pipeline is already running")
 
         state = _get_app_state()
@@ -156,10 +167,14 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         from datetime import datetime, timezone
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        topic_hash = hashlib.sha256(config.research.topic.encode()).hexdigest()[:6]
+        topic_hash = hashlib.sha256((config.research.topic + (req.idempotency_key or "")).encode()).hexdigest()[:6]
         run_id = f"rc-{ts}-{topic_hash}"
         run_dir = _validated_run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
+        if req.idempotency_key:
+            (run_dir / "ideation_origin.json").write_text(json.dumps({"key": req.idempotency_key}))
+        cancel_event = threading.Event()
+        _run_cancel_event = cancel_event
 
         _active_run = {
             "run_id": run_id,
@@ -189,6 +204,17 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                 from_stage = await loop0.run_in_executor(
                     None, lambda: materialize(run_dir, brief_obj, config)
                 )
+                if req.idempotency_key:
+                    import shutil
+                    evidence = Path(brief_obj.source_ideation_run)
+                    shutil.copytree(evidence, run_dir / "ideation_evidence", dirs_exist_ok=True)
+                    shutil.copyfile(evidence / "cost_log.jsonl", run_dir / "cost_log.jsonl")
+                    from researchclaw.hardware import HardwareProfile, detect_hardware
+                    hardware = detect_hardware()
+                    if not hardware.has_gpu and config.experiment.mode == "docker" and config.experiment.docker.gpu_enabled:
+                        hardware = HardwareProfile(has_gpu=True, gpu_type="cuda",
+                            gpu_name="GPU available in docker sibling sandbox", vram_mb=None, tier="limited", warning="")
+                    (run_dir / "stage-01/hardware_profile.json").write_text(json.dumps(hardware.to_dict()))
             if forced_from_stage is not None:
                 from_stage = forced_from_stage
             if _active_run:
@@ -227,12 +253,18 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                     auto_approve_gates=req.auto_approve,
                     skip_noncritical=True,
                     kb_root=kb_root,
+                    cancel_event=cancel_event,
                 ),
             )
             done = sum(1 for r in results if r.status.value == "done")
             failed = sum(1 for r in results if r.status.value == "failed")
             if _active_run:
-                _active_run["status"] = "completed" if failed == 0 else "failed"
+                # A paused quality/data gate or a partial run is never a completed paper.
+                complete = any(r.stage == Stage.CITATION_VERIFY and r.status.value == "done" for r in results)
+                _active_run["status"] = "stopped" if cancel_event.is_set() else (
+                    "completed" if complete and failed == 0 else "failed" if failed else "blocked")
+                if results and not complete:
+                    _active_run["reason"] = getattr(results[-1], "error", "") or "流水线未到达论文交付阶段，请检查阶段产物。"
                 _active_run["stages_done"] = done
                 _active_run["stages_failed"] = failed
         except Exception as exc:
@@ -258,9 +290,10 @@ async def stop_pipeline() -> dict[str, str]:
     if not _run_task or not _active_run:
         raise HTTPException(status_code=404, detail="No pipeline is running")
 
-    _run_task.cancel()
-    _active_run["status"] = "stopped"
-    return {"status": "stopped"}
+    if _run_cancel_event:
+        _run_cancel_event.set()
+    _active_run["status"] = "stopping"
+    return {"status": "stopping"}
 
 
 @router.get("/pipeline/status")

@@ -28,7 +28,7 @@ def _make_rc_config(provider: str = "openai-compatible", **llm_kwargs):
     from types import SimpleNamespace
 
     llm = LlmConfig(provider=provider, **llm_kwargs)
-    return SimpleNamespace(llm=llm, research=SimpleNamespace(topic="t"))
+    return SimpleNamespace(llm=llm, research=SimpleNamespace(topic="t"), export=SimpleNamespace(paper_language="en"))
 
 
 # --------------------------------------------------------------------------

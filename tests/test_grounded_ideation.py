@@ -1,0 +1,306 @@
+"""Two human reviews, real-evidence boundaries, persistence and stage-9 handoff."""
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from researchclaw.ideation.prompts import PROMPTS
+from researchclaw.ideation.service import IdeationService
+from researchclaw.ideation.sources import paper_record
+from researchclaw.ideation.store import SessionError
+
+
+class Sources:
+    def __init__(self, count=3):
+        self.rows = [paper_record({'title':f'LS method {i}', 'doi':f'10.1234/ls{i}', 'year':2020+i,
+            'abstract':'Study of the slope length and steepness factor.', 'url':f'https://example.org/ls{i}'}, source='fixture') for i in range(count)]
+        self.fulltext_calls = []
+        self.empty = False
+        self.abstract_only = False
+        self.fail_ids = set()
+        self.collision_empty = False
+        self.started = None
+        self.release = None
+
+    def search(self, query, period, source):
+        if self.started:
+            self.started.set()
+            assert self.release.wait(5)
+        return [] if self.empty or (query.startswith('collision') and self.collision_empty) else self.rows
+
+    def fulltext(self, paper, directory):
+        self.fulltext_calls.append(paper['paper_id'])
+        if paper['paper_id'] in self.fail_ids:
+            raise ValueError('full text unavailable')
+        text = 'Abstract only' if self.abstract_only else ('Methods: contributing area is routed across a terrain grid. Independent observations validate erosion. '*35)
+        return {'pages':[{'location':'第 2 页','text':text}], 'source_url':paper['url']}
+
+
+class LLM:
+    def __init__(self):
+        self.calls = []
+        self.off_topic = False
+        self.fabricate = False
+        self.truncate = ''
+        self.overlap = False
+        self.bad_gap = False
+
+    def chat(self, messages, *, system, **kwargs):
+        stage = next(k for k,v in PROMPTS.items() if v == system)
+        data = json.loads(messages[0]['content']); self.calls.append(stage)
+        if stage == 'plan':
+            result = {'interpretation':'USLE/RUSLE坡长—坡度因子','domain':'水土保持',
+                'queries':[{'query':f'LS factor watershed {i}','purpose':'方法与验证','period':'recent' if i == 3 else 'all'} for i in range(4)]}
+        elif stage == 'screen':
+            result = {'papers':[{'paper_id':p['paper_id'],'relevance':'off_topic' if self.off_topic else 'core',
+                'reason':'相关：分析坡长与坡度','summary_zh':'基于DEM的LS计算。'} for p in data['papers']]}
+        elif stage == 'read':
+            p = data['passages'][0]
+            result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
+                'findings':'条件性结论','limitations':'特定地形','evidence':[{'passage_id':p['passage_id'],
+                'quote':'this quotation was invented' if self.fabricate else p['text'][:80], 'claim':'采用汇流计算','kind':'source'}]}
+        elif stage == 'synthesis':
+            ref = data['reading'][0]['evidence'][0]['passage_id']
+            result = {'landscape_zh':'现有方法及适用边界。','method_comparison':[{'paper_id':data['reading'][0]['paper_id'],'method':'汇流计算','boundary':'特定地形'}],
+                'gaps':[{'gap_id':'g1','description':'待检验的差异','evidence_refs':['invented' if self.bad_gap else ref],'inference':'模型推断，待验证'}]}
+        elif stage == 'generate':
+            ref = data['synthesis']['gaps'][0]['evidence_refs'][0]
+            pid = data['reading'][0]['paper_id']
+            result = {'cards':[{'title':'LS稳定性机制','one_liner':'测试真实机制','scientific_question':'能否改善稳定性？',
+                'gap_id':'g1','method':'实施机制并对照','falsification':'独立观测不改善即推翻','novelty':'待查证差异',
+                'datasets':['DEM'],'data_sources':[{'name':'DEM','url':'https://example.org/dem','availability':'public'}],
+                'metrics':[{'metric_key':'RMSE','direction':'decrease'}], 'baselines':[{'name':'已知LS方法'}],
+                'evidence_refs':[ref],'closest_paper_ids':[pid],'collision_queries':['collision LS operator']}]}
+        else:
+            n = data['neighbors'][0]
+            result = {'verdict':'overlap' if self.overlap else 'pass','reason':'在本次范围内有具体机制差异',
+                'closest_paper_ids':[n['paper_id']],'evidence_refs':[n['evidence'][0]['passage_id']],
+                'comparisons':[{'paper_id':n['paper_id'],'problem':'同类问题','mechanism':'存在机制差异',
+                'data':'相同DEM','experiment':'使用独立观测','difference':'待验证的新机制'}]}
+        return SimpleNamespace(content=json.dumps(result,ensure_ascii=False), model='fake', prompt_tokens=20,
+            completion_tokens=30, finish_reason='length' if stage == self.truncate else 'stop', truncated=stage == self.truncate)
+
+
+@pytest.fixture
+def engine(tmp_path):
+    config = SimpleNamespace(llm=SimpleNamespace(primary_model='fake'),hitl=SimpleNamespace(cost_budget_usd=50),
+        literature_search=SimpleNamespace(sources=['openalex']), export=SimpleNamespace(target_conference='tgrs'))
+    return IdeationService(tmp_path/'ideation',config,llm=LLM(),sources=Sources())
+
+
+def wait(engine, sid):
+    engine.jobs[sid][0].join(10)
+    assert not engine.jobs[sid][0].is_alive()
+    return engine.snapshot(sid)
+
+
+def first(engine):
+    data = engine.create('我想研究流域建模的 LS 因子')
+    return wait(engine,data['session_id'])
+
+
+def develop(engine):
+    data = first(engine)
+    assert data['phase'] == 'literature_review'
+    engine.review_literature(data['session_id'],data['revision'],[p['paper_id'] for p in data['papers']],[])
+    return wait(engine,data['session_id'])
+
+
+def test_two_reviews_and_provenance(engine):
+    data = first(engine); sid=data['session_id']
+    assert data['status']=='waiting' and engine.sources.fulltext_calls==[]
+    assert engine.llm.calls==['plan','screen']
+    assert not list(engine.store.root.parent.glob('rc-*'))
+    with pytest.raises(SessionError): engine.regenerate(sid,data['revision'],'skip')
+    with pytest.raises(SessionError): engine.confirmation(sid,data['revision'],'fake')
+    with pytest.raises(SessionError): engine.review_literature(sid,999,[],[])
+    engine.review_literature(sid,data['revision'],[p['paper_id'] for p in data['papers']],[])
+    data=wait(engine,sid)
+    assert data['phase']=='idea_review' and data['status']=='waiting' and not data['run_id']
+    assert len(data['cards'])==1 and len(data['reading'])==3
+    assert data['cards'][0]['evidence'][0]['location']=='第 2 页'
+    assert data['cards'][0]['audit']['verdict']=='pass'
+    assert data['cost_usd']>0
+    selected,card=engine.confirmation(sid,data['revision'],data['cards'][0]['card_id'])
+    brief,path=engine.export(selected,card)
+    assert brief['source_ideation_run']==str(path.resolve())
+    assert (path/'stage-04/references.bib').exists()
+    assert (path/'manifest.json').exists()
+    assert not list(engine.store.root.parent.glob('rc-*'))
+
+
+@pytest.mark.parametrize('failure',['empty','off_topic','abstract','fabricate','truncated','bad_gap','collision_empty','overlap'])
+def test_no_fallback_success(engine,failure):
+    if failure=='empty': engine.sources.empty=True
+    if failure=='off_topic': engine.llm.off_topic=True
+    if failure=='abstract': engine.sources.abstract_only=True
+    if failure=='fabricate': engine.llm.fabricate=True
+    if failure=='truncated': engine.llm.truncate='generate'
+    if failure=='bad_gap': engine.llm.bad_gap=True
+    if failure=='collision_empty': engine.sources.collision_empty=True
+    if failure=='overlap': engine.llm.overlap=True
+    data=first(engine)
+    if data['phase']=='literature_review':
+        engine.review_literature(data['session_id'],data['revision'],[p['paper_id'] for p in data['papers']],[])
+        data=wait(engine,data['session_id'])
+    assert data['status']=='blocked' and data['cards']==[] and data['missing']
+    assert not data['run_id']
+    if data['approved_revision']==data['revision'] and not data.get('synthesis'):
+        with pytest.raises(SessionError):
+            engine.regenerate(data['session_id'],data['revision'],'不得跳过精读与证据阶段')
+
+
+def test_must_read_is_not_optional(engine):
+    engine.sources=Sources(4)
+    data=first(engine); pid=data['papers'][0]['paper_id'];engine.sources.fail_ids={pid}
+    engine.review_literature(data['session_id'],data['revision'],[p['paper_id'] for p in data['papers']],[pid])
+    data=wait(engine,data['session_id'])
+    assert len(data['reading'])==3 and data['status']=='blocked' and 'LS method 0' in data['missing'][0]
+
+
+def test_revision_invalidation_and_session_isolation(engine):
+    data=develop(engine); sid=data['session_id']; revision=data['revision']; card_id=data['cards'][0]['card_id']
+    engine.add_paper(sid,revision,paper_record({'title':'Supplemental method','doi':'10.1234/new'},source='user'))
+    changed=engine.snapshot(sid)
+    assert changed['revision']>revision and changed['approved_revision'] is None
+    assert changed['reading']=={} and changed['cards']==[] and changed['phase']=='literature_review'
+    with pytest.raises(SessionError): engine.confirmation(sid,revision,card_id)
+    second=first(engine)
+    assert second['session_id']!=sid and second['reading']=={} and second['cards']==[]
+
+
+def test_regenerate_uses_approved_evidence(engine):
+    data=develop(engine); old=data['revision']; calls=len(engine.sources.fulltext_calls)
+    engine.regenerate(data['session_id'],old,'请缩小机制')
+    data=wait(engine,data['session_id'])
+    assert data['phase']=='idea_review' and data['revision']==old+1
+    assert len(engine.sources.fulltext_calls)==calls
+    assert data['cards'][0]['card_id'].startswith(f'r{old+1}-')
+
+
+def test_stop_waits_for_worker_and_resume(engine):
+    engine.sources.started=threading.Event();engine.sources.release=threading.Event()
+    data=engine.create('我想研究流域建模的 LS 因子');sid=data['session_id']
+    assert engine.sources.started.wait(3)
+    assert engine.stop(sid)['status']=='stopping'
+    with pytest.raises(SessionError): engine.revise_scope(sid,data['revision'],'另一个研究方向')
+    engine.sources.release.set()
+    data=wait(engine,sid);assert data['status']=='stopped' and not data['cards']
+    engine.sources.started=None
+    engine.resume(sid,data['revision']);data=wait(engine,sid)
+    assert data['phase']=='literature_review'
+
+
+def test_restart_and_budget(engine):
+    data=engine.store.create('新的研究方向',0.001);data['status']='running';engine.store.save(data)
+    recovered=IdeationService(engine.store.root,engine.config,llm=engine.llm,sources=engine.sources)
+    assert recovered.snapshot(data['session_id'])['status']=='interrupted'
+    recovered.config.hitl.cost_budget_usd=0.001
+    recovered.resume(data['session_id'],1);data=wait(recovered,data['session_id'])
+    assert data['status']=='blocked' and recovered.llm.calls==[]
+
+
+@pytest.mark.asyncio
+async def test_api_handoff_and_legacy_bypass(engine,tmp_path,monkeypatch):
+    import httpx
+    from researchclaw.config import RCConfig
+    from researchclaw.server.app import create_app,_app_state
+    from researchclaw.server.routes import ideation,pipeline
+    from researchclaw.pipeline.executor import StageResult
+    from researchclaw.pipeline.stages import Stage,StageStatus
+    from researchclaw.hardware import HardwareProfile
+    data=develop(engine);sid=data['session_id'];card=data['cards'][0]
+    config=RCConfig.from_dict({'project':{'name':'test'},'research':{'topic':'test'},'runtime':{'timezone':'UTC'},
+        'notifications':{'channel':'console'},'knowledge_base':{'root':str(tmp_path/'kb')},
+        'llm':{'base_url':'https://example.org','api_key_env':'TEST'}},check_paths=False)
+    app=create_app(config);_app_state['ideation_service']=engine
+    monkeypatch.chdir(tmp_path);monkeypatch.setattr(pipeline,'_active_run',None)
+    handoff_started, handoff_release = threading.Event(), threading.Event()
+    def access_check(card):
+        handoff_started.set()
+        assert handoff_release.wait(5)
+    monkeypatch.setattr(ideation,'_check_data_access',access_check)
+    monkeypatch.setattr('researchclaw.hardware.detect_hardware',lambda:HardwareProfile(False,'cpu','CPU',None,'limited',''))
+    calls=[]
+    def runner(**kwargs):
+        calls.append(kwargs)
+        return [StageResult(stage=Stage.EXPERIMENT_DESIGN,status=StageStatus.DONE,artifacts=()),StageResult(stage=Stage.CITATION_VERIFY,status=StageStatus.DONE,artifacts=())]
+    monkeypatch.setattr('researchclaw.pipeline.runner.execute_pipeline',runner)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        for path,body in [('/api/ideation/cards',{'direction':'任意研究方向'}),('/api/ideation/confirm',{'direction':'x','card':card})]:
+            assert (await client.post(path,json=body)).status_code==409
+        assert (await client.post(f'/api/ideation/sessions/{sid}/confirm',json={'revision':999,'card_id':card['card_id']})).status_code==409
+        payload={'revision':data['revision'],'card_id':card['card_id']}
+        pending=asyncio.create_task(client.post(f'/api/ideation/sessions/{sid}/confirm',json=payload))
+        assert await asyncio.to_thread(handoff_started.wait,3)
+        mutation=await client.post(f'/api/ideation/sessions/{sid}/scope',json={'revision':data['revision'],'direction':'交接期间修改方向'})
+        assert mutation.status_code==409
+        assert (await client.post(f'/api/ideation/sessions/{sid}/stop')).status_code==409
+        handoff_release.set()
+        a=await pending
+        assert a.status_code==200,a.text
+        await pipeline._run_task
+        b=await client.post(f'/api/ideation/sessions/{sid}/confirm',json=payload)
+        assert a.json()['run_id']==b.json()['run_id']
+        assert len(calls)==1 and calls[0]['from_stage']==Stage.EXPERIMENT_DESIGN
+        assert calls[0]['auto_approve_gates'] is True and 'to_stage' not in calls[0]
+        assert pipeline._active_run['status']=='completed'
+        run=tmp_path/'artifacts'/a.json()['run_id']
+        assert (run/'ideation_evidence/manifest.json').exists()
+        assert any(r.get('type')=='idea' for r in json.loads((run/'ideation_evidence/manifest.json').read_text())['reviews'])
+        assert (run/'stage-04/references.bib').exists()
+        assert (run/'stage-01/hardware_profile.json').exists()
+        snapshot=await client.get(f'/api/ideation/sessions/{sid}')
+        assert snapshot.json()['run_id']==a.json()['run_id']
+
+
+def test_conservative_cost_is_run_scoped(tmp_path):
+    from researchclaw.cost_tracker import tracked_run,get_global_tracker
+    from researchclaw.hitl.cost_guard import CostGuard
+    @tracked_run
+    def run(*,run_dir):
+        tracker=get_global_tracker()
+        before=tracker.total_cost_usd
+        tracker.record(SimpleNamespace(model='fake',prompt_tokens=100,completion_tokens=100,content='{}'),[])
+        return before,tracker.total_cost_usd
+    first=tmp_path/'a'; second=tmp_path/'b'
+    assert run(run_dir=first)==(0,0.003)
+    assert run(run_dir=second)==(0,0.003)
+    assert run(run_dir=first)==(0.003,0.006)
+    assert CostGuard(budget_usd=0.005).check(first).over_budget
+    assert get_global_tracker().total_cost_usd==0
+
+
+def test_unknown_dataset_blocks_handoff_without_network():
+    from researchclaw.server.routes.ideation import _check_data_access
+    with pytest.raises(SessionError):
+        _check_data_access({'data_sources':[{'name':'not verified','url':'','availability':'unknown'}]})
+
+
+@pytest.mark.asyncio
+async def test_pdf_upload_invalidates_review(engine,monkeypatch):
+    import httpx,fitz
+    from researchclaw.server.app import _app_state
+    from fastapi import FastAPI
+    from researchclaw.server.routes import ideation
+    from researchclaw.ideation.sources import Sources as RealSources
+    engine.sources.pdf_document=RealSources(engine.config).pdf_document
+    data=first(engine);sid=data['session_id']
+    app=FastAPI();app.include_router(ideation.router)
+    monkeypatch.setitem(_app_state,'ideation_service',engine)
+    doc=fitz.open();page=doc.new_page();page.insert_text((50,50),'Methods: actual uploaded PDF text. '*6,fontsize=8)
+    doc.set_metadata({'title':'User supplied LS paper'});raw=doc.tobytes();doc.close()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        path=f'/api/ideation/sessions/{sid}/papers/upload?revision=1'
+        bad=await client.post(path,content=b'not a pdf');assert bad.status_code==400
+        uploaded=await client.post(path,content=raw,headers={'Content-Type':'application/pdf','X-Filename':'paper.pdf'})
+        assert uploaded.status_code==200,uploaded.text
+        result=uploaded.json();assert result['revision']==2 and result['approved_revision'] is None
+        paper=result['papers'][-1];assert paper['source']=='user_pdf' and paper['required']
+        assert (engine.store.directory(sid)/paper['uploaded_pdf']).exists()
+        stale=await client.post(path,content=raw);assert stale.status_code==409

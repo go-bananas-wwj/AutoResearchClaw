@@ -46,6 +46,7 @@ def create_app(
 
     # Store config in shared state
     _app_state["config"] = config
+    _app_state.pop("ideation_service", None)
     _app_state["monitor_dir"] = monitor_dir
 
     # --- CORS ---
@@ -153,6 +154,8 @@ def create_app(
     # --- Background tasks ---
     @app.on_event("startup")
     async def startup() -> None:
+        from researchclaw.server.routes.ideation import get_service
+        get_service()  # Recover durable interrupted sessions before serving progress.
         asyncio.create_task(event_manager.heartbeat_loop(interval=15.0))
 
         if config.dashboard.enabled:

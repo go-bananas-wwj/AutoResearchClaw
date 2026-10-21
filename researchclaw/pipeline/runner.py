@@ -13,6 +13,7 @@ from pathlib import Path
 
 from researchclaw.adapters import AdapterBundle
 from researchclaw.config import RCConfig
+from researchclaw.cost_tracker import tracked_run
 from researchclaw.evolution import EvolutionStore, extract_lessons
 from researchclaw.knowledge.base import write_stage_to_kb
 from researchclaw.pipeline.executor import StageResult, execute_stage
@@ -523,6 +524,7 @@ def _repair_and_retry_experiment_run(
     return result
 
 
+@tracked_run
 def execute_pipeline(
     *,
     run_dir: Path,
@@ -573,7 +575,9 @@ def execute_pipeline(
     except Exception:
         logger.debug("Experiment memory initialisation skipped")
 
-    cost_budget = getattr(config.experiment.cli_agent, "max_budget_usd", 0.0) or 0.0
+    budgets = [getattr(config.experiment.cli_agent, "max_budget_usd", 0.0) or 0.0,
+               getattr(getattr(config, "hitl", None), "cost_budget_usd", 0.0) or 0.0]
+    cost_budget = min((b for b in budgets if b > 0), default=0.0)
 
     for stage in STAGE_SEQUENCE:
         started = _should_start(stage, from_stage, started)

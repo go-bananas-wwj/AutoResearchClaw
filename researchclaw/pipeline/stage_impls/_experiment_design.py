@@ -312,6 +312,14 @@ def _execute_experiment_design(
                 except yaml.YAMLError:
                     pass
 
+    # 本地适配：证据驱动入口不能退回用占位数据集/基线构造的实验计划。
+    if plan is None and (run_dir / "ideation_origin.json").exists():
+        (stage_dir / "plan_meta.json").write_text(json.dumps({
+            "outcome": "grounded_plan_unavailable",
+            "note": "未生成真实、可执行的实验计划；请补充数据或重试，未使用模板占位计划。"}, ensure_ascii=False))
+        return StageResult(stage=Stage.EXPERIMENT_DESIGN, status=StageStatus.PAUSED,
+                           artifacts=("plan_meta.json",), error="未取得证据支持的实验计划，已暂停。")
+
     # BUG-12: Fallback 4 — extract method/baseline names from Stage 8 hypotheses
     if plan is None:
         _hyp_text = _read_prior_artifact(run_dir, "hypotheses.md") or ""
@@ -363,6 +371,13 @@ def _execute_experiment_design(
             "risks": ["validity threats", "confounding variables"],
             "compute_budget": {"max_gpu": 1, "max_hours": 4},
         }
+
+    if (run_dir / "ideation_origin.json").exists() and re.search(
+        r"primary_dataset|secondary_dataset|baseline_[12]|secondary_metric|template dataset",
+        json.dumps(plan, ensure_ascii=False), re.I):
+        (stage_dir / "plan_meta.json").write_text(json.dumps({"outcome": "placeholder_plan_rejected"}))
+        return StageResult(stage=Stage.EXPERIMENT_DESIGN, status=StageStatus.PAUSED,
+                           artifacts=("plan_meta.json",), error="实验计划仍含占位数据或基线，已暂停。")
 
     # Schema-deficit guard: when the LLM returned a parseable dict that
     # bypassed every fallback cascade (because plan was never None) but

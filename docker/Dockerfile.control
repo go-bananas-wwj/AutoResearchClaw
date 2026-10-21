@@ -2,7 +2,8 @@
 # 实验沙箱镜像另用官方 researchclaw/docker/Dockerfile(.remote-sensing) 构建，
 # 由本容器通过 docker socket 调度（见 docker-compose.yml 注释）。
 # Build: docker build -f docker/Dockerfile.control -t researchclaw/control:latest .
-FROM python:3.11-slim
+# 本地适配：固定 Debian 12，与下方 Docker bookworm 软件源保持一致。
+FROM python:3.11-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
@@ -11,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates gnupg \
     && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && curl --retry 4 --retry-all-errors -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -21,7 +22,8 @@ COPY pyproject.toml README.md LICENSE ./
 COPY researchclaw/ ./researchclaw/
 COPY frontend-legacy/ ./frontend/
 COPY prompts.default.yaml ./
-RUN pip install -e . fastapi "uvicorn[standard]" wsproto
+# 本地适配：调研阶段精读/用户上传论文需要真正提取 PDF 正文。
+RUN pip install -e '.[pdf]' fastapi "uvicorn[standard]" wsproto
 
 # 非 root；uid/gid 对齐宿主用户（bind mount 写 artifacts 不踩权限）
 RUN groupadd -r -g 1000 claw && useradd -r -u 1000 -g 1000 -m -s /bin/bash claw && chown -R claw /app

@@ -33,7 +33,9 @@ from researchclaw.literature.models import Author, Paper
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.openalex.org/works"
-_POLITE_EMAIL = "researchclaw@users.noreply.github.com"
+# 本地适配：公共默认 mailto 会把所有安装归到同一免费额度池，导致全局429。
+# 未提供自己的邮箱时不冒用共享地址；显式 email/api_key 仍然优先。
+_POLITE_EMAIL = ""
 _MAX_PER_REQUEST = 50
 _MAX_RETRIES = 3
 _MAX_WAIT_SEC = 60
@@ -94,12 +96,13 @@ def search_openalex(
     params: dict[str, str] = {
         "search": query,
         "per_page": str(limit),
-        "mailto": email,
         "select": (
             "id,title,authorships,publication_year,primary_location,"
             "cited_by_count,doi,ids,abstract_inverted_index,type"
         ),
     }
+    if email:
+        params["mailto"] = email
     if api_key:
         params["api_key"] = api_key
     if filters:

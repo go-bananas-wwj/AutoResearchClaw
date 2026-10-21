@@ -54,6 +54,17 @@ const API = {
   ideationStart(direction) { return this.post('/ideation/start', { direction }); },
   ideaCards(direction, n) { return this.post('/ideation/cards', { direction: direction, n: n || 4 }); },
   ideaPrompt() { return this.get('/ideation/prompt'); },
+  ideationSessions() { return this.get('/ideation/sessions'); },
+  ideationSession(id) { return this.get(`/ideation/sessions/${id}`); },
+  createIdeation(direction) { return this.post('/ideation/sessions', { direction }); },
+  ideationAction(id, action, body = {}) { return this.post(`/ideation/sessions/${id}/${action}`, body); },
+  async uploadIdeationPaper(id, revision, file) {
+    const res = await fetch(`${this.base}/ideation/sessions/${id}/papers/upload?revision=${revision}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/pdf', 'X-Filename': encodeURIComponent(file.name) }, body: file,
+    });
+    if (!res.ok) { const data = await res.json(); throw new Error(data.detail || '上传失败'); }
+    return res.json();
+  },
   ideaConfirm(payload) { return this.post('/ideation/confirm', payload); },
   ideationStatus() { return this.get('/ideation/status'); },
   ideationReport(runId) { return this.get(`/ideation/report${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`); },

@@ -164,6 +164,8 @@ async def _do_start(topic: str, session: ChatSession) -> str:
 
 
 async def _handle_start(text: str, session: ChatSession) -> str:
+    if session.pending.get("ideation_session"):
+        return await _handle_ideate("选题结果", session)
     topic = _extract_topic(text)
     if not topic:
         session.pending["awaiting"] = "topic"
@@ -175,6 +177,16 @@ async def _handle_start(text: str, session: ChatSession) -> str:
 
 
 async def _handle_stop(text: str, session: ChatSession) -> str:
+    if session.pending.get("ideation_session"):
+        from researchclaw.server.routes.ideation import get_service
+        sid = session.pending["ideation_session"]
+        if not get_service().snapshot(sid).get("run_id"):
+            from researchclaw.ideation.store import SessionError
+            try:
+                stopped = get_service().stop(sid)
+            except SessionError as exc:
+                return str(exc)
+            return "调研" + ("正在停止，当前请求返回后生效。" if stopped["status"] == "stopping" else "已停止。")
     from researchclaw.server.routes.pipeline import stop_pipeline
 
     try:
@@ -188,107 +200,72 @@ async def _handle_stop(text: str, session: ChatSession) -> str:
 
 
 async def _handle_ideate(text: str, session: ChatSession) -> str:
-    """「找选题」：启动/查询选题引擎（Stage 1-8 + 证据卡）；「讲一下现状」：领域图景讲解。"""
-    from fastapi import HTTPException
+    """Chat shares the durable two-review service, with no latest-session cross-talk."""
+    # Historical reports remain read-only; new sessions always use their bound id.
+    if not session.pending.get("ideation_session") and re.search(r"现状|领域图景|文献综述|怎么做", text):
+        historical = latest_ideation_run(REPO_ROOT)
+        if historical is not None:
+            narrative = await asyncio.to_thread(build_landscape, historical, _llm())
+            return ("历史调研摘要综述（不等同于全文精读）：\n\n" + narrative +
+                    "\n\n代表论文：\n" + format_shortlist(load_shortlist(historical)[:10]) +
+                    "\n\n历史「精读第 N 篇」仅提供摘要分析，不视为全文精读。后续请新建两轮审核调研，在真实全文依据上形成 insight 与候选。")
+        return "尚无绑定的调研会话，请先说「找选题：研究方向」。"
+    from researchclaw.server.routes.ideation import get_service
+    from researchclaw.ideation.store import SessionError
 
-    # 讲解分支：「讲一下现状/别人怎么做的」→ 领域图景叙事 + 编号短名单
-    if re.search(r"(?:领域现状|文献综述|领域图景|讲一下现状|别人.{0,6}怎么做)", text):
-        from researchclaw.server.routes.ideation import ideation_status
-
-        st = await ideation_status()
-        if st.get("status") == "running":
-            return (
-                f"选题引擎还在跑（{st.get('run_id')}，方向：{st.get('direction')}）。"
-                "文献扫描通常 10–30 分钟，跑完我再给你讲。"
-            )
-        run_dir = latest_ideation_run(REPO_ROOT)
-        if run_dir is None:
-            return (
-                "还没有文献扫描结果。先给我一个方向跑一次扫描，"
-                "比如「找选题：遥感嵌入+灾害预警」，扫完我就能给你讲这个领域别人是怎么做的。"
-            )
-        narrative = await asyncio.to_thread(build_landscape, run_dir, _llm())
-        if not narrative:
-            return (
-                f"选题 run {run_dir.name} 里没有可用的论文短名单，"
-                "建议换个方向重新跑一次「找选题：方向」。"
-            )
-        papers = load_shortlist(run_dir)
-        return (
-            narrative
-            + "\n\n---\n\n**扫描到的代表论文**（想深入哪篇：「精读第 N 篇」我帮你批判性提问；"
-            "「复现第 N 篇」进沙箱真跑一遍）：\n"
-            + format_shortlist(papers[:10])
-            + "\n\n有感觉了就说「开始确认」，我结合这些材料一次性起草完整《研究任务书》给你审。"
-        )
-
-    # 查询结果分支
-    if re.search(r"结果|报告|证据卡|出来了吗|好了吗|咋样了", text):
-        from researchclaw.server.routes.ideation import ideation_report, ideation_status
-
-        st = await ideation_status()
-        if st.get("status") == "running":
-            return (
-                f"选题引擎还在跑（{st.get('run_id')}，方向：{st.get('direction')}）。"
-                "文献扫描通常 10–30 分钟，稍后问我「选题结果」。"
-            )
+    service = get_service()
+    sid = session.pending.get("ideation_session")
+    if sid and re.search(r"结果|报告|证据卡|出来了吗|好了吗|咋样|现状|怎么做", text):
         try:
-            rep = await ideation_report()
-        except HTTPException:
-            return "还没有选题结果。给我一个方向，比如「找选题：遥感嵌入+灾害预警」。"
-        lines = [
-            f"查新评分 {rep.get('novelty_score')}（{rep.get('novelty_assessment')}），"
-            f"候选科学问题 {len(rep.get('cards', []))} 个："
-        ]
-        for c in rep.get("cards", []):
-            lines.append(f"\n**#{c.get('rank')} {c.get('question')}**")
-            if c.get("note_zh"):
-                lines.append(f"  {c['note_zh']}")
-            for ev in (c.get("gap_evidence") or [])[:2]:
-                lines.append(f"  缺口证据：{ev[:120]}")
-            if c.get("novelty_hint"):
-                lines.append(f"  新颖性：{c['novelty_hint'][:120]}")
-        lines.append(
-            "\n下一步可以这样走：\n"
-            "- 「讲一下现状」→ 我按扫描到的论文讲一遍这个领域别人是怎么做的\n"
-            "- 「精读第 N 篇」/「复现第 N 篇」→ 从阅读/复现里提炼问题和可升级点\n"
-            "- 看中第 N 个候选问题 → 说「就选第 N 个，开始确认」，我一次性起草完整任务书给你审"
-        )
-        return "\n".join(lines)
-
-    # 启动分支
+            data = service.snapshot(sid)
+        except SessionError as exc:
+            return str(exc)
+        labels = {"retrieval": "正在检索筛选", "literature_review": "等待第一轮文献审核",
+                  "reading": "正在精读全文", "synthesis": "正在分析研究缺口",
+                  "generate": "正在构思候选", "audit": "正在查重审查",
+                  "idea_review": "等待第二轮创新点审核", "handed_off": "已交接自动科研"}
+        lines = [f"调研 **{sid}**：{labels.get(data['phase'], data['phase'])}（{data['status']}）。",
+                 f"方向：{data['direction']}；文献 {len(data['papers'])} 篇；全文精读 {len(data['reading'])} 篇。"]
+        if data.get("synthesis"):
+            lines.append(data["synthesis"]["landscape_zh"])
+        lines.extend(data.get("missing", []))
+        lines.append(f"在网页左侧打开此调研会话审核：`/#ideation/{sid}`。文献审核和创新点审核均不会被对话自动放行。")
+        return "\n\n".join(lines)
     direction = _extract_topic(text)
     if not direction:
-        m = re.search(r"(?:找选题|选题|ideate)\s*[:：]?\s*(.+)", text)
-        direction = (m.group(1).strip() if m else "").strip("。")
+        match = re.search(r"(?:找选题|选题|ideate)\s*[:：]?\s*(.+)", text)
+        direction = (match.group(1).strip() if match else "").strip("。")
     if len(direction) < 4:
         session.pending["awaiting"] = "ideation"
-        return (
-            "好，帮你跑选题引擎（真实扫描 OpenAlex/S2/arXiv → 找缺口 → 候选科学问题+证据卡）。"
-            "告诉我**研究方向**（例如「遥感嵌入+灾害预警」）。"
-        )
-
-    from researchclaw.server.routes.ideation import IdeationStartRequest, start_ideation
-
+        return "请告诉我研究方向。我会先检索筛选相关论文，等你确认文献范围后，再精读并生成创新点。"
     try:
-        resp = await start_ideation(IdeationStartRequest(direction=direction))
-    except HTTPException as exc:
-        if exc.status_code == 409:
-            return "已有一次选题运行在跑，问我「选题结果」看进度。"
-        return f"启动失败：{exc.detail}"
-    return (
-        f"选题引擎已启动（{resp.run_id}，方向：{direction}）。\n"
-        "它会真实扫描文献找缺口，通常 10–30 分钟。\n"
-        "完成后对我说「讲一下现状」，我先给你讲这个领域别人是怎么做的；"
-        "或说「选题结果」直接看候选科学问题和证据卡。"
-    )
+        data = service.create(direction)
+    except SessionError as exc:
+        return str(exc)
+    session.pending["ideation_session"] = data["session_id"]
+    return (f"已启动文献调研 **{data['session_id']}**（方向：{direction}）。\n"
+            "检索筛选完成后，请在网页左侧审核文献；之后自动精读、查重，再由你审核创新点。"
+            "两轮审核之前不会创建正式科研项目或启动实验。")
 
 
-def _resolve_shortlist_paper(n: int) -> tuple[str, str]:
+def _resolve_shortlist_paper(n: int, session_id: str = "") -> tuple[str, str]:
     """把「第 N 篇」解析为选题短名单里的论文标识（arXiv id > DOI/URL > 标题）。
 
     返回 (paper_ref, error_msg)；paper_ref 为空时 error_msg 给出原因。
     """
+    if session_id:
+        from researchclaw.server.routes.ideation import get_service
+        from researchclaw.ideation.store import SessionError
+        try:
+            data = get_service().snapshot(session_id)
+        except SessionError as exc:
+            return "", str(exc)
+        papers = [p for p in data["papers"] if p.get("selected")]
+        if not 1 <= n <= len(papers):
+            return "", "该编号不在当前调研会话的保留文献中。"
+        paper = papers[n - 1]
+        ref = paper.get("arxiv_id") or ("https://doi.org/" + paper["doi"] if paper.get("doi") else paper.get("url"))
+        return (str(ref), "") if ref else ("", "该论文缺少可解析的 DOI/URL。")
     run_dir = latest_ideation_run(REPO_ROOT)
     if run_dir is None:
         return "", "还没有文献扫描结果——先「找选题：方向」跑一次扫描，才有「第 N 篇」可指。"
@@ -311,6 +288,25 @@ def _resolve_shortlist_paper(n: int) -> tuple[str, str]:
 
 async def _handle_paper_read(text: str, session: ChatSession) -> str:
     """「精读第 N 篇」：对选题短名单里的论文做批判性精读，产出问题与可升级点。"""
+    if session.pending.get("ideation_session"):
+        from researchclaw.server.routes.ideation import get_service
+        from researchclaw.ideation.store import SessionError
+        try:
+            data = get_service().snapshot(session.pending["ideation_session"])
+        except SessionError as exc:
+            return str(exc)
+        papers = [p for p in data["papers"] if p.get("selected")]
+        match = re.search(r"第\s*(\d+)\s*篇", text)
+        if not match or not 1 <= int(match.group(1)) <= len(papers):
+            return "当前会话保留文献（编号仅对应此列表）：\n" + format_shortlist(papers[:20]) + "\n说「精读第 N 篇」查看真实全文阅读记录。"
+        paper = papers[int(match.group(1)) - 1]
+        note = data["reading"].get(paper["paper_id"])
+        if not note:
+            return "这篇论文尚未完成全文精读。请先审核文献，等待全文获取；摘要不会冒充精读。"
+        return "# " + paper["title"] + "\n\n" + "\n\n".join(
+            f"**{label}**\n{note.get(key, '')}" for key, label in
+            [("problem", "问题"), ("method", "方法"), ("data", "数据"), ("experiments", "实验"),
+             ("findings", "结论"), ("limitations", "局限与适用条件")])
     run_dir = latest_ideation_run(REPO_ROOT)
     if run_dir is None:
         return (
@@ -424,7 +420,7 @@ async def _handle_reproduce(text: str, session: ChatSession) -> str:
     else:
         m_nth = re.search(r"第\s*(\d+)\s*篇", text)
         if m_nth:
-            paper, err = _resolve_shortlist_paper(int(m_nth.group(1)))
+            paper, err = _resolve_shortlist_paper(int(m_nth.group(1)), session.pending.get("ideation_session", ""))
             if not paper:
                 return err
         else:
@@ -888,6 +884,10 @@ async def _handle_brief(text: str, session: ChatSession) -> str:
 
     可从选题证据卡/复现基线预填；预填材料权威，原样保留。
     """
+    if session.pending.get("ideation_session"):
+        return ("当前采用文献审核→创新点审核的流程，请在调研会话中确认已审查的创新点。"
+                "确认后会自动从实验设计执行到中文论文，不再通过旧任务书入口绕过证据审核。")
+
     if session.pending.get("flow") == "brief":
         return await _handle_brief_flow(text, session)
 
@@ -1103,6 +1103,11 @@ async def _handle_config(text: str, session: ChatSession) -> str:
 # ---------------------------------------------------------------- status / results
 
 async def _handle_status(text: str, session: ChatSession) -> str:
+    if session.pending.get("ideation_session"):
+        from researchclaw.server.routes.ideation import get_service
+        sid = session.pending["ideation_session"]
+        if not get_service().snapshot(sid).get("run_id"):
+            return await _handle_ideate("选题结果", session)
     from researchclaw.dashboard.collector import DashboardCollector
 
     collector = DashboardCollector()
@@ -1218,21 +1223,14 @@ async def _handle_general(text: str, session: ChatSession) -> str:
 
 async def _handle_help(text: str, session: ChatSession) -> str:
     return (
-        "我可以这样帮你（**两条通道并存**）：\n"
-        "- **对话式**：直接说你的 insight/研究问题，我帮你聊成题目并启动\n"
-        "- **原流程**：你在 Settings/终端给好 topic，流水线全自动跑（门控处终端把关）\n\n"
-        "常用语：\n"
-        "- 「开始研究：XXX」/ 「跑起来」→ 启动（缺题目我会追问）\n"
-        "- 「到哪一步了」/ 「结果怎么样」→ 状态与指标\n"
-        "- 「停止」→ 中止当前运行\n"
-        "- 「把主模型换成 qwen-plus」→ 切换模型（含备份+热更新）\n"
-        "- 随便聊 → 我按研究助理身份回答（已接入大模型）\n\n"
-        "调研→insight 引导链路（推荐这样起步）：\n"
-        "- 「找选题：方向」→ 真实扫描文献找缺口，产出候选科学问题+证据卡\n"
-        "- 「讲一下现状」→ 我按扫描到的论文讲一遍这个领域别人是怎么做的\n"
-        "- 「精读第 N 篇」→ 批判性提问：关键假设/可质疑的问题/可升级点\n"
-        "- 「复现第 N 篇」→ 沙箱真跑验证宣称指标，产出问题清单与改进机会\n"
-        "- 「开始确认」→ 我一次性起草完整《研究任务书》，你整体审阅修改后确认启动"
+        "帮助 / Help\n\n"
+        "- 「找选题：方向」：先真实检索筛选，网页审核文献后精读、构思和查重；再次审核创新点后自动完成实验与中文论文。\n"
+        "- 「选题结果」/「讲一下现状」：查看当前调研会话进度、证据与问题定位。\n"
+        "- 「精读第 N 篇」：查看当前会话的真实全文阅读记录；摘要不会冒充精读。\n"
+        "- 「复现第 N 篇」：根据当前会话论文进入复现模块。\n"
+        "- 「到哪一步了」/「结果怎么样」：查看科研状态与指标。\n"
+        "- 「停止」：请求停止当前任务。\n"
+        "- Settings/终端和已确认任务书的手动启动入口继续可用。"
     )
 
 

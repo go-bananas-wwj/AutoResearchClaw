@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+.overleaf
+.ssh
+.venv
+artifacts
+experiments
+external
+node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+.pytest_cache

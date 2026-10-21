@@ -8,6 +8,8 @@
 
   const App = {
     projects: [],
+    ideations: [],
+    currentIdeation: null,
     totalStages: 23,
     currentProject: null,      // runId | null
     currentTab: 'overview',    // 'overview' | 'interact' | 'manage'
@@ -20,6 +22,7 @@
     /* ---------- 项目列表 ---------- */
 
     async _loadProjects() {
+      this._loadIdeations();
       let r;
       try {
         r = await API.listProjects();
@@ -76,7 +79,26 @@
 
     /* ---------- 导航 ---------- */
 
+    async _loadIdeations() {
+      try { this.ideations = (await API.ideationSessions()).sessions || []; } catch (_) { return; }
+      const el = document.getElementById('sidebar-ideations');
+      if (!el) return;
+      el.innerHTML = this.ideations.length ? '<div class="proj-side-label">调研中 / 调研记录</div>' + this.ideations.map(s =>
+        `<button class="proj-card ideation-side-card${s.session_id === this.currentIdeation && this.view === 'ideation' ? ' active' : ''}" onclick="App.openIdeation('${s.session_id}')">
+          <span class="proj-card-title" data-no-i18n>${this._esc(s.direction)}</span>
+          <span class="proj-card-row">${this._esc(IdeationView.phaseLabel(s.phase))} · ${this._esc(IdeationView.statusLabel(s.status))}</span>
+        </button>`).join('') : '';
+    },
+
+    openIdeation(sessionId) {
+      this.currentIdeation = sessionId;
+      this.view = 'ideation'; this.newMode = false; this.currentProject = null;
+      history.replaceState(null, '', '#ideation/' + sessionId);
+      this._renderMain(); this._loadIdeations(); this._renderSidebar();
+    },
+
     openProject(runId) {
+      history.replaceState(null, '', location.pathname + location.search);
       this.view = 'home';
       this.newMode = false;
       this.currentProject = runId;   // currentTab 保留（跨项目记住用户所在 tab）
@@ -85,7 +107,8 @@
     },
 
     startNewResearch() {
-      // Step 1: 创新点审核 —— 先选卡片，再建 run
+      this.currentIdeation = null;
+      history.replaceState(null, '', location.pathname + location.search);
       this.view = 'ideation';
       this.newMode = false;
       this.currentProject = null;
@@ -94,13 +117,7 @@
     },
 
     startNewResearchChat() {
-      // 旧路径：跳过审核，直接进对话
-      this.view = 'home';
-      this.newMode = true;
-      this.currentProject = null;
-      this.currentTab = 'interact';
-      this._renderMain();
-      this._renderSidebar();
+      this.startNewResearch();
     },
 
     navigateTo(view) {
@@ -141,7 +158,7 @@
       }
 
       if (this.view === 'ideation') {
-        IdeationView.render(main);
+        IdeationView.render(main, { sessionId: this.currentIdeation });
         this._active = IdeationView;
         return;
       }
@@ -255,6 +272,8 @@
   });
 
   document.addEventListener('DOMContentLoaded', async () => {
+    const intakeMatch = location.hash.match(/^#ideation\/(is-[a-f0-9]{20})$/);
+    if (intakeMatch) { App.view = 'ideation'; App.currentIdeation = intakeMatch[1]; }
     document.getElementById('btn-new-research').addEventListener('click', () => App.startNewResearch());
     document.getElementById('nav-settings').addEventListener('click', (e) => {
       e.preventDefault();
