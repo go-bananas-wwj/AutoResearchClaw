@@ -8,8 +8,14 @@ const IdeationView = {
   cards: [],
   selected: -1,
   busy: false,
+  _dialog: null,
+  _returnFocus: null,
+  _session: 0,
+  _patterns: {},
 
   render(host) {
+    this._closeDialog(false);
+    this._session++;
     this.host = host;
     this.cards = [];
     this.selected = -1;
@@ -17,7 +23,11 @@ const IdeationView = {
     this._paint();
   },
 
-  destroy() {},
+  destroy() {
+    this._session++;
+    this._closeDialog(false);
+    this.host = null;
+  },
 
   _esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -34,7 +44,7 @@ const IdeationView = {
           '<h2 style="margin:0">创新点审核</h2>' +
         '</div>' +
         '<p style="color:var(--text-muted);margin:6px 0 16px">' +
-          '描述研究方向，查看创新点卡片，选定方案后再开始实验。' +
+          '描述研究方向，点击卡片查看详情，审阅并选定方案后再开始实验。' +
           '<b>确认前不会创建研究项目。</b>' +
         '</p>' +
         '<div class="card" style="padding:16px">' +
@@ -43,9 +53,11 @@ const IdeationView = {
             'background:var(--bg-tertiary);color:var(--text-primary);font-size:14px;resize:vertical"></textarea>' +
           '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px">' +
             '<button class="proj-btn primary" id="idea-generate">生成创新点卡片</button>' +
+            '<button class="idea-text-btn" id="idea-prompt">生成方式与提示词</button>' +
             '<a href="#" id="idea-chat-link" style="font-size:12px;color:var(--text-muted)">或者：跳过审核，直接对话</a>' +
-            '<span id="idea-status" style="font-size:13px;color:var(--text-muted)"></span>' +
           '</div>' +
+          '<p class="idea-evidence-note">卡片是待验证的研究设想，尚未进行文献检索或新颖性核验。</p>' +
+          '<p id="idea-status" class="idea-status" role="status" aria-live="polite"></p>' +
         '</div>' +
         '<div id="idea-cards" class="idea-cards"></div>' +
         '<div id="idea-actions" style="margin-top:16px;display:none;align-items:center;gap:12px;flex-wrap:wrap">' +
@@ -59,6 +71,7 @@ const IdeationView = {
     if (gen) gen.addEventListener('click', function () { self.generate(); });
     var confirm = document.getElementById('idea-confirm');
     if (confirm) confirm.addEventListener('click', function () { self.confirm(); });
+    document.getElementById('idea-prompt').addEventListener('click', function () { self._showPrompt(); });
     var chat = document.getElementById('idea-chat-link');
     if (chat) chat.addEventListener('click', function (e) {
       e.preventDefault();
@@ -82,37 +95,122 @@ const IdeationView = {
     var self = this;
     box.innerHTML = this.cards.map(function (c, i) {
       var sel = self.selected === i;
-      var patterns = (c.patterns || []).map(function (p) { return self._esc(p); }).join(' · ');
-      var metrics = (c.metrics || []).map(function (m) { return self._esc(m.metric_key) + ' (' + self._esc(m.direction) + ')'; }).join(', ');
-      var baselines = (c.baselines || []).map(function (b) { return self._esc(b.name || b); }).join('、');
-      return '<button type="button" class="proj-big-card idea-card' + (sel ? ' selected' : '') + '" data-idx="' + i + '" aria-pressed="' + sel + '">' +
-        '<span style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' +
-          '<span class="proj-big-card-title" style="margin:0;font-size:15px">' + self._esc(c.title) + '</span>' +
-          '<span style="font-size:11px;color:' + (sel ? 'var(--accent)' : 'var(--text-muted)') + '">' + (sel ? '已选中' : '点击选择') + '</span>' +
-        '</span>' +
-        '<span style="display:block;margin:8px 0;font-size:13px;color:var(--text-secondary)">' + self._esc(c.one_liner) + '</span>' +
-        '<span style="display:block;font-size:12px;color:var(--text-muted);line-height:1.6">' +
-          '<span class="idea-detail"><b>科学问题：</b>' + self._esc(c.scientific_question) + '</span>' +
-          '<span class="idea-detail"><b>方法：</b>' + self._esc(c.method) + '</span>' +
-          '<span class="idea-detail"><b>可证伪：</b>' + self._esc(c.falsification) + '</span>' +
-          '<span class="idea-detail"><b>新颖性：</b>' + self._esc(c.novelty) + '</span>' +
-          '<span class="idea-detail"><b>风险：</b>' + self._esc(c.risks) + '</span>' +
-          '<span class="idea-detail"><b>算力 / 指标：</b>' + self._esc(c.compute) + (metrics ? ' · ' + metrics : '') + '</span>' +
-          (baselines ? '<span class="idea-detail"><b>基线：</b>' + baselines + '</span>' : '') +
-          (patterns ? '<span class="idea-detail"><b>模式：</b>' + patterns + '</span>' : '') +
-        '</span>' +
+      return '<button type="button" class="proj-big-card idea-card' + (sel ? ' selected' : '') + '" data-idx="' + i + '" aria-haspopup="dialog">' +
+        '<span class="idea-card-top"><span>候选方案 ' + String(i + 1).padStart(2, '0') + '</span>' +
+          '<span class="idea-card-selection">' + (sel ? '已选中' : '待审阅') + '</span></span>' +
+        '<span class="proj-big-card-title idea-card-title" data-no-i18n>' + self._esc(c.title) + '</span>' +
+        '<span class="idea-card-summary" data-no-i18n>' + self._esc(self._shortText(c.one_liner || c.scientific_question, 110)) + '</span>' +
+        '<span class="idea-card-more">查看完整方案</span>' +
       '</button>';
     }).join('');
 
     Array.prototype.forEach.call(box.querySelectorAll('[data-idx]'), function (el) {
       el.addEventListener('click', function () {
-        self.selected = parseInt(el.getAttribute('data-idx'), 10);
-        self._renderCards();
+        self._openCard(parseInt(el.getAttribute('data-idx'), 10));
       });
     });
-    if (actions) actions.style.display = 'flex';
+    if (actions) actions.style.display = this.cards.length ? 'flex' : 'none';
+    this._updateControls();
+  },
+
+  _updateControls() {
+    if (!this.host) return;
+    var generate = document.getElementById('idea-generate');
+    if (generate) generate.disabled = this.busy;
     var confirm = document.getElementById('idea-confirm');
     if (confirm) confirm.disabled = this.selected < 0 || this.busy;
+    this.host.querySelectorAll('.idea-card').forEach(el => { el.disabled = this.busy; });
+  },
+
+  _shortText(text, limit) {
+    var chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim());
+    return chars.length > limit ? chars.slice(0, limit).join('') + '…' : chars.join('');
+  },
+
+  _rememberPatterns(catalog) {
+    (catalog || []).forEach(p => { this._patterns[p.id] = p.name; });
+  },
+
+  _openCard(index) {
+    var card = this.cards[index];
+    if (!card || this.busy) return;
+    var section = (label, value) => '<section class="idea-detail-section"><h3>' + this._esc(label) + '</h3><p data-no-i18n>' + this._esc(value || '暂未提供') + '</p></section>';
+    var list = values => (values || []).join('；');
+    var metrics = (card.metrics || []).map(m => {
+      var direction = ['increase', 'maximize'].includes(m.direction) ? '越高越好'
+        : ['decrease', 'minimize'].includes(m.direction) ? '越低越好' : m.direction;
+      return m.metric_key + (direction ? '（' + direction + '）' : '');
+    });
+    var baselines = (card.baselines || []).map(b => typeof b === 'string' ? b : b.name + (b.note ? '：' + b.note : ''));
+    var body = '<p class="idea-dialog-intro" data-no-i18n>' + this._esc(card.one_liner || '') + '</p>' +
+      '<p class="idea-evidence-note">以下为模型提出的候选方案；引用、数据可得性和新颖性仍需独立核验。</p>' +
+      section('科学问题', card.scientific_question) + section('方法与实验设计', card.method) +
+      section('可证伪预测与负对照', card.falsification) + section('新颖性与证据缺口', card.novelty) +
+      section('主要风险', card.risks) + section('算力预算', card.compute) +
+      section('数据集', list(card.datasets)) + section('评价指标', list(metrics)) +
+      section('对比基线', list(baselines)) + section('支撑证据（未核验）', list(card.evidence)) +
+      section('构思模式', list((card.patterns || []).map(p => this._patterns[p] || p)));
+    var dialog = this._showDialog(card.title || '创新点详情', body,
+      '<button class="proj-btn" data-dialog-close>返回卡片</button><button class="proj-btn primary" id="idea-select-card">选择这张方案</button>');
+    dialog.querySelector('#idea-select-card').addEventListener('click', () => {
+      this.selected = index;
+      this._renderCards();
+      this._closeDialog(false);
+      var selectedCard = this.host && this.host.querySelector('[data-idx="' + index + '"]');
+      if (selectedCard) selectedCard.focus();
+      this._status('已选择方案 ' + (index + 1) + '。确认无误后，点击「确认选中卡片，开始实验」。');
+    });
+  },
+
+  _showDialog(title, body, footer) {
+    var opener = document.activeElement;
+    this._closeDialog(false);
+    this._returnFocus = opener;
+    var dialog = document.createElement('dialog');
+    dialog.className = 'idea-dialog';
+    dialog.setAttribute('aria-labelledby', 'idea-dialog-title');
+    dialog.innerHTML = '<div class="idea-dialog-head"><h2 id="idea-dialog-title" data-no-i18n>' + this._esc(title) + '</h2>' +
+      '<button class="idea-text-btn" data-dialog-close aria-label="关闭弹窗">关闭</button></div>' +
+      '<div class="idea-dialog-body">' + body + '</div>' +
+      '<div class="idea-dialog-foot">' + (footer || '<button class="proj-btn" data-dialog-close>返回</button>') + '</div>';
+    document.body.appendChild(dialog);
+    this._dialog = dialog;
+    dialog.querySelectorAll('[data-dialog-close]').forEach(el => el.addEventListener('click', () => this._closeDialog()));
+    dialog.addEventListener('cancel', e => { e.preventDefault(); this._closeDialog(); });
+    dialog.addEventListener('close', () => { if (this._dialog === dialog) this._closeDialog(); });
+    dialog.addEventListener('click', e => { if (e.target === dialog) this._closeDialog(); });
+    dialog.showModal();
+    return dialog;
+  },
+
+  _closeDialog(restoreFocus = true) {
+    var dialog = this._dialog;
+    if (!dialog) return;
+    this._dialog = null;
+    if (dialog.open) dialog.close();
+    dialog.remove();
+    var opener = this._returnFocus;
+    this._returnFocus = null;
+    if (restoreFocus && opener && opener.isConnected) opener.focus();
+  },
+
+  async _showPrompt() {
+    var dialog = this._showDialog('生成方式与提示词', '<p role="status">正在读取实际使用的提示词…</p>');
+    try {
+      var info = await API.ideaPrompt();
+      if (this._dialog !== dialog) return;
+      this._rememberPatterns(info.pattern_catalog);
+      var options = info.generation || {};
+      dialog.querySelector('.idea-dialog-body').innerHTML =
+        '<p class="idea-dialog-intro">研究方向与 15 种构思模式一起提交给模型，默认请求 4 张候选卡片。排序由模型按提示词完成，没有额外评分器，也没有文献检索或新颖性核验。</p>' +
+        '<p class="idea-evidence-note">标题较长且为英文、方法细节较多，来自下方模板的明确要求。列表仅显示摘要，完整内容保留在详情弹窗中。</p>' +
+        '<dl class="idea-generation-meta"><div><dt>配置主模型</dt><dd>' + this._esc(info.model) + '</dd></div>' +
+        '<div><dt>生成参数</dt><dd>temperature=' + this._esc(options.temperature) + ' · max_tokens=' + this._esc(options.max_tokens) + ' · JSON 输出</dd></div></dl>' +
+        '<details class="idea-prompt-block" open><summary>系统提示词（含完整 15 种构思模式）</summary><pre class="proj-pre" data-no-i18n>' + this._esc(info.system) + '</pre></details>' +
+        '<details class="idea-prompt-block"><summary>用户提示词模板与输出字段（研究方向替换为你的输入）</summary><pre class="proj-pre" data-no-i18n>' + this._esc(info.user) + '</pre></details>';
+    } catch (e) {
+      if (this._dialog === dialog) dialog.querySelector('.idea-dialog-body').textContent = '读取失败：' + (e.message || e);
+    }
   },
 
   async generate() {
@@ -124,27 +222,34 @@ const IdeationView = {
       return;
     }
     this.busy = true;
+    var session = this._session;
+    this._updateControls();
     this._status('DeepSeek 正在按 15 种构思模式生成卡片（约 10-30 秒）…');
     var btn = document.getElementById('idea-generate');
     if (btn) btn.disabled = true;
     try {
       var r = await API.ideaCards(direction, 4);
+      if (this._session !== session) return;
+      this._rememberPatterns(r && r.pattern_catalog);
       this.direction = direction;
       this.cards = (r && r.cards) || [];
       this.selected = -1;
-      this._status('已生成 ' + this.cards.length + ' 张卡片（模型 ' + ((r && r.model) || '?') + '），点选一张再确认');
+      this._status('已生成 ' + this.cards.length + ' 张卡片，点击卡片查看完整方案，再选择并确认。');
       this._renderCards();
     } catch (e) {
-      this._status('生成失败：' + (e && e.message ? e.message : e), true);
+      if (this._session === session) this._status('生成失败：' + (e && e.message ? e.message : e), true);
     } finally {
-      this.busy = false;
-      if (btn) btn.disabled = false;
+      if (this._session === session) {
+        this.busy = false;
+        this._updateControls();
+      }
     }
   },
 
   async confirm() {
     if (this.busy || this.selected < 0) return;
     this.busy = true;
+    this._updateControls();
     var card = this.cards[this.selected];
     var confirmBtn = document.getElementById('idea-confirm');
     if (confirmBtn) confirmBtn.disabled = true;
@@ -167,6 +272,7 @@ const IdeationView = {
       if (confirmBtn) confirmBtn.disabled = false;
     } finally {
       this.busy = false;
+      this._updateControls();
     }
   },
 };

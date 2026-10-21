@@ -170,10 +170,27 @@ class IdeaConfirmRequest(BaseModel):
     to_stage: str | None = "EXPERIMENT_RUN"
 
 
+@router.get("/ideation/prompt")
+async def idea_prompt() -> dict[str, Any]:
+    """只读展示实际生成模板与参数，不调用模型、不创建研究项目。"""
+    from researchclaw.ideation.cards import GENERATION_OPTIONS, PATTERNS, build_prompt
+
+    system, user = build_prompt("（你输入的研究方向）", 4)
+    config = _get_app_state()["config"]
+    return {
+        "system": system,
+        "user": user,
+        "model": config.llm.primary_model,
+        "generation": GENERATION_OPTIONS,
+        "retrieval": False,
+        "pattern_catalog": PATTERNS,
+    }
+
+
 @router.post("/ideation/cards")
 async def idea_cards(req: IdeaCardsRequest) -> dict[str, Any]:
     """根据自然语言方向生成创新点卡片（不建 run，纯审核用）。"""
-    from researchclaw.ideation.cards import generate_cards
+    from researchclaw.ideation.cards import PATTERNS, generate_cards
     from researchclaw.llm.client import LLMClient
 
     direction = (req.direction or "").strip()
@@ -195,6 +212,7 @@ async def idea_cards(req: IdeaCardsRequest) -> dict[str, Any]:
         "direction": direction,
         "model": getattr(getattr(llm, "config", None), "primary_model", ""),
         "cards": cards,
+        "pattern_catalog": PATTERNS,
     }
 
 

@@ -53,6 +53,7 @@ const API = {
   settingsEnv() { return this.get('/settings/env'); },
   ideationStart(direction) { return this.post('/ideation/start', { direction }); },
   ideaCards(direction, n) { return this.post('/ideation/cards', { direction: direction, n: n || 4 }); },
+  ideaPrompt() { return this.get('/ideation/prompt'); },
   ideaConfirm(payload) { return this.post('/ideation/confirm', payload); },
   ideationStatus() { return this.get('/ideation/status'); },
   ideationReport(runId) { return this.get(`/ideation/report${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`); },

@@ -15,6 +15,12 @@ from researchclaw.ideation.brief import ResearchBrief
 
 logger = logging.getLogger(__name__)
 
+GENERATION_OPTIONS: dict[str, Any] = {
+    "max_tokens": 4096,
+    "json_mode": True,
+    "temperature": 0.7,
+}
+
 # 15 种构思模式（IdeaSpark / ResearchStudio-Idea 的领域无关动作词表）
 PATTERNS: tuple[dict[str, str], ...] = (
     {"id": "assumption_audit_and_pivot", "name": "审计并推翻假设", "when": "结果/防御依赖一个可被放松或违反的隐含假设"},
@@ -142,9 +148,7 @@ def generate_cards(direction: str, llm: Any, n: int = 4) -> list[dict[str, Any]]
     resp = llm.chat(
         [{"role": "user", "content": user}],
         system=system,
-        max_tokens=4096,
-        json_mode=True,
-        temperature=0.7,
+        **GENERATION_OPTIONS,
     )
     data = _extract_json(getattr(resp, "content", "") or "")
     cards = data.get("cards") if isinstance(data, dict) else None
