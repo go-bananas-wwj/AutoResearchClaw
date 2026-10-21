@@ -183,6 +183,66 @@ def test_regenerate_uses_approved_evidence(engine):
     assert data['cards'][0]['card_id'].startswith(f'r{old+1}-')
 
 
+def test_direction_confirmation_delegates_selection_and_reading(engine):
+    engine.sources=Sources(4)
+    data=first(engine);sid=data['session_id']
+    data['papers'][0]['selected']=False  # Stale per-paper toggles must not control this flow.
+    data['papers'][1]['relevance']='adjacent'
+    data['papers'][2]['relevance']='off_topic'
+    data['papers'][2]['selected']=True
+    engine.store.save(data)
+    chosen={p['paper_id'] for p in data['papers'] if p['relevance'] in ('core','adjacent')}
+    assert not engine.sources.fulltext_calls
+    engine.confirm_direction(sid,data['revision'],'关注流域尺度的LS计算')
+    result=wait(engine,sid)
+    assert result['phase']=='idea_review' and result['run_id'] is None
+    assert {p['paper_id'] for p in result['papers'] if p['selected']}==chosen
+    review=next(r for r in result['reviews'] if r.get('type')=='literature')
+    assert review['selection_by']=='agent' and review['decision']=='direction_confirmed'
+    assert not review['required']
+    assert {pid for pid,n in result['reading'].items() if not n.get('supplemental')}==chosen
+    with pytest.raises(SessionError):engine.confirm_direction(sid,data['revision'])
+
+
+def test_metadata_refresh_does_not_approve_or_start_reading(engine):
+    data=first(engine);sid=data['session_id'];calls=list(engine.llm.calls)
+    engine.sources.enrich_metadata=lambda paper:{'venue':'Soil Research','venue_type':'journal',
+        'authors':[{'name':'Researcher A','affiliation':'University A'}],'institutions':['University A'], 'bibliography_version':1}
+    engine.refresh_metadata(sid,data['revision']);result=wait(engine,sid)
+    assert result['phase']=='literature_review' and result['status']=='waiting'
+    assert result['revision']==data['revision'] and result['approved_revision'] is None
+    assert not result['reading'] and not result['cards'] and not result['run_id']
+    assert engine.llm.calls==calls and not engine.sources.fulltext_calls
+    assert all(p['venue']=='Soil Research' for p in result['papers'])
+
+
+def test_publication_source_survives_handoff_export(engine):
+    engine.sources.enrich_metadata=lambda paper:{'venue':'Soil Research','venue_type':'journal',
+        'authors':[{'name':'Test Author','affiliation':'Test University'}],'institutions':['Test University'],'bibliography_version':1}
+    data=develop(engine);card=data['cards'][0]
+    _,directory=engine.export(data,card)
+    bib=(directory/'stage-04/references.bib').read_text()
+    assert 'journal = {Soil Research}' in bib and 'author = {Test Author}' in bib
+
+
+@pytest.mark.asyncio
+async def test_direction_confirmation_api_accepts_no_paper_checklist(engine,monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from researchclaw.server.app import _app_state
+    from researchclaw.server.routes import ideation
+    data=first(engine);sid=data['session_id']
+    app=FastAPI();app.include_router(ideation.router)
+    monkeypatch.setitem(_app_state,'ideation_service',engine)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        stale=await client.post(f'/api/ideation/sessions/{sid}/direction-confirm',json={'revision':999})
+        assert stale.status_code==409
+        result=await client.post(f'/api/ideation/sessions/{sid}/direction-confirm',json={'revision':data['revision']})
+        assert result.status_code==200,result.text
+        done=await asyncio.to_thread(wait,engine,sid)
+        assert done['phase']=='idea_review' and done['run_id'] is None
+
+
 def test_stop_waits_for_worker_and_resume(engine):
     engine.sources.started=threading.Event();engine.sources.release=threading.Event()
     data=engine.create('我想研究流域建模的 LS 因子');sid=data['session_id']

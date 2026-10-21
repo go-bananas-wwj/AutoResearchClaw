@@ -5,6 +5,7 @@ import copy
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -215,7 +216,52 @@ class IdeationService:
             self.launch(sid)
             return self.snapshot(sid)
 
-    def review_literature(self, sid, revision, selected, required, feedback=""):
+    def confirm_direction(self, sid, revision, feedback=""):
+        """Human confirms the direction; the agent owns paper selection and deep reading."""
+        with self.store.lock:
+            data = self.snapshot(sid)
+            self.store.require_revision(data, revision)
+            self._editable(data)
+            if data["phase"] != "literature_review":
+                raise SessionError("请等待相关文献调研完成后确认研究方向。")
+            related = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent")]
+            if not related:
+                raise SessionError("暂未找到相关文献，请调整研究方向后重新调研。")
+            return self.review_literature(sid, revision, [p["paper_id"] for p in related],
+                [p["paper_id"] for p in related if p.get("uploaded_pdf") or p.get("required")],
+                feedback, selection_by="agent")
+
+    def refresh_metadata(self, sid, revision):
+        """Upgrade pending bibliographies without approving the direction or starting reading."""
+        with self.store.lock:
+            data = self.snapshot(sid)
+            self.store.require_revision(data, revision)
+            self._editable(data)
+            if data["phase"] != "literature_review":
+                raise SessionError("仅可更新待确认方向的文献信息。")
+            self._ensure_capacity()
+            data.update(status="running", progress_message="正在整理论文来源、作者与机构")
+            self.store.save(data)
+            event = threading.Event()
+            thread = threading.Thread(target=self._metadata_work, args=(sid, event), daemon=True)
+            self.jobs[sid] = thread, event
+            thread.start()
+            return self.snapshot(sid)
+
+    def _metadata_work(self, sid, event):
+        data = self.snapshot(sid)
+        try:
+            self._enrich_papers(data, event)
+            self._check(data, event)
+            data.update(status="waiting", missing=[])
+        except Cancelled:
+            data.update(status="stopped")
+        except Exception as exc:
+            data.update(status="blocked", missing=[str(exc)[:1000]])
+        data.pop("progress_message", None)
+        self.store.save(data)
+
+    def review_literature(self, sid, revision, selected, required, feedback="", *, selection_by="user"):
         with self.store.lock:
             data = self.snapshot(sid)
             self.store.require_revision(data, revision)
@@ -231,7 +277,9 @@ class IdeationService:
                 paper.update(selected=paper["paper_id"] in selected, required=paper["paper_id"] in required)
             data.update(approved_revision=data["revision"], phase="reading", status="pending", feedback=feedback)
             data["reviews"].append({"type": "literature", "revision": data["revision"], "at": now(),
-                                    "selected": selected, "required": required, "feedback": feedback})
+                                    "selected": selected, "required": required, "feedback": feedback,
+                                    "selection_by": selection_by,
+                                    "decision": "direction_confirmed" if selection_by == "agent" else "paper_selection_confirmed"})
             self.store.save(data)
             self.launch(sid)
             return self.snapshot(sid)
@@ -368,8 +416,24 @@ class IdeationService:
             self._save(data, event)
         if not any(p["relevance"] == "core" for p in rows):
             raise SessionError("未筛选出核心相关论文，请修改范围或补充文献；不会补入无关论文凑数。")
+        self._enrich_papers(data, event)
         data.update(phase="literature_review", status="waiting", missing=[])
         self._save(data, event)
+
+    def _enrich_papers(self, data, event):
+        enrich = getattr(self.sources, "enrich_metadata", None)
+        if enrich is None:
+            return
+        papers = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and p.get("bibliography_version") != 1]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            pending = {pool.submit(enrich, p): p for p in papers}
+            for future in as_completed(pending):
+                self._check(data, event)
+                try:
+                    pending[future].update(future.result())
+                except Exception:
+                    pass  # Missing publisher fields remain missing; never ask the model to invent them.
+                self._save(data, event)
 
     def _read_paper(self, data, event, paper, extra=False):
         key = paper["paper_id"]
@@ -504,13 +568,14 @@ class IdeationService:
                 relevant_ids = {p["paper_id"] for p in relevance if p.get("relevance") == "core"}
                 neighbors = [p for p in found if p["paper_id"] in relevant_ids][:3]
                 known = {p["paper_id"]: p for p in data["papers"]}
+                approved_ids = {p["paper_id"] for p in data["papers"] if p.get("selected")}
                 for pid in candidate.get("closest_paper_ids") or []:
                     if pid in known and all(p["paper_id"] != pid for p in neighbors):
                         neighbors.append(known[pid])
                 if not neighbors:
                     raise SessionError("未定位可比较的最近邻方法。")
                 for p in neighbors:
-                    self._read_paper(data, event, p, extra=p["paper_id"] not in known)
+                    self._read_paper(data, event, p, extra=p["paper_id"] not in approved_ids)
                 review = self._json(data, event, "audit", {"candidate": candidate,
                     "neighbors": [data["reading"][p["paper_id"]] for p in neighbors]})
                 ids = review.get("closest_paper_ids") or []
@@ -581,7 +646,9 @@ class IdeationService:
             for p in rows:
                 authors = tuple(Author(a["name"]) for a in p.get("authors", []) if isinstance(a, dict) and a.get("name"))
                 bib.append(Paper(paper_id=p["paper_id"], title=p["title"], authors=authors,
-                                 year=int(p.get("year") or 0), doi=p.get("doi", ""), url=p.get("url", "")).to_bibtex())
+                                 year=int(p.get("year") or 0), doi=p.get("doi", ""), url=p.get("url", ""),
+                                 venue="" if p.get("venue_type") == "repository" else p.get("venue", ""),
+                                 arxiv_id=p.get("arxiv_id", ""), source=p.get("source", "")).to_bibtex())
             (target / "stage-04/references.bib").write_text("\n\n".join(bib))
             for pid, note in data["reading"].items():
                 (target / "stage-06" / (pid + ".md")).write_text(json.dumps(note, ensure_ascii=False, indent=2))

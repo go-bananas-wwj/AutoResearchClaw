@@ -747,8 +747,19 @@ button, a { touch-action: manipulation; }
 .literature-list { margin-top: 16px; max-height: 65vh; overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
 .literature-paper { padding: 18px 0; border-top: 1px solid var(--border); }
 .literature-paper h3 { font-size: 15px; line-height: 1.65; margin: 8px 0; overflow-wrap: anywhere; }
-.literature-paper-head { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; font-size: 12px; }
-.literature-paper-head input { accent-color: var(--accent); margin-right: 6px; }
+.ideation-brief-fields > div + div { margin-top: 20px; }
+.ideation-brief-fields dt { color: var(--text-secondary); font-size: 13px; font-weight: 500; margin-bottom: 7px; }
+.ideation-brief-fields dd { color: var(--text-primary); font-size: 15px; line-height: 1.7; }
+.literature-citation { margin: 10px 0 14px; font-size: 13px; line-height: 1.8; color: var(--text-secondary); }
+.literature-citation > div { display: flex; gap: 12px; margin-top: 3px; }
+.literature-citation dt { min-width: 4em; flex-shrink: 0; }
+.literature-citation dd { min-width: 0; overflow-wrap: anywhere; }
+.literature-citation a { margin-left: 8px; }
+.literature-summary { font-size: 14px; line-height: 1.9; color: var(--text-primary); }
+.ideation-confirm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.ideation-optional-feedback { margin-top: 18px; }
+.ideation-optional-feedback summary { font-size: 13px; color: var(--text-secondary); font-weight: 400; }
+.ideation-optional-feedback textarea { margin-top: 10px; }
 .ideation-workspace a { color: var(--accent); }
 .ideation-workspace summary { cursor: pointer; font-size: 14px; font-weight: 500; }
 .ideation-workspace textarea + button { margin-top: 12px; }

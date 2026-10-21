@@ -10,9 +10,74 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from html.parser import HTMLParser
 
 from researchclaw.ideation.store import SessionError, fingerprint
 from researchclaw.web._ssrf import check_url_ssrf
+
+
+def _unique(values):
+    return list(dict.fromkeys(html.unescape(str(value)).strip() for value in values if value and str(value).strip()))
+
+
+def crossref_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    """Publication-time affiliations only; never infer from an author's current profile."""
+    kind = item.get("type", "")
+    venue_type = {"journal-article": "journal", "proceedings-article": "conference",
+                  "posted-content": "preprint", "book-chapter": "book", "book": "book"}.get(kind, "unknown")
+    authors = [{"name": " ".join(_unique([a.get("given"), a.get("family")])),
+                "affiliation": "；".join(_unique(x.get("name") for x in a.get("affiliation", [])))}
+               for a in item.get("author", [])]
+    return {"venue": html.unescape(next(iter(item.get("container-title") or []), "")), "venue_type": venue_type,
+            "authors": [a for a in authors if a["name"]],
+            "institutions": _unique(x.get("name") for a in item.get("author", []) for x in a.get("affiliation", []))}
+
+
+def openalex_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    locations = [item.get("primary_location"), *(item.get("locations") or [])]
+    venues = [loc["source"] for loc in locations if loc and loc.get("source")]
+    source = next((s for s in venues if s.get("type") in ("journal", "conference")), next(iter(venues), {}))
+    authors, seen = [], set()
+    institutions = []
+    for entry in item.get("authorships", []):
+        author = entry.get("author") or {}
+        names = _unique(i.get("display_name") for i in entry.get("institutions", []))
+        names = names or _unique(entry.get("raw_affiliation_strings") or [])
+        institutions.extend(names)
+        identity = author.get("id") or author.get("display_name")
+        if identity and identity not in seen:
+            authors.append({"name": author.get("display_name", ""), "affiliation": "；".join(names)})
+            seen.add(identity)
+    venue_type = source.get("type", "unknown")
+    if item.get("type") == "preprint":
+        venue_type = "preprint"
+    return {"venue": html.unescape(source.get("display_name", "")), "venue_type": venue_type,
+            "authors": authors, "institutions": _unique(institutions)}
+
+
+class CitationMetadataParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "meta":
+            return
+        values = dict(attrs)
+        key = (values.get("name") or values.get("property") or "").lower()
+        content = (values.get("content") or "").strip()
+        if content:
+            self.tags.setdefault(key, []).append(content)
+
+
+def citation_metadata(text: str) -> dict[str, Any]:
+    parser = CitationMetadataParser()
+    parser.feed(text)
+    tags = parser.tags
+    venue = next(iter(tags.get("citation_journal_title") or tags.get("citation_conference_title") or []), "")
+    return {"venue": venue, "venue_type": "conference" if tags.get("citation_conference_title") else "journal" if venue else "unknown",
+            "authors": [{"name": name, "affiliation": ""} for name in _unique(tags.get("citation_author", []))],
+            "institutions": _unique(tags.get("citation_author_institution", []) + tags.get("citation_author_affiliation", []))}
 
 
 class PublicRedirect(urllib.request.HTTPRedirectHandler):
@@ -68,7 +133,7 @@ class Sources:
                 records.append(paper_record({"title": titles[0], "doi": item["DOI"],
                     "year": date[0][0], "url": "https://doi.org/" + item["DOI"],
                     "abstract": html.unescape(re.sub("<[^>]+>", " ", item.get("abstract", ""))),
-                    "authors": [{"name": (a.get("given", "") + " " + a.get("family", "")).strip()} for a in item.get("author", [])],
+                    **crossref_metadata(item),
                     "source": "crossref", "pdf_urls": [p["URL"] for p in item.get("link", []) if p.get("content-type") == "application/pdf"]}, query, "crossref"))
             return records
 
@@ -86,6 +151,7 @@ class Sources:
             item = json.loads(raw)["message"]
             dates = item.get("published", {}).get("date-parts", [[0]])
             row = {"title": (item.get("title") or [""])[0], "doi": doi,
+                   **crossref_metadata(item),
                    "year": dates[0][0], "abstract": re.sub("<[^>]+>", " ", item.get("abstract", "")),
                    "url": "https://doi.org/" + doi, "source": "crossref",
                    "pdf_urls": [x["URL"] for x in item.get("link", []) if x.get("content-type") == "application/pdf"]}
@@ -100,6 +166,64 @@ class Sources:
             raise SessionError("无法识别论文元数据，请提供 DOI 或上传 PDF", 400)
         return paper_record({"title": title, "url": reference, "source": "user_url",
                              "abstract": "", "year": 0}, reference, "user_url")
+
+    def enrich_metadata(self, paper: dict[str, Any]) -> dict[str, Any]:
+        """Return verifiable bibliographic fields without changing paper identity or evidence."""
+        if paper.get("bibliography_version") == 1:
+            return {}
+        result = {k: paper.get(k) for k in ("venue", "venue_type", "authors", "institutions")}
+        result["authors"] = result.get("authors") or []
+        result["institutions"] = _unique((result.get("institutions") or []) + [
+            a.get("affiliation") for a in result["authors"] if isinstance(a, dict)])
+        provenance = list(paper.get("bibliography_sources") or [])
+        landing_pages = []
+        doi, url = paper.get("doi"), paper.get("url", "")
+        endpoint = "https://api.openalex.org/works/https://doi.org/" + urllib.parse.quote(doi, safe="/") if doi else (
+            url.replace("https://openalex.org/", "https://api.openalex.org/works/") if url.startswith("https://openalex.org/W") else "")
+        if endpoint:
+            try:
+                raw, _, _ = fetch(endpoint, 2 * 1024 * 1024)
+                record = json.loads(raw)
+                metadata = openalex_metadata(record)
+                result.update({k: v for k, v in metadata.items() if v and v != "unknown"})
+                provenance.append({"source": "OpenAlex", "url": endpoint})
+                landing_pages = _unique(loc.get("landing_page_url") for loc in record.get("locations", []) if loc)
+            except Exception:
+                pass
+        # DOI registration provides a useful independent publication record and missing affiliations.
+        if doi and (not result.get("venue") or not result.get("institutions")):
+            try:
+                endpoint = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="")
+                raw, _, _ = fetch(endpoint, 2 * 1024 * 1024)
+                record = json.loads(raw)["message"]
+                if str(record.get("DOI", "")).lower() == doi.lower():
+                    metadata = crossref_metadata(record)
+                    for key in ("venue", "venue_type", "authors"):
+                        if metadata.get(key) and metadata[key] != "unknown":
+                            result[key] = metadata[key]
+                    result["institutions"] = _unique(result.get("institutions", []) + metadata["institutions"])
+                    provenance.append({"source": "Crossref", "url": endpoint})
+            except Exception:
+                pass
+        if not result.get("venue") or result.get("venue_type") == "repository":
+            for landing in landing_pages[:2]:
+                if "openalex.org" in urllib.parse.urlparse(landing).netloc:
+                    continue
+                try:
+                    raw, content_type, _ = fetch(landing, 2 * 1024 * 1024)
+                    if "html" not in content_type:
+                        continue
+                    metadata = citation_metadata(raw.decode("utf-8", "replace"))
+                    if metadata["venue"]:
+                        result.update({k: v for k, v in metadata.items() if v and v != "unknown"})
+                        provenance.append({"source": "publisher_metadata", "url": landing})
+                        break
+                except Exception:
+                    continue
+        if paper.get("arxiv_id") and not result.get("venue"):
+            result.update(venue="arXiv", venue_type="preprint")
+        result.update(bibliography_sources=provenance, bibliography_version=1)
+        return {k: v for k, v in result.items() if v is not None}
 
     def pdf_document(self, path: Path) -> dict[str, Any]:
         from researchclaw.web.pdf_extractor import PDFExtractor

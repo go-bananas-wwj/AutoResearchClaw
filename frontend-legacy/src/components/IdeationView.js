@@ -2,7 +2,7 @@
 const IdeationView = {
   host: null, data: null, sessionId: null, busy: false,
   _timer: null, _token: 0, _signature: '', _dialog: null, _returnFocus: null, _listener: null, _error: '',
-  phaseLabel(p) { return ({retrieval:'检索与筛选',literature_review:'待审核文献',reading:'全文精读',synthesis:'问题定位',generate:'构思创新点',audit:'最近邻查重与审查',idea_review:'待审核创新点',handed_off:'已交接自动科研'})[p] || p; },
+  phaseLabel(p) { return ({retrieval:'检索与筛选',literature_review:'待确认研究方向',reading:'全文精读',synthesis:'问题定位',generate:'构思创新点',audit:'最近邻查重与审查',idea_review:'待审核创新点',handed_off:'已交接自动科研'})[p] || p; },
   statusLabel(s) { return ({pending:'待执行',running:'进行中',handoff:'正在交接科研',waiting:'等待审核',blocked:'需要补充材料',interrupted:'已中断',stopped:'已停止',stopping:'停止中',completed:'已完成'})[s] || s; },
   _esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
   _link(url, label) { return /^https?:\/\//i.test(url || '') ? `<a href="${this._esc(url)}" target="_blank" rel="noopener noreferrer">${this._esc(label || '原文链接')}</a>` : ''; },
@@ -27,7 +27,7 @@ const IdeationView = {
     try {
       const data=await API.ideationSession(this.sessionId);
       if(token!==this._token || !this.host) return;
-      const signature=JSON.stringify([data.revision,data.phase,data.status,data.papers,data.cards,data.missing,Object.keys(data.reading || {}),data.usage.length]);
+      const signature=JSON.stringify([data.revision,data.phase,data.status,data.progress_message,data.plan,data.papers,data.cards,data.missing,Object.keys(data.reading || {}),data.usage.length]);
       this.data=data;
       if(force || signature!==this._signature) { this._signature=signature; this._paint(); }
     } catch(e) { if(token===this._token) { this._error=e.message; this._paint(); } }
@@ -38,74 +38,81 @@ const IdeationView = {
     const focus=document.activeElement && document.activeElement.id;
     const selection=document.activeElement && document.activeElement.selectionStart;
     const top=this.host.scrollTop;
-    const decisions={}; this.host.querySelectorAll('[data-paper]').forEach(x=>{decisions[x.dataset.paper+':'+x.dataset.field]=x.checked;});
-    const sameRevision=this.host.dataset.revision===String(this.data && this.data.revision);
     const d=this.data;
     this.host.dataset.revision=String(d && d.revision);
     this.host.innerHTML=`<div class="ideation-workspace">
-      <div class="ideation-heading"><div><span class="idea-step">研究准备</span><h2>文献调研与问题定位</h2></div><button class="idea-text-btn" data-action="prompt">生成方式与提示词</button></div>
-      <p class="proj-welcome-sub">先审核相关文献，再审核创新点。确认方案后，自动推进实验、分析与中文论文。</p>
-      <div class="ideation-steps"><span class="${!d || ['retrieval','literature_review'].includes(d.phase)?'active':''}">1 · 文献审核</span><span class="${d && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase)?'active':''}">2 · 创新点审核</span><span class="${d && d.run_id?'active':''}">3 · 自动科研与论文</span></div>
+      <div class="ideation-heading"><div><span class="idea-step">研究准备</span><h2>文献调研与方向确认</h2></div><button class="idea-text-btn" data-action="prompt">生成方式与提示词</button></div>
+      <p class="proj-welcome-sub">智能体先调研相关文献，你确认方向后，它会自动精读并寻找创新点。</p>
+      <div class="ideation-steps"><span class="${!d || ['retrieval','literature_review'].includes(d.phase)?'active':''}">1 · 确认文献方向</span><span class="${d && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase)?'active':''}">2 · 确认创新点</span><span class="${d && d.run_id?'active':''}">3 · 自动科研与论文</span></div>
       ${this._error?`<p class="ideation-alert" role="alert">${this._esc(this._error)}</p>`:''}
       ${!this.sessionId?this._newHtml():!d?'<p role="status">正在读取调研会话…</p>':this._sessionHtml(d)}
       </div>`;
     Object.entries(inputs).forEach(([id,value])=>{const el=document.getElementById(id);if(el)el.value=value;});
-    if(sameRevision) this.host.querySelectorAll('[data-paper]').forEach(x=>{const key=x.dataset.paper+':'+x.dataset.field;if(key in decisions)x.checked=decisions[key];});
     const focused=document.getElementById(focus); if(focused){focused.focus({preventScroll:true});if(typeof selection==='number' && focused.setSelectionRange)focused.setSelectionRange(selection,selection);}
     this.host.scrollTop=top;
     const upload=document.getElementById('lit-upload');if(upload)upload.addEventListener('change',()=>this._upload(upload.files[0]));
-    this.host.querySelectorAll('[data-paper]').forEach(x=>x.addEventListener('change',()=>{
-      const row=x.closest('.literature-paper');if(x.dataset.field==='required' && x.checked)row.querySelector('[data-field="selected"]').checked=true;
-      if(x.dataset.field==='selected' && !x.checked)row.querySelector('[data-field="required"]').checked=false;
-    }));
+
   },
   _newHtml() { return `<div class="card ideation-intake"><label for="idea-direction">你想研究什么？</label>
     <textarea id="idea-direction" class="gate-textarea" rows="3" placeholder="例如：我想研究流域建模的 LS 因子"></textarea>
     <button class="proj-btn primary" data-action="start" ${this.busy?'disabled':''}>${this.busy?'正在创建调研…':'开始调研'}</button>
-    <p class="idea-evidence-note">自动检索与筛选后，先由你确认论文是否相关。此时不会创建正式科研项目或启动实验。</p></div>`; },
+    <p class="idea-evidence-note">先找到相关文献，再请你确认研究方向。</p></div>`; },
   _sessionHtml(d) {
     const active=['running','pending','stopping'].includes(d.status), locked=active || d.status==='handoff' || !!d.run_id;
-    const selected=d.papers.filter(p=>p.selected);
-    return `<div class="card"><div class="ideation-progress"><strong>${this._esc(this.phaseLabel(d.phase))}</strong><span class="proj-badge">${this._esc(this.statusLabel(d.status))}</span>
+    return `<div class="card ideation-brief">
+      ${active || ['blocked','stopped','interrupted','handoff'].includes(d.status)?`<div class="ideation-progress"><strong>${this._esc(d.progress_message || this.phaseLabel(d.phase))}</strong><span class="proj-badge">${this._esc(this.statusLabel(d.status))}</span>
       ${active?`<button class="proj-btn" data-action="stop" ${d.status==='stopping'?'disabled':''}>停止调研</button>`:''}
-      ${['blocked','stopped','interrupted'].includes(d.status) && !['literature_review','idea_review'].includes(d.phase)?'<button class="proj-btn" data-action="resume">从完成点继续</button>':''}</div>
-      <p class="idea-dialog-intro" data-no-i18n>${this._esc(d.direction)}</p>
-      ${d.plan?`<p class="idea-evidence-note">当前理解：${this._esc(d.plan.interpretation)}</p>`:''}
-      <p class="idea-evidence-note">文献 ${d.papers.length} 篇 · 保留 ${selected.length} 篇 · 已精读 ${Object.keys(d.reading || {}).length} 篇 · 版本 ${d.revision}</p>
-      <p class="idea-evidence-note">预算保守预留 $${Number(d.cost_usd).toFixed(3)}${d.budget_usd?' / $'+d.budget_usd:''}（非供应商账单）</p>
+      ${['blocked','stopped','interrupted'].includes(d.status) && !['literature_review','idea_review'].includes(d.phase)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>`:''}
+      <dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
+      <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl>
       ${(d.missing || []).length?`<div class="ideation-alert" role="alert">${d.missing.map(m=>`<p>${this._esc(m)}</p>`).join('')}</div>`:''}
-      ${d.run_id?`<p>已启动第 9–23 阶段：<button class="idea-text-btn" data-action="project">打开科研项目</button></p>`:''}</div>
-      ${!locked?`<details class="card"><summary>补充论文或修改研究范围</summary><div class="ideation-supplement">
+      ${d.run_id?`<p>科研任务已开始：<button class="idea-text-btn" data-action="project">打开科研项目</button></p>`:''}</div>
+      ${!locked?`<details class="card" id="ideation-scope-editor"><summary>调整方向或补充材料</summary><div class="ideation-supplement">
         <input id="lit-reference" class="gate-input" type="text" placeholder="论文 DOI 或公开 URL" /><button class="proj-btn" data-action="add-paper">补充论文</button>
-        <label class="proj-btn">上传 PDF（最大25MB）<input id="lit-upload" type="file" accept="application/pdf,.pdf" hidden /></label>
-        <textarea id="lit-scope" class="gate-textarea" rows="2">${this._esc(d.direction)}</textarea><button class="proj-btn" data-action="scope">修改范围并重新检索</button>
-        <p class="idea-evidence-note">增加文献或修改范围会使原审批与候选失效，返回文献审核。</p></div></details>`:''}
-      ${d.papers.length?this._papersHtml(d,locked):''}
-      ${d.phase==='literature_review' && !locked?'<div class="card"><h3>第一轮：确认文献范围</h3><p class="idea-evidence-note">保留相关论文，可标记必读；确认后自动获取全文、精读并构思。至少需要3篇含方法正文的核心论文。</p><textarea id="lit-feedback" class="gate-textarea" rows="2" placeholder="可选：关注的问题、数据或研究边界"></textarea><button class="proj-btn primary" data-action="review-literature">确认文献，继续精读与构思</button></div>':''}
+        <label class="proj-btn">上传 PDF<input id="lit-upload" type="file" accept="application/pdf,.pdf" hidden /></label>
+        <textarea id="lit-scope" class="gate-textarea" rows="2">${this._esc(d.direction)}</textarea><button class="proj-btn" data-action="scope">按这个方向重新调研</button>
+</div></details>`:''}
+      ${d.papers.length?this._papersHtml(d):''}
+      ${d.phase==='literature_review' && !locked?`<div class="card ideation-direction-confirm"><h3>这些文献的研究方向符合你的想法吗？</h3>
+        <div class="ideation-confirm-actions"><button class="proj-btn primary" data-action="confirm-direction">是这个方向，继续寻找创新点</button><button class="proj-btn" data-action="adjust-direction">调整研究方向</button></div>
+        <details class="ideation-optional-feedback"><summary>补充关注点</summary><textarea id="lit-feedback" class="gate-textarea" rows="2" placeholder="例如：重点关注 LS 因子计算方法，不研究其他侵蚀因子"></textarea></details></div>`:''}
+
       ${d.synthesis?`<details class="card" open><summary>领域现状与问题定位</summary><div class="ideation-landscape" data-no-i18n>${this._esc(d.synthesis.landscape_zh)}</div></details>`:''}
       ${d.cards.length?this._cardsHtml(d):''}
       ${(d.rejected_cards || []).length?`<details class="card"><summary>未通过审查的候选（${d.rejected_cards.length}）</summary>${d.rejected_cards.map(c=>`<div class="idea-detail-section"><h3>${this._esc(c.title)}</h3><p>${this._esc(c.rejection_reason)}</p></div>`).join('')}</details>`:''}
       ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<div class="card"><h3>修改意见与重新生成</h3><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="例如：优先研究跨 DEM 分辨率的稳定性，不采用深度学习；补充真实数据入口。"></textarea><button class="proj-btn" data-action="regenerate">基于已批准文献重新生成</button></div>`:''}
-      ${d.search_log.length?`<details class="card"><summary>检索来源与过程（${d.search_log.length} 次查询）</summary>${d.search_log.map(s=>`<p class="idea-evidence-note" data-no-i18n>${this._esc(s.source)} · ${s.count} 篇 · ${this._esc(s.query)}${s.count?'':' · 未返回记录或来源不可用'}</p>`).join('')}</details>`:''}`;
+      `;
+
   },
-  _papersHtml(d,locked) {
-    locked = locked || d.phase !== 'literature_review';
-    const state={not_fetched:'尚未获取全文',read:'全文已读',abstract_only:'只有摘要',failed:'全文获取失败'};
+  _researchObject(d) {
+    const plan=d.plan || {};
+    let text=String(plan.research_object || plan.interpretation || d.direction || '').replace(/\s+/g,' ').trim();
+    text=text.replace(/（([^）]*)）/g,(_,inside)=>'（'+inside.split(/[，,；;]/)[0]+'）').split(/[。；！？\n]/)[0];
+    text=text.replace(/，(?:用于|范围|当前理解|不是|若用户).*$/,'').replace(/^(研究对象是|研究对象[:：]|当前理解[:：])\s*/,'');
+    if(!plan.research_object && !plan.interpretation) text=text.replace(/^(我想|我要|我希望|请|帮我)\s*/,'');
+    if(!text) return '正在归纳研究对象…';
+    return (/^(研究|分析|探讨|评估|识别)/.test(text)?text:'研究'+text)+'。';
+  },
+  _paperCitation(p) {
+    const authors=[...new Set((p.authors || []).map(a=>typeof a==='string'?a:a.name).filter(Boolean))];
+    const institutions=[...new Set([...(p.institutions || []),...(p.authors || []).flatMap(a=>typeof a.affiliation==='string'?a.affiliation.split(/[；;]/):[])].map(s=>String(s).trim()).filter(Boolean))];
+    const type=p.venue_type || (p.source==='arxiv' || p.arxiv_id?'preprint':/DOAJ|repository/i.test(p.venue || '')?'repository':'unknown');
+    const label=({journal:'期刊',conference:'会议',preprint:'预印本',book:'出版物',repository:'收录平台'})[type] || '来源';
+    return `<dl class="literature-citation">${type==='repository'?'<div><dt>期刊/会议</dt><dd>未提供</dd></div>':''}<div><dt>${label}</dt><dd data-no-i18n>${this._esc(p.venue || '未提供')}${p.year?' · '+p.year:''} ${this._link(p.url || (p.doi?'https://doi.org/'+p.doi:''))}</dd></div>
+      <div><dt>作者</dt><dd data-no-i18n>${this._esc(authors.join('、') || '未提供')}</dd></div>
+      <div><dt>机构</dt><dd data-no-i18n>${this._esc(institutions.join('；') || '未提供')}</dd></div></dl>`;
+  },
+  _papersHtml(d) {
     const renderRow=({paper:p,index:i})=>`<article class="literature-paper">
-      <div class="literature-paper-head"><label><input type="checkbox" data-paper="${p.paper_id}" data-field="selected" ${p.selected?'checked':''} ${locked?'disabled':''}/>保留</label>
-      <label><input type="checkbox" data-paper="${p.paper_id}" data-field="required" ${p.required?'checked':''} ${locked?'disabled':''}/>必读</label><span class="proj-badge">${this._esc(state[p.fulltext_status] || '待获取')}</span></div>
-      <h3 data-no-i18n>${this._esc(p.title)}</h3><p class="idea-evidence-note">${p.year || '年份待核对'} · ${this._esc(({core:'核心相关',adjacent:'相邻工作',off_topic:'不相关',unreviewed:'待筛选'})[p.relevance])} ${this._link(p.url || (p.doi?'https://doi.org/'+p.doi:''))}</p>
-      <p class="idea-dialog-intro" data-no-i18n>${this._esc(p.summary_zh || '尚未完成摘要筛选')}</p><p class="idea-evidence-note">相关性理由：${this._esc(p.reason || '待判断')}</p>
-      ${p.fulltext_error?`<p class="idea-evidence-note">${this._esc(p.fulltext_error)}</p>`:''}
-      ${d.reading[p.paper_id]?`<button class="idea-text-btn" data-action="paper" data-index="${i}">查看精读记录与原文证据</button>`:''}</article>`;
+      <h3 data-no-i18n>${this._esc(p.title)}</h3>${this._paperCitation(p)}
+      <p class="literature-summary" data-no-i18n>${this._esc(String(p.summary_zh || '暂未获取摘要。').replace(/\s+/g,' ').trim())}</p>
+      ${d.reading[p.paper_id]?`<button class="idea-text-btn" data-action="paper" data-index="${i}">查看智能体的精读记录</button>`:''}</article>`;
     const rows=d.papers.map((paper,index)=>({paper,index}));
     const rank={core:0,adjacent:1,unreviewed:2,off_topic:3};
     const relevant=rows.filter(x=>x.paper.relevance!=='off_topic').sort((a,b)=>(rank[a.paper.relevance]??2)-(rank[b.paper.relevance]??2));
-    const excluded=rows.filter(x=>x.paper.relevance==='off_topic');
-    return `<details class="card" ${['literature_review','reading'].includes(d.phase)?'open':''}><summary>文献清单与相关性审核（相关及待核对 ${relevant.length} 篇）</summary><div class="literature-list">${relevant.map(renderRow).join('')}${excluded.length?`<details><summary>已排除的无关论文（${excluded.length} 篇，可展开复核）</summary>${excluded.map(renderRow).join('')}</details>`:''}</div></details>`;
-
+    return `<details class="card" ${['literature_review','reading'].includes(d.phase)?'open':''}><summary>相关文献 · ${relevant.length} 篇</summary><div class="literature-list">${relevant.map(renderRow).join('')}</div></details>`;
   },
-  _cardsHtml(d) { return `<div class="card"><h3>第二轮：审核创新点</h3><p class="idea-evidence-note">候选已做本次检索范围内的最近邻审查，尚未得到实验验证。点击查看完整机制、差异与证据。</p></div><div class="idea-cards">${d.cards.map((c,i)=>`<button class="proj-big-card idea-card" data-action="card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>查看详情</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">方法 · 最近邻差异 · 原文依据 · 实验设计</span></button>`).join('')}</div>`; },
+  _cardsHtml(d) { return `<div class="card"><h3>第二轮：确认创新点</h3><p class="idea-evidence-note">查看方案的方法、文献依据与验证实验，选择你想推进的创新点。</p></div><div class="idea-cards">${d.cards.map((c,i)=>`<button class="proj-big-card idea-card" data-action="card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>查看详情</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">方法 · 最近邻差异 · 原文依据 · 实验设计</span></button>`).join('')}</div>`; },
 
   async _action(name,body) {
     if(this.busy) return; this.busy=true; this._error='';
@@ -126,9 +133,10 @@ const IdeationView = {
       try { const data=await API.createIdeation(direction);if(token===this._token)App.openIdeation(data.session_id); }
       catch(e){if(token===this._token){this.busy=false;this._error=e.message;this._paint();}} return;
     }
-    if(action==='review-literature'){
-      const chosen=field=>[...this.host.querySelectorAll(`[data-field="${field}"]:checked`)].map(x=>x.dataset.paper);
-      return this._action('literature-review',{selected_paper_ids:chosen('selected'),required_paper_ids:chosen('required'),feedback:document.getElementById('lit-feedback').value});
+    if(action==='confirm-direction')return this._action('direction-confirm',{feedback:document.getElementById('lit-feedback').value});
+    if(action==='adjust-direction'){
+      const editor=document.getElementById('ideation-scope-editor');if(editor)editor.open=true;
+      const input=document.getElementById('lit-scope');if(input){input.scrollIntoView?.({block:'center',behavior:'smooth'});input.focus();}return;
     }
     if(action==='scope')return this._action('scope',{direction:document.getElementById('lit-scope').value});
     if(action==='add-paper')return this._action('papers',{reference:document.getElementById('lit-reference').value});
@@ -142,7 +150,7 @@ const IdeationView = {
     try{await API.uploadIdeationPaper(this.sessionId,this.data.revision,file);}catch(e){if(token===this._token)this._error=e.message;}
     finally{if(token===this._token){this.busy=false;await this.refresh(true);}}
   },
-  _section(title,value) { return `<section class="idea-detail-section"><h3>${this._esc(title)}</h3><p data-no-i18n>${this._esc(value || '未提供，须进一步核实')}</p></section>`; },
+  _section(title,value) { return `<section class="idea-detail-section"><h3>${this._esc(title)}</h3><p data-no-i18n>${this._esc(value || '未提供')}</p></section>`; },
   _openPaper(index) {
     const p=this.data.papers[index],r=this.data.reading[p.paper_id];if(!r)return;
     this._showDialog(p.title,['problem','method','data','experiments','findings','limitations'].map((k,i)=>this._section(['问题','方法','数据','实验','结论','局限与适用条件'][i],r[k])).join('')+
@@ -174,7 +182,7 @@ const IdeationView = {
   async _showPrompt() {
     const dialog=this._showDialog('各阶段生成方式与实际提示词','<p>正在读取…</p>');
     try{const info=await API.ideaPrompt();if(this._dialog!==dialog)return;
-      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。先检索、审文献，再精读、构思、查重和审创新点。两次审核之前不启动实验。${this._esc(info.budget_basis)}</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',read:'全文精读',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查'})[key])} · 输出预算 ${info.output_tokens[key]}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
+      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。先检索、审文献，再精读、构思、查重和审创新点。</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',read:'全文精读',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查'})[key])} · 输出预算 ${info.output_tokens[key]}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
     }catch(e){if(this._dialog===dialog)dialog.querySelector('.idea-dialog-body').textContent='读取失败：'+e.message;}
   },
 };

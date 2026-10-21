@@ -62,6 +62,10 @@ class LiteratureReview(VersionRequest):
     feedback: str = Field(default="", max_length=4000)
 
 
+class DirectionConfirmation(VersionRequest):
+    feedback: str = Field(default="", max_length=4000)
+
+
 class ScopeRequest(VersionRequest):
     direction: str = Field(min_length=4, max_length=4000)
 
@@ -98,6 +102,16 @@ async def session_detail(sid: str):
 async def review_literature(sid: str, req: LiteratureReview):
     return public(invoke(get_service().review_literature, sid, req.revision,
                          req.selected_paper_ids, req.required_paper_ids, req.feedback))
+
+
+@router.post("/ideation/sessions/{sid}/direction-confirm")
+async def confirm_direction(sid: str, req: DirectionConfirmation):
+    return public(invoke(get_service().confirm_direction, sid, req.revision, req.feedback))
+
+
+@router.post("/ideation/sessions/{sid}/metadata")
+async def refresh_metadata(sid: str, req: VersionRequest):
+    return public(invoke(get_service().refresh_metadata, sid, req.revision))
 
 
 @router.post("/ideation/sessions/{sid}/scope")
