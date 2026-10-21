@@ -81,7 +81,7 @@ const ProjectHome = {
     container.innerHTML = `
       <div id="proj-root">
         <div class="proj-head" id="proj-head">${this._headHtml()}</div>
-        <div class="proj-tabs" id="proj-tabs">${this._tabsHtml()}</div>
+        <div class="proj-tabs" id="proj-tabs" role="group" aria-label="Project views">${this._tabsHtml()}</div>
         <div id="proj-body"></div>
       </div>`;
     this._renderBody();
@@ -156,7 +156,7 @@ const ProjectHome = {
     const barCls = this._gate ? 'waiting' : (status === 'completed' ? 'done' : '');
     const updated = p.updated_at ? `${I18N.t('Updated')} ${this._esc(this._ago(p.updated_at * 1000))}` : '';
     return `
-      <div class="proj-head-title">${this._esc(title)}</div>
+      <div class="proj-head-title" data-no-i18n>${this._esc(title)}</div>
       <div class="proj-head-sub">
         <span class="mono">${this._esc(this.runId || '')}</span>
         ${badge}
@@ -174,7 +174,7 @@ const ProjectHome = {
   _tabsHtml() {
     const tabs = [['overview', 'Overview'], ['interact', 'Interact'], ['manage', 'Manage']];
     return tabs.map(([k, label]) =>
-      `<span class="proj-tab${this.tab === k ? ' active' : ''}" data-tab="${k}" onclick="ProjectHome.switchTab('${k}')">${label}</span>`
+      `<button type="button" class="proj-tab${this.tab === k ? ' active' : ''}" data-tab="${k}" aria-pressed="${this.tab === k}" onclick="ProjectHome.switchTab('${k}')">${label}</button>`
     ).join('');
   },
 
@@ -215,7 +215,7 @@ const ProjectHome = {
     const g = this._gate;
     return `
       <div class="proj-banner">
-        <span>🚦 ${I18N.t('Gate: waiting for your decision')} — Stage ${g.stage ?? '?'} ${this._esc(g.stage_name || '')}${g.reason ? ` · ${this._esc(g.reason)}` : ''}</span>
+        <span>${I18N.t('Gate: waiting for your decision')} · ${I18N.t('Stage')} ${g.stage ?? '?'} ${this._esc(I18N.t(g.stage_name || ''))}${g.reason ? ` · ${this._esc(g.reason)}` : ''}</span>
         <button class="proj-btn primary" onclick="ProjectHome.switchTab('interact')">${this._esc(I18N.t('Go handle it'))}</button>
       </div>`;
   },
@@ -390,7 +390,7 @@ const ProjectHome = {
     };
     this._onChatErr = (data) => {
       const err = (data && data.error) || 'unknown';
-      this._addMessage('assistant', 'Error: ' + (typeof err === 'string' ? err : 'connection error'));
+      this._addMessage('assistant', I18N.t('Error') + ': ' + (typeof err === 'string' ? err : I18N.t('connection error')));
     };
     chatWS.on('chat_response', this._onChatResp);
     chatWS.on('error', this._onChatErr);
@@ -496,7 +496,7 @@ const ProjectHome = {
     return `
       <div class="proj-gate">
         <div class="proj-gate-head">
-          🚦 Gate: Stage ${g.stage ?? '?'} — ${this._esc(g.stage_name || '')}
+          ${I18N.t('Gate approval')} · ${I18N.t('Stage')} ${g.stage ?? '?'} — ${this._esc(I18N.t(g.stage_name || ''))}
           <span class="proj-badge waiting">${this._esc(I18N.t('Waiting for your decision'))}</span>
         </div>
         <div class="proj-gate-summary">${this._esc(g.reason || '')}${g.since ? ` · ${this._esc(this._ago(g.since))}` : ''}</div>
@@ -612,7 +612,7 @@ const ProjectHome = {
       return;
     }
     if (['reject', 'abort'].includes(action)) {
-      if (!confirm(`${I18N.t('Are you sure?')} (${action})`)) return;
+      if (!confirm(`${I18N.t('Are you sure?')} (${I18N.t(action === 'reject' ? 'Reject' : 'Abort')})`)) return;
     }
     await this._respond({ action, message: '', guidance: '' });
   },
@@ -637,7 +637,7 @@ const ProjectHome = {
     const inp = document.getElementById('proj-rollback-stage');
     const n = parseInt(inp && inp.value, 10);
     if (!Number.isInteger(n) || n < 1) { alert(I18N.t('Invalid stage number.')); return; }
-    if (!confirm(`${I18N.t('Are you sure?')} (rollback → stage ${n})`)) return;
+    if (!confirm(`${I18N.t('Are you sure?')} (${I18N.t('Rollback')} → ${I18N.t('Stage')} ${n})`)) return;
     const ok = await this._respond({ action: 'rollback', rollback_to_stage: n, message: '' });
     if (ok) { this._rollbackOpen = false; this._updateGateActions(); }
   },
@@ -684,7 +684,7 @@ const ProjectHome = {
   _paperBodyHtml() {
     const busy = !!this._paperBusy;
     const langBtn = l =>
-      `<button class="gate-btn gate-toggle${this._paperLang === l ? ' active' : ''}"${busy ? ' disabled' : ''} onclick="ProjectHome._paperSetLang('${l}')">${l}</button>`;
+      `<button class="gate-btn gate-toggle${this._paperLang === l ? ' active' : ''}"${busy ? ' disabled' : ''} onclick="ProjectHome._paperSetLang('${l}')">${I18N.t(l === 'zh' ? 'Chinese' : 'English')}</button>`;
     const btn = (kind, label, cls) => {
       const loading = this._paperBusy === kind;
       const text = loading && kind === 'revise'
@@ -1001,11 +1001,11 @@ const ProjectHome = {
       </div>
       <div class="card">
         <h2>Overleaf</h2>
-        <div class="proj-kv"><span class="k">zh</span><span class="mono">runs/${rid}/zh/</span></div>
-        <div class="proj-kv"><span class="k">en</span><span class="mono">runs/${rid}/en/</span></div>
+        <div class="proj-kv"><span class="k">${I18N.t('Chinese')}</span><span class="mono">runs/${rid}/zh/</span></div>
+        <div class="proj-kv"><span class="k">${I18N.t('English')}</span><span class="mono">runs/${rid}/en/</span></div>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-          <button class="gate-btn" id="proj-ov-push-zh" onclick="ProjectHome._overleafPush('zh')">${I18N.t('Push to Overleaf')} (zh)</button>
-          <button class="gate-btn" id="proj-ov-push-en" onclick="ProjectHome._overleafPush('en')">${I18N.t('Push to Overleaf')} (en)</button>
+          <button class="gate-btn" id="proj-ov-push-zh" onclick="ProjectHome._overleafPush('zh')">${I18N.t('Push to Overleaf')} · ${I18N.t('Chinese')}</button>
+          <button class="gate-btn" id="proj-ov-push-en" onclick="ProjectHome._overleafPush('en')">${I18N.t('Push to Overleaf')} · ${I18N.t('English')}</button>
         </div>
         <div id="proj-ov-notice" class="gate-notice" style="display:none"></div>
       </div>

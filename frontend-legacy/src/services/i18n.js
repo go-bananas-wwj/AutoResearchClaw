@@ -1,7 +1,7 @@
 /**
  * i18n.js — ResearchClaw 仪表盘中英双语支持。
  * 机制：字典精确匹配 + 少量正则模式；MutationObserver 在每次视图渲染后翻译文本节点，
- * 原始英文存于 WeakMap，切回 EN 即还原。语言偏好存 localStorage，默认跟随浏览器。
+ * 原始英文存于 WeakMap，切回 EN 即还原。语言偏好存 localStorage，默认中文。
  * 依赖：需在其它脚本之前加载（index.html 已保证）。暴露全局 window.I18N。
  */
 (function () {
@@ -16,6 +16,10 @@
   var DICT = {
     /* 头部 / 导航 */
     'Autonomous Research Pipeline': '自主科研流水线',
+    'Research workspace': '科研工作空间',
+    'Project views': '项目视图', 'Stage': '阶段', 'Gate approval': '阶段审批',
+    'From an idea to experiments and a finished paper.': '从一个想法开始，探索、实验，直到论文成稿。',
+    'Autonomous Research Pipeline — 23-stage co-pilot.': '自主科研流水线 · 23 阶段人机协作',
     'Overview': '总览', 'Interact': '交互', 'Manage': '管理',
     'Dashboard': '仪表盘', 'Pipeline': '流水线', 'Experiments': '实验',
     'Chat': '对话', 'Paper': '论文', 'Projects': '项目', 'Wizard': '向导',
@@ -64,14 +68,16 @@
     'Ready!': '就绪！',
     'Configuration complete! Click "Finish" to generate your config.':
       '配置完成！点击“完成”生成你的配置文件。',
-    'Back': '上一步', 'Next': '下一步', 'Finish': '完成',
+    'Back': '返回', 'Next': '下一步', 'Finish': '完成',
     'Configuration Generated': '配置已生成',
     'Copy this to your config.yaml or use the CLI:': '将以下内容复制到 config.yaml，或使用命令行：',
     /* SettingsView */
     'Settings': '设置',
     'Reload': '重新加载', 'Save': '保存',
+    'Loaded': '已加载', 'Saved': '已保存', 'backup': '备份',
+    'restart run to apply': '重新启动研究任务后生效',
     'Saving validates YAML and writes an automatic .bak backup next to the file. Changes to a running pipeline require a restart of the run to take effect.':
-      '保存时会校验 YAML，并在文件旁自动生成 .bak 备份；对正在运行的流水线，改动需重新启动该 run 才生效。',
+      '保存时会校验 YAML，并自动生成 .bak 备份；正在运行的研究任务需重新启动后才能应用改动。',
     'Select a config file': '选择一个配置文件',
     /* IdeationView */
     'Ideation': '选题',
@@ -143,12 +149,12 @@
     'No versions yet.': '暂无历史版本。',
     'Optional extra instruction, e.g. 把讨论部分压缩一半': '可选附加指令，例：把讨论部分压缩一半',
     /* 项目中心布局（ProjectHome / app shell） */
-    'New Research': '新研究',
+    'New Research': '新建研究',
     'About': '关于',
     'Your Projects': '你的项目',
     'No projects yet.': '暂无项目。',
     'Start your first research project from here.': '从这里开始你的第一个研究项目。',
-    'Waiting': '等门控',
+    'Waiting': '待审批',
     'Done': '已完成',
     'Updated': '更新于',
     'Go handle it': '去处理',
@@ -177,6 +183,7 @@
     'This is the conversation bound to the current project. Confirm plans, inject ideas, or ask about progress here — I will answer in this project\'s context.':
       '这是与当前项目绑定的对话。在这里确认方案、注入想法、询问进度——我会按这个项目的上下文回答。',
     'Gate resolved — pipeline continues.': '门控已放行，流水线继续。',
+    'Error': '错误', 'connection error': '连接异常',
   };
 
   /* ---------- 23 阶段名（规范下划线名 → 中文） ---------- */
@@ -191,6 +198,7 @@
     'EXPORT_PUBLISH': '导出发布', 'CITATION_VERIFY': '引用核验',
   };
   for (var k in STAGES) {
+    DICT[k] = STAGES[k];                  // "TOPIC_INIT"
     var spaced = k.replace(/_/g, ' ');
     DICT[spaced] = STAGES[k];              // "TOPIC INIT"
     DICT[tc(spaced)] = STAGES[k];          // "Topic Init"
@@ -200,7 +208,7 @@
   var STATUS = {
     'idle': '空闲', 'running': '运行中', 'completed': '已完成', 'failed': '失败',
     'pending': '等待中', 'unknown': '未知', 'paused': '已暂停', 'gate': '待审批',
-    'set': '已设置', 'missing': '未设置', 'waiting': '等门控', 'no_checkpoint': '无检查点',
+    'set': '已设置', 'missing': '未设置', 'waiting': '待审批', 'no_checkpoint': '无检查点',
   };
 
   /* ---------- 模式规则（含动态数字的短语） ---------- */
@@ -215,25 +223,28 @@
     [/^(\d+) numbers reverted to verified values$/, '$1 个数字已回退为已验证值'],
     [/^Stage (\d+)\/(\d+)$/, '阶段 $1/$2'],
     [/^Stage (\d+)$/, '阶段 $1'],
+    [/^Step (\d+)$/, '第 $1 步'],
+    [/^Phase ([A-H]): (.*)$/, '阶段组 $1：$2'],
+    [/^Loaded (.+)$/, '已加载 $1'],
+    [/^\(symlink → (.+)\)$/, '（链接指向 $1）'],
     [/^Gate (approve|reject|skip|abort|inject|edit|rollback): (.*)$/, '门控 $1：$2'],
   ];
 
   /* ---------- 语言状态 ---------- */
   var stored = null;
   try { stored = localStorage.getItem('rc-lang'); } catch (e) {}
-  var lang = stored || ((navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+  var lang = stored === 'en' ? 'en' : 'zh';
 
   var originals = new WeakMap();
-  var suppress = false;
 
   function translateText(orig) {
     var n = norm(orig);
     if (!n) return null;
-    if (DICT[n]) return DICT[n];
+    if (Object.prototype.hasOwnProperty.call(DICT, n)) return orig.replace(orig.trim(), DICT[n]);
     var low = n.toLowerCase();
-    if (STATUS[low]) return STATUS[low];
+    if (Object.prototype.hasOwnProperty.call(STATUS, low)) return orig.replace(orig.trim(), STATUS[low]);
     for (var i = 0; i < PATTERNS.length; i++) {
-      if (PATTERNS[i][0].test(n)) return orig.replace(PATTERNS[i][0], PATTERNS[i][1]);
+      if (PATTERNS[i][0].test(n)) return orig.replace(orig.trim(), n.replace(PATTERNS[i][0], PATTERNS[i][1]));
     }
     return null;
   }
@@ -242,39 +253,45 @@
     if (!node || node.nodeType === 8) return;               // 跳过注释等
     if (node.nodeType === 3) {                              // 文本节点：以"原始英文"为基准双向翻译
       var parent = node.parentNode;
-      if (!parent || parent.nodeName === 'SCRIPT' || parent.nodeName === 'STYLE') return;
-      if (parent.closest && parent.closest('[data-no-i18n]')) return;
-      if (!originals.has(node)) originals.set(node, node.nodeValue);
-      var orig = originals.get(node);
+      if (!parent || parent.closest('[data-no-i18n], script, style, pre, code, textarea')) return;
+      var record = originals.get(node);
+      // 状态徽章可复用同一个文本节点；外部更新后以新内容为翻译源。
+      if (!record || node.nodeValue !== record.rendered) record = { original: node.nodeValue };
+      var orig = record.original;
       var out = (lang === 'zh') ? (translateText(orig) || orig) : orig;
+      record.rendered = out;
+      originals.set(node, record);
       if (node.nodeValue !== out) node.nodeValue = out;
       return;
     }
     if (node.nodeType === 1) {                              // 元素：处理 placeholder + 递归
+      if (node.matches('[data-no-i18n], script, style, pre, code')) return;
       var store = originals.get(node) || {};
-      if (node.hasAttribute && node.hasAttribute('placeholder')) {
-        if (!('placeholder' in store)) store.placeholder = node.getAttribute('placeholder');
-        var phOut = (lang === 'zh') ? (translateText(store.placeholder) || store.placeholder) : store.placeholder;
-        if (node.getAttribute('placeholder') !== phOut) node.setAttribute('placeholder', phOut);
-      }
+      ['placeholder', 'title', 'aria-label'].forEach(function (attr) {
+        if (!node.hasAttribute(attr)) return;
+        var current = node.getAttribute(attr);
+        var record = store[attr];
+        if (!record || current !== record.rendered) record = { original: current };
+        var out = lang === 'zh' ? (translateText(record.original) || record.original) : record.original;
+        record.rendered = out;
+        store[attr] = record;
+        if (current !== out) node.setAttribute(attr, out);
+      });
       originals.set(node, store);
-      var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, null);
-      var t;
-      while ((t = walker.nextNode())) translateNode(t);
+      // 只遍历一次，避免对深层界面反复递归翻译。
+      for (var child = node.firstChild; child; child = child.nextSibling) translateNode(child);
     }
   }
 
   function applyAll(root) {
-    suppress = true;
     translateNode(root || document.body);
-    suppress = false;
   }
 
   function setLang(next) {
     lang = next;
     try { localStorage.setItem('rc-lang', lang); } catch (e) {}
     document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-    document.title = lang === 'zh' ? 'ResearchClaw — 自主科研流水线' : 'ResearchClaw — Autonomous Research Pipeline';
+    document.title = lang === 'zh' ? 'ResearchClaw — 科研工作空间' : 'ResearchClaw — Research Workspace';
     updateToggle();
     applyAll(document.body);
     window.dispatchEvent(new CustomEvent('rc-lang', { detail: { lang: lang } }));
@@ -282,7 +299,11 @@
 
   function updateToggle() {
     var btn = document.getElementById('lang-toggle');
-    if (btn) btn.textContent = lang === 'zh' ? 'EN' : '中文';
+    if (btn) {
+      btn.textContent = lang === 'zh' ? 'EN' : '中文';
+      btn.title = lang === 'zh' ? '切换到英文' : 'Switch to Chinese';
+      btn.setAttribute('aria-label', btn.title);
+    }
   }
 
   /* ---------- 对外 API ---------- */
@@ -298,19 +319,20 @@
     if (btn) btn.addEventListener('click', function () { window.I18N.toggle(); });
     updateToggle();
     document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-    if (lang === 'zh') document.title = 'ResearchClaw — 自主科研流水线';
+    document.title = lang === 'zh' ? 'ResearchClaw — 科研工作空间' : 'ResearchClaw — Research Workspace';
 
     // 视图/徽章等任何 DOM 变化后自动翻译
     new MutationObserver(function (muts) {
-      if (suppress) return;
       muts.forEach(function (m) {
         if (m.type === 'childList') {
           for (var i = 0; i < m.addedNodes.length; i++) translateNode(m.addedNodes[i]);
         } else if (m.type === 'characterData') {
           translateNode(m.target);
+        } else if (m.type === 'attributes') {
+          translateNode(m.target);
         }
       });
-    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['placeholder', 'title', 'aria-label'] });
 
     applyAll(document.body);
   });

@@ -49,7 +49,7 @@ const SettingsView = {
       this._current = sel.value;
 
       document.getElementById('set-env').innerHTML = Object.entries(env.keys).map(([k, ok]) =>
-        `<span class="status-badge ${ok ? 'completed' : 'idle'}" style="font-family:var(--font-mono,monospace)">${k}: ${ok ? 'set' : 'missing'}</span>`).join('');
+        `<span class="status-badge ${ok ? 'completed' : 'idle'}" style="font-family:var(--font-mono,monospace)">${k}: ${I18N.t(ok ? 'set' : 'missing')}</span>`).join('');
 
       await this._loadFile();
     } catch (e) { this._msg('error', String(e.message || e)); }
@@ -70,7 +70,7 @@ const SettingsView = {
     const content = document.getElementById('set-editor').value;
     try {
       const r = await API.settingsSave(this._current, content);
-      this._msg('ok', `Saved ${r.wrote} (backup: ${r.backup}) — restart run to apply`);
+      this._msg('ok', `${I18N.t('Saved')} ${r.wrote}（${I18N.t('backup')}: ${r.backup}）— ${I18N.t('restart run to apply')}`);
     } catch (e) { this._msg('error', String(e.message || e)); }
   },
 
@@ -78,8 +78,8 @@ const SettingsView = {
     const el = document.getElementById('set-msg');
     if (!el) return;
     el.style.display = 'block';
-    el.style.background = kind === 'ok' ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
-    el.style.color = kind === 'ok' ? 'var(--success)' : 'var(--danger, #f85149)';
+    el.style.background = kind === 'ok' ? 'var(--success-soft)' : 'var(--error-soft)';
+    el.style.color = kind === 'ok' ? 'var(--success)' : 'var(--error)';
     el.textContent = text;
     setTimeout(() => { el.style.display = 'none'; }, 5000);
   },

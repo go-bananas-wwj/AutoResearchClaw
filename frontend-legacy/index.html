@@ -1,9 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ResearchClaw — Autonomous Research Pipeline</title>
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#f5f5f7" />
+  <title>ResearchClaw — 科研工作空间</title>
   <link rel="stylesheet" href="/static/src/styles/main.css" />
 </head>
 <body>
@@ -13,18 +15,19 @@
       <h1>ResearchClaw</h1>
       <span id="server-status" style="font-size:12px;color:var(--text-muted)"></span>
       <span id="connection-badge" class="status-badge idle">Connecting...</span>
-      <div style="flex:1"></div>
-      <span style="font-size:13px;color:var(--text-secondary)">Autonomous Research Pipeline</span>
-      <button id="lang-toggle" style="margin-left:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;font-size:13px" title="Switch language / 切换语言">中文</button>
+      <div class="header-spacer"></div>
+      <span class="header-caption">Research workspace</span>
+      <button id="lang-toggle" data-no-i18n title="切换到英文">EN</button>
     </header>
 
     <!-- Sidebar: project list -->
-    <nav class="sidebar proj-sidebar">
-      <button class="proj-new-btn" id="btn-new-research">＋ New Research</button>
+    <nav class="sidebar proj-sidebar" aria-label="Projects">
+      <button class="proj-new-btn" id="btn-new-research"><span aria-hidden="true">＋</span><span>New Research</span></button>
+      <div class="proj-side-label">Projects</div>
       <div id="sidebar-projects"></div>
       <div class="proj-side-bottom">
-        <a href="#" id="nav-settings">🛠 Settings</a>
-        <a href="#" id="nav-about">ℹ About</a>
+        <a href="#" id="nav-settings">Settings</a>
+        <a href="#" id="nav-about">About</a>
       </div>
     </nav>
 

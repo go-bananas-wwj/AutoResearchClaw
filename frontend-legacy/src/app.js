@@ -60,17 +60,17 @@
               ? `<span class="proj-badge running">● ${I18N.t('Running')}</span>`
               : `<span class="proj-badge">● ${this._esc(I18N.t(st))}</span>`;
         const barCls = p.waiting ? 'waiting' : (st === 'completed' ? 'done' : '');
-        const papers = [p.has_paper_zh && 'zh', p.has_paper_en && 'en'].filter(Boolean).join('+');
+        const papers = [p.has_paper_zh && I18N.t('Chinese'), p.has_paper_en && I18N.t('English')].filter(Boolean).join(' / ');
         const meta = st === 'completed' && papers
           ? `${stage}/${this.totalStages} · ${papers}`
           : `Stage ${stage}/${this.totalStages}`;
         return `
-          <div class="proj-card${p.id === this.currentProject && this.view === 'home' ? ' active' : ''}"
+          <button type="button" class="proj-card${p.id === this.currentProject && this.view === 'home' ? ' active' : ''}"
                onclick="App.openProject('${this._escAttr(p.id)}')">
-            <div class="proj-card-title">${this._esc(p.topic || p.id)}</div>
-            <div class="proj-card-row">${badge}<span>${this._esc(meta)}</span></div>
-            <div class="proj-pbar ${barCls}"><div style="width:${pct}%"></div></div>
-          </div>`;
+            <span class="proj-card-title" data-no-i18n>${this._esc(p.topic || p.id)}</span>
+            <span class="proj-card-row">${badge}<span>${this._esc(meta)}</span></span>
+            <span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>
+          </button>`;
       }).join('');
     },
 
@@ -118,7 +118,7 @@
 
     showAbout() {
       const v = (this._health && this._health.version) || '?';
-      alert(`ResearchClaw v${v}\nAutonomous Research Pipeline — 23-stage co-pilot.`);
+      alert(`ResearchClaw v${v}\n${I18N.t('Autonomous Research Pipeline — 23-stage co-pilot.')}`);
     },
 
     /* ---------- 主区渲染 ---------- */
@@ -132,7 +132,7 @@
       if (this.view === 'settings') {
         main.innerHTML = `
           <div style="margin-bottom:12px">
-            <button class="proj-btn" onclick="App.goHome()">← Back</button>
+            <button class="proj-btn" onclick="App.goHome()">← <span>Back</span></button>
           </div>
           <div id="settings-host"></div>`;
         SettingsView.render(document.getElementById('settings-host'));
@@ -178,23 +178,24 @@
               : `<span class="proj-badge">● ${this._esc(I18N.t(st))}</span>`;
         const barCls = p.waiting ? 'waiting' : (st === 'completed' ? 'done' : '');
         return `
-          <div class="proj-big-card" onclick="App.openProject('${this._escAttr(p.id)}')">
-            <div class="proj-big-card-title">${this._esc(p.topic || p.id)}</div>
-            <div class="proj-card-row">${badge}<span>Stage ${stage}/${this.totalStages}</span></div>
-            <div class="proj-pbar ${barCls}"><div style="width:${pct}%"></div></div>
-          </div>`;
+          <button type="button" class="proj-big-card" onclick="App.openProject('${this._escAttr(p.id)}')">
+            <span class="proj-big-card-title" data-no-i18n>${this._esc(p.topic || p.id)}</span>
+            <span class="proj-card-row">${badge}<span>Stage ${stage}/${this.totalStages}</span></span>
+            <span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>
+          </button>`;
       }).join('');
       main.innerHTML = `
         <div class="proj-welcome">
           <h2>Your Projects</h2>
+          <p class="proj-welcome-sub">From an idea to experiments and a finished paper.</p>
           ${this.projects.length ? '' : `<p class="proj-welcome-sub">No projects yet.</p>`}
           <div class="proj-grid">
             ${cards}
-            <div class="proj-big-card new" onclick="App.startNewResearch()">
-              <div class="plus">＋</div>
-              <div>New Research</div>
-              <div class="hint">Start your first research project from here.</div>
-            </div>
+            <button type="button" class="proj-big-card new" onclick="App.startNewResearch()">
+              <span class="plus" aria-hidden="true">＋</span>
+              <span>New Research</span>
+              <span class="hint">Start your first research project from here.</span>
+            </button>
           </div>
         </div>`;
     },
