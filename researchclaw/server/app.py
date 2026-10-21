@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from researchclaw.config import RCConfig
@@ -131,12 +134,21 @@ def create_app(
     if frontend_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(frontend_dir), html=True), name="static")
 
-        # Serve index.html at root
-        from fastapi.responses import FileResponse
-
+        # 本地适配：热挂载更新后按内容给资源加版本，避免新 HTML 混用缓存的旧 CSS/JS。
         @app.get("/")
-        async def index() -> FileResponse:
-            return FileResponse(str(frontend_dir / "index.html"))
+        async def index() -> HTMLResponse:
+            html = (frontend_dir / "index.html").read_text(encoding="utf-8")
+
+            def version_asset(match: re.Match[str]) -> str:
+                url = match.group(1)
+                asset = frontend_dir / url.removeprefix("/static/")
+                if not asset.is_file():
+                    return match.group(0)
+                version = hashlib.sha256(asset.read_bytes()).hexdigest()[:12]
+                return f"{url}?v={version}"
+
+            html = re.sub(r'(/static/[^"?]+)(?:\?[^\"]*)?(?=")', version_asset, html)
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     # --- Background tasks ---
     @app.on_event("startup")
