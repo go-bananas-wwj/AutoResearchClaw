@@ -954,3 +954,17 @@ class TestS2RetrySleepBudget:
         assert delays, "expected backoff sleeps between attempts"
         assert delays == sorted(delays), "backoff should be non-decreasing"
         assert all(d > 0 for d in delays)
+
+
+def test_arxiv_client_bounds_its_session_network_wait(monkeypatch):
+    from types import SimpleNamespace
+    from researchclaw.literature import arxiv_client
+    calls=[]
+    session=SimpleNamespace(get=lambda url,**kwargs:calls.append(kwargs))
+    monkeypatch.setattr(arxiv_client,'_client',None)
+    monkeypatch.setattr(arxiv_client,'arxiv',SimpleNamespace(Client=lambda **kwargs:SimpleNamespace(_session=session)))
+    client=arxiv_client._get_client()
+    client._session.get('https://export.arxiv.org/api/query')
+    assert calls[-1]['timeout']==(10,20)
+    client._session.get('https://export.arxiv.org/api/query',timeout=(2,4))
+    assert calls[-1]['timeout']==(2,4)

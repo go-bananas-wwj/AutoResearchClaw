@@ -58,7 +58,7 @@ class LLM:
                 'queries':[{'query':f'LS factor watershed {i}','purpose':'方法与验证','period':'recent' if i == 3 else 'all'} for i in range(4)]}
         elif stage in ('screen','summarize','neighbors'):
             result = {'papers':[{'paper_id':p['paper_id'],'relevance':'off_topic' if self.off_topic else 'core',
-                'reason':'相关：分析坡长与坡度','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','method':'DEM汇流','strengths':'提供对照','limitations':'摘要未说明'}} for p in data['papers']]}
+                'reason':'相关：分析坡长与坡度','relationship':'same_mechanism','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','method':'DEM汇流','strengths':'提供对照','limitations':'摘要未说明'}} for p in data['papers']]}
         elif stage == 'read':
             p = data['passages'][0]
             result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
@@ -77,11 +77,11 @@ class LLM:
                 'metrics':[{'metric_key':'RMSE','direction':'decrease'}], 'baselines':[{'name':'已知LS方法'}],
                 'evidence_refs':[ref],'closest_paper_ids':[pid],'collision_queries':['collision LS operator']}]}
         else:
-            n = data['neighbors'][0]
-            result = {'verdict':'overlap' if self.overlap else 'pass','reason':'在本次范围内有具体机制差异',
-                'closest_paper_ids':[n['paper_id']],'evidence_refs':[n['evidence'][0]['passage_id']],
+            ns = data['neighbors']
+            result = {'verdict':'overlap' if self.overlap else 'pass','design_check':{'verdict':'pass','issues':[],'corrected_falsification':''},'reason':'在本次范围内有具体机制差异',
+                'closest_paper_ids':[n['paper_id'] for n in ns],'evidence_refs':[n['evidence'][0]['passage_id'] for n in ns],
                 'comparisons':[{'paper_id':n['paper_id'],'problem':'同类问题','mechanism':'存在机制差异',
-                'data':'相同DEM','experiment':'使用独立观测','difference':'待验证的新机制'}]}
+                'data':'相同DEM','experiment':'使用独立观测','difference':'待验证的新机制'} for n in ns]}
         return SimpleNamespace(content=json.dumps(result,ensure_ascii=False), model='fake', prompt_tokens=20,
             completion_tokens=30, finish_reason='length' if stage == self.truncate else 'stop', truncated=stage == self.truncate)
 
@@ -567,3 +567,69 @@ async def test_original_api_serves_private_cache_without_credentials_or_approval
         done=await asyncio.to_thread(wait,engine,sid)
         assert not done['approved_revision'] and not done['reading'] and not done['run_id']
         assert (await client.get(f'/api/ideation/sessions/{sid}/papers/p-unknown/fulltext')).status_code==404
+
+
+def test_regeneration_refreshes_latest_evidence_and_retains_collision_lessons(engine):
+    data=develop(engine);sid=data['session_id'];old=data['revision'];old_card=data['cards'][0]['card_id']
+    data['rejected_cards']=[{'title':'已被覆盖的机制','method':'常规算法比较','rejection_reason':'已有同机制工作','audit':{'verdict':'overlap'}}]
+    engine.store.save(data)
+    payloads=[];original=engine.llm.chat
+    def capture(messages,*,system,**kwargs):
+        if system in (PROMPTS['synthesis'],PROMPTS['generate']):payloads.append((system,json.loads(messages[0]['content'])))
+        return original(messages,system=system,**kwargs)
+    engine.llm.chat=capture
+    engine.regenerate(sid,old,'基于新增正文重新定位问题');done=wait(engine,sid)
+    assert done['phase']=='idea_review' and done['revision']==old+1 and not done['run_id']
+    assert len(payloads)==2 and all(p['prior_rejections'][0]['audit']['verdict']=='overlap' for _,p in payloads)
+    history=next(r for r in done['reviews'] if r.get('type')=='regenerate')
+    assert history['synthesis'] and history['rejected_cards'][0]['title']=='已被覆盖的机制'
+    assert history['inherited_literature_approval']==old
+    with pytest.raises(SessionError):engine.confirmation(sid,old,old_card)
+
+
+def test_regeneration_accumulates_binding_lessons_across_rounds(engine):
+    data=develop(engine);sid=data['session_id']
+    data['prior_rejections']=[{'title':'首轮方案','method':'旧机制','reason':'已有明确先例','audit':{'verdict':'overlap'}}]
+    data['rejected_cards']=[{'title':'次轮方案','method':'另一旧机制','rejection_reason':'先例仍覆盖','audit':{'verdict':'overlap'}}]
+    engine.store.save(data)
+    engine.regenerate(sid,data['revision'],'保留两轮教训');done=wait(engine,sid)
+    assert {x['title'] for x in done['prior_rejections']}=={'首轮方案','次轮方案'}
+    assert done['phase']=='idea_review' and done['run_id'] is None
+
+
+def test_reversed_falsification_requires_independent_recheck(engine):
+    original=engine.llm.chat;reviews=[]
+    patch='只在所有允许参数都不能补偿给定空间扰动、且输出差异超过预先指定容差时，才反驳该扰动不可辨识的假设。'
+    def review(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['audit']:
+            payload=json.loads(messages[0]['content']);reviews.append(payload)
+            result=json.loads(response.content)
+            if payload['candidate']['falsification']!=patch:
+                result['design_check']={'verdict':'revise','issues':['推翻判据方向写反'],'corrected_falsification':patch}
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=review
+    data=develop(engine)
+    assert data['phase']=='idea_review' and len(reviews)==2
+    assert data['cards'][0]['falsification']==patch and data['cards'][0]['design_revisions']
+    assert data['cards'][0]['audit']['design_check']['verdict']=='pass'
+
+
+def test_design_repair_cannot_override_novelty_overlap(engine):
+    engine.llm.overlap=True
+    data=develop(engine)
+    assert data['status']=='blocked' and not data['cards']
+    assert data['rejected_cards'][0]['audit']['verdict']=='overlap'
+
+
+def test_nominated_supplemental_baseline_cannot_be_silently_omitted(engine):
+    data=develop(engine);sid=data['session_id']
+    extra=paper_record({'title':'Critical supplemental baseline','doi':'10.1234/supplemental','url':'https://example.org/supplemental'},source='fixture')
+    engine._read_paper(data,threading.Event(),extra,extra=True)
+    data['candidates'][0]['closest_paper_ids'].append(extra['paper_id'])
+    data.update(cards=[],rejected_cards=[],phase='audit');engine.store.save(data)
+    engine.launch(sid);done=wait(engine,sid)
+    assert done['phase']=='idea_review'
+    assert extra['paper_id'] in done['cards'][0]['audit']['closest_paper_ids']
+    assert extra['paper_id'] in {p['paper_id'] for p in done['cards'][0]['closest_papers']}

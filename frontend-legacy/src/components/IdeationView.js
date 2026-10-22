@@ -3,7 +3,8 @@ const IdeationView = {
   host: null, data: null, sessionId: null, busy: false,
   _timer: null, _token: 0, _signature: '', _dialog: null, _returnFocus: null, _listener: null, _error: '',
   phaseLabel(p) { return ({retrieval:'检索与筛选',literature_review:'待确认研究方向',reading:'全文精读',synthesis:'问题定位',generate:'构思创新点',audit:'最近邻查重与审查',idea_review:'待审核创新点',handed_off:'已交接自动科研'})[p] || p; },
-  statusLabel(s) { return ({pending:'待执行',running:'进行中',handoff:'正在交接科研',waiting:'等待审核',blocked:'需要补充材料',interrupted:'已中断',stopped:'已停止',stopping:'停止中',completed:'已完成'})[s] || s; },
+  statusLabel(s) { return ({pending:'待执行',running:'进行中',handoff:'正在交接科研',waiting:'等待审核',blocked:'已暂停',interrupted:'已中断',stopped:'已停止',stopping:'停止中',completed:'已完成'})[s] || s; },
+  stateLabel(d) { return d.status==='blocked' && d.blocker ? ({technical:'调用待重试',evidence:'证据待补充',scientific:'方案待调整',budget:'预算待调整'})[d.blocker.category] || '已暂停' : this.statusLabel(d.status); },
   _esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
   _link(url, label) { return /^https?:\/\//i.test(url || '') ? `<a href="${this._esc(url)}" target="_blank" rel="noopener noreferrer">${this._esc(label || '原文链接')}</a>` : ''; },
   _short(s,n=110) { const a=Array.from(String(s || '').replace(/\s+/g,' ').trim()); return a.slice(0,n).join('')+(a.length>n?'…':''); },
@@ -27,7 +28,7 @@ const IdeationView = {
     try {
       const data=await API.ideationSession(this.sessionId);
       if(token!==this._token || !this.host) return;
-      const signature=JSON.stringify([data.revision,data.phase,data.status,data.download_task,data.progress,data.progress_message,data.plan,data.papers,data.cards,data.missing,Object.keys(data.reading || {}),data.usage.length]);
+      const signature=JSON.stringify([data.revision,data.phase,data.status,data.blocker,data.refinement_round,data.download_task,data.progress,data.progress_message,data.plan,data.papers,data.cards,data.missing,Object.keys(data.reading || {}),data.usage.length]);
       this.data=data;
       if(force || signature!==this._signature) { this._signature=signature; this._paint(); }
     } catch(e) { if(token===this._token) { this._error=e.message; this._paint(); } }
@@ -61,9 +62,9 @@ const IdeationView = {
   _sessionHtml(d) {
     const active=['running','pending','stopping'].includes(d.status), locked=active || this.busy || d.status==='handoff' || !!d.run_id;
     return `<div class="card ideation-brief">
-      ${active || ['blocked','stopped','interrupted','handoff'].includes(d.status)?`<div class="ideation-progress"><strong>${this._esc(d.progress_message || this.phaseLabel(d.phase))}</strong><span class="proj-badge">${this._esc(this.statusLabel(d.status))}</span>
+      ${active || ['blocked','stopped','interrupted','handoff'].includes(d.status)?`<div class="ideation-progress"><strong>${this._esc(d.progress_message || this.phaseLabel(d.phase))}</strong><span class="proj-badge">${this._esc(this.stateLabel(d))}</span>${active && d.refinement_round?`<span class="proj-badge">自动修订 ${d.refinement_round+1}/3</span>`:''}
       ${active?`<button class="proj-btn" data-action="stop" ${d.status==='stopping'?'disabled':''}>停止调研</button>`:''}
-      ${['blocked','stopped','interrupted'].includes(d.status) && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>`:''}
+      ${['blocked','stopped','interrupted'].includes(d.status) && d.blocker?.category!=='scientific' && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>`:''}
       ${d.progress && (active || d.status==='blocked')?`<div class="literature-live" role="status" aria-live="polite">${active?'<span class="literature-spinner" aria-hidden="true"></span>':''}<div>${d.progress.current?`<strong>${this._esc(d.progress.unit || '论文')} ${d.progress.current} / ${d.progress.total}</strong>`:''}${d.progress.title?`<p data-no-i18n>${this._esc(d.progress.title)}</p>`:''}<p>${d.papers.filter(p=>['downloaded','read'].includes(p.fulltext_status)).length} 篇已获取原文 · ${Object.keys(d.reading || {}).length} 篇已完成精读</p></div></div>`:''}
       <dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
       <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl>

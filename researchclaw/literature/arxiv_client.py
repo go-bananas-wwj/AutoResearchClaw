@@ -124,6 +124,10 @@ def _get_client() -> arxiv.Client:
             delay_seconds=3.1,   # arXiv requires ≥3s between requests
             num_retries=3,       # built-in retry on failure
         )
+        # Local deployment: arxiv.Client otherwise calls requests.get without a timeout.
+        # Scope the bound to this client's session; preserve its throttling and retries.
+        from functools import partial
+        _client._session.get = partial(_client._session.get, timeout=(10, 20))
     return _client
 
 

@@ -19,6 +19,20 @@ class Cancelled(Exception):
     pass
 
 
+class WorkflowFailure(SessionError):
+    def __init__(self, message, category="technical", code="stage_failed"):
+        super().__init__(message)
+        self.category = category
+        self.code = code
+
+
+class CandidateRoundFailure(SessionError):
+    pass
+
+
+MAX_AUTO_REFINEMENTS = 2  # Initial generation plus at most two evidence-driven revisions.
+
+
 def quoted(text: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text).replace("\u00ad", ""))
 
@@ -85,7 +99,7 @@ class IdeationService:
         if event.is_set():
             raise Cancelled()
         if data["budget_usd"] > 0 and data["cost_usd"] >= data["budget_usd"]:
-            raise SessionError("调研预算已用完，请调整成本预算后恢复。")
+            raise WorkflowFailure("调研预算已用完，请调整成本预算后恢复。", "budget", "budget_exhausted")
 
     def _save(self, data, event):
         with self.store.lock:
@@ -97,7 +111,7 @@ class IdeationService:
         data["progress_message"] = message
         self._save(data, event)
 
-    def _json(self, data, event, stage, payload, _format_attempt=0):
+    def _json(self, data, event, stage, payload, _format_attempt=0, _output_scale=1):
         self._check(data, event)
         labels = {"plan": "正在理解研究方向并规划检索", "screen": "正在核对文献相关性与科学问题",
                   "summarize": "正在整理论文的科学问题、方法、优势与局限", "neighbors": "正在筛选最近邻方法", "synthesis": "正在比较方法并定位研究缺口",
@@ -110,20 +124,21 @@ class IdeationService:
         prompt = json.dumps(payload, ensure_ascii=False)
         # Explicit conservative reservation, NOT a claim about vendor prices.
         # UTF-8 bytes upper-bound input tokens. Reserve $5/M input, $25/M output.
-        reserve = (len((PROMPTS[stage] + prompt).encode()) * 5 + OUTPUT_TOKENS[stage] * 25) / 1_000_000
+        output_budget = OUTPUT_TOKENS[stage] * _output_scale
+        reserve = (len((PROMPTS[stage] + prompt).encode()) * 5 + output_budget * 25) / 1_000_000
         if data["budget_usd"] > 0 and data["cost_usd"] + reserve > data["budget_usd"]:
-            raise SessionError("剩余预算不足以预留下一次调用，请调整预算后恢复。")
+            raise WorkflowFailure("剩余预算不足以预留下一次调用，请调整预算后恢复。", "budget", "budget_exhausted")
         # Reserve before the request so a process restart cannot erase an in-flight charge.
         data["cost_usd"] = round(data["cost_usd"] + reserve, 6)
         entry = {"stage": stage, "at": now(), "cost_usd": reserve, "status": "pending",
                  "cost_basis": "conservative_reservation_5_input_25_output_usd_per_million_not_invoice",
-                 "prompt_hash": fingerprint(PROMPTS[stage])[:16]}
+                 "prompt_hash": fingerprint(PROMPTS[stage])[:16], "output_budget": output_budget}
         data["usage"].append(entry)
         self.store.save(data)
         response = None
         try:
             response = self._client().chat([{"role": "user", "content": prompt}],
-                system=PROMPTS[stage], max_tokens=OUTPUT_TOKENS[stage], temperature=0.3, json_mode=True)
+                system=PROMPTS[stage], max_tokens=output_budget, temperature=0.3, json_mode=True)
         finally:
             # Failed/cancelled/truncated calls also retain their reservation and usage.
             entry.update({"status": "returned" if response is not None else "failed",
@@ -135,7 +150,11 @@ class IdeationService:
             self.store.save(data)
         self._check(data, event)
         if getattr(response, "truncated", False) or getattr(response, "finish_reason", "") == "length":
-            raise SessionError(f"{stage} 输出被截断，未接受不完整内容。请重试。")
+            if not _format_attempt:
+                return self._json(data, event, stage, {**original_payload,
+                    "output_feedback": "上次输出被截断，本次输出上限已扩大；请按结构完整且简洁地返回。"},
+                    _format_attempt=1, _output_scale=2)
+            raise WorkflowFailure(f"{stage} 扩大输出上限后仍被截断，未接受不完整内容。", "technical", "model_truncated")
         from researchclaw.ideation.cards import _extract_json
         output_dir = self.store.directory(data["session_id"]) / "model_outputs"
         output_dir.mkdir(exist_ok=True)
@@ -145,7 +164,7 @@ class IdeationService:
         except ValueError as exc:
             if not _format_attempt:
                 return self._json(data, event, stage, {**original_payload,
-                    "json_validation_feedback": "上次输出不是有效JSON。请重新生成完整严格JSON，所有字符串内的双引号和换行必须正确转义；不附代码围栏或说明。"}, _format_attempt=1)
+                    "json_validation_feedback": "上次输出不是有效JSON。请重新生成完整严格JSON，所有字符串内的双引号和换行必须正确转义；不附代码围栏或说明。"}, _format_attempt=1, _output_scale=_output_scale)
             raise SessionError("模型输出格式两次未通过校验，已暂停；可重试，不会保存不完整结果。") from exc
         if not isinstance(result, dict):
             raise SessionError(f"{stage} 未返回有效结构")
@@ -169,7 +188,7 @@ class IdeationService:
             data = self.snapshot(sid)
             if data.get("run_id") or (data["phase"] in ("literature_review", "idea_review", "handed_off") and not data.get("download_task")):
                 raise SessionError("当前阶段需要审核，不能跳过。")
-            data.update(status="running", missing=[])
+            data.update(status="running", missing=[], blocker=None)
             self.store.save(data)
             event = threading.Event()
             thread = threading.Thread(target=self._work, args=(sid, event), daemon=True)
@@ -197,7 +216,12 @@ class IdeationService:
             self.store.save(data)
         except Exception as exc:
             # No fallback cards, invented metadata or perfect novelty on search failure.
-            data.update(status="blocked", missing=[str(exc)[:1000]])
+            category, code = getattr(exc, "category", "technical"), getattr(exc, "code", "stage_failed")
+            actions = {"technical": ["重试当前阶段"], "evidence": ["补充原文", "调整文献范围"],
+                       "scientific": ["补充文献", "调整研究方向"], "budget": ["调整成本预算"]}
+            data.update(status="blocked", missing=[str(exc)[:1000]],
+                blocker={"category": category, "code": code, "message": str(exc)[:1000], "actions": actions[category]})
+            data.pop("progress_message", None)
             self.store.save(data)
 
     def stop(self, sid):
@@ -366,7 +390,7 @@ class IdeationService:
             if not 4 <= len(direction.strip()) <= 4000:
                 raise SessionError("研究方向须为4–4000字符", 400)
             self.store.invalidate(data, "修改研究范围")
-            data.update(direction=direction.strip(), papers=[], search_log=[], completed_queries=[], phase="retrieval")
+            data.update(direction=direction.strip(), papers=[], search_log=[], completed_queries=[], phase="retrieval", feedback="")
             data.pop("plan", None)
             self.store.save(data)
             self.launch(sid)
@@ -450,15 +474,26 @@ class IdeationService:
             if not data.get("synthesis") or len([r for r in data["reading"].values() if not r.get("supplemental")]) < 3:
                 raise SessionError("全文精读和有证据支撑的问题定位尚未完成，不能跳过这些阶段生成创新点。")
             self._ensure_capacity()
-            # Cards and review refer to this exact evidence version, new generation gets a revision.
-            data["reviews"].append({"type": "regenerate", "at": now(), "feedback": feedback,
-                                   "revision": revision, "cards": data["cards"]})
-            data["revision"] += 1
-            data.update(approved_revision=data["revision"], cards=[], rejected_cards=[],
-                        phase="generate", feedback=feedback, missing=[])
+            self._prepare_refinement(data, feedback)
             self.store.save(data)
             self.launch(sid)
             return self.snapshot(sid)
+
+    def _prepare_refinement(self, data, feedback, automatic=False):
+        revision = data["revision"]
+        lessons = data.get("prior_rejections", []) + [{"title": c.get("title"), "method": c.get("method"),
+            "reason": c.get("rejection_reason"), "audit": c.get("audit"), "failure": c.get("failure")}
+            for c in data["rejected_cards"]]
+        prior_rejections = list({fingerprint([c.get("title"), c.get("method"), c.get("reason")]): c for c in lessons}.values())[-12:]
+        data["reviews"].append({"type": "auto_refine" if automatic else "regenerate", "at": now(), "feedback": feedback,
+            "revision": revision, "cards": copy.deepcopy(data["cards"]),
+            "rejected_cards": copy.deepcopy(data["rejected_cards"]),
+            "synthesis": copy.deepcopy(data["synthesis"]), "inherited_literature_approval": revision})
+        data["revision"] += 1
+        data.update(approved_revision=data["revision"], cards=[], rejected_cards=[], synthesis=None,
+                    phase="synthesis" if automatic else "reading", refresh_evidence=not automatic,
+                    prior_rejections=prior_rejections, feedback=feedback, missing=[], blocker=None,
+                    refinement_round=data.get("refinement_round", 0) + 1 if automatic else 0)
 
     def resume(self, sid, revision):
         with self.store.lock:
@@ -486,6 +521,7 @@ class IdeationService:
         configured = getattr(getattr(self.config, "literature_search", None), "sources", None)
         for source in configured or ["openalex", "semantic_scholar", "arxiv"]:
             self._check(data, event)
+            self._progress(data, event, "正在检索文献来源：" + source, operation="search", source=source, query=query)
             try:
                 rows = self.sources.search(query, period, source)
                 outcome = "records" if rows else "empty_or_unavailable"
@@ -532,7 +568,9 @@ class IdeationService:
         for attempt in range(2):
             response = self._json(data, event, stage, payload)
             output = response.get("papers") or []
-            if len(output) == len(mapping) and {p.get("paper_id") for p in output} == set(mapping):
+            valid_relations = stage != "neighbors" or all(p.get("relationship") in
+                ("same_claim", "same_mechanism", "alternative_mechanism", "background") for p in output)
+            if valid_relations and len(output) == len(mapping) and {p.get("paper_id") for p in output} == set(mapping):
                 return [{**p, "paper_id": mapping[p["paper_id"]]} for p in output]
             payload["validation_feedback"] = "上次结果未覆盖全部给定ID。仅允许并必须完整返回：" + ", ".join(mapping)
         raise SessionError("论文筛选结果两次未完整覆盖给定论文ID，已暂停；未接受未知或遗漏身份。")
@@ -613,7 +651,7 @@ class IdeationService:
             raise SessionError("正文不足以精读，不能使用摘要代替全文。")
         # Read all source text; reject oversize rather than silently claiming to read omitted pages.
         if sum(len(c["text"]) for c in chunks) > 180_000:
-            raise SessionError("论文超过精读窗口，请提供聚焦方法正文的版本。")
+            raise WorkflowFailure("论文超过精读窗口，请补充聚焦方法正文的版本；未将未读内容视为已读。", "evidence", "read_window_exceeded")
         by_id = {c["passage_id"]: c for c in chunks}
         payload = {"paper": paper["title"], "passages": chunks}
         for attempt in range(2):
@@ -660,10 +698,33 @@ class IdeationService:
         return {c["passage_id"]: c for r in data["reading"].values() for c in r["passages"]}
 
     def _develop(self, data, event):
+        while True:
+            try:
+                self._develop_round(data, event)
+                return
+            except CandidateRoundFailure:
+                rejected = data["rejected_cards"]
+                if not rejected:
+                    raise WorkflowFailure("现有证据未形成可审查候选，请补充文献或调整方向。", "evidence", "no_supported_candidate")
+                non_scientific = next((c["failure"] for c in rejected if c["failure"]["category"] != "scientific"), None)
+                if non_scientific:
+                    raise WorkflowFailure(non_scientific["message"], non_scientific["category"], non_scientific["code"])
+                previous = {x.get("failure", {}).get("lesson_key") for x in data.get("prior_rejections", []) if x.get("failure")}
+                new_lessons = {c["failure"]["lesson_key"] for c in rejected} - previous
+                if not new_lessons:
+                    raise WorkflowFailure("新一轮仍重复已被否决的机制，未获得新增依据，已暂停自动修订。", "scientific", "no_new_information")
+                if data.get("refinement_round", 0) >= MAX_AUTO_REFINEMENTS:
+                    raise WorkflowFailure("三轮构思与审查仍未形成可审核候选，已保留全部否决依据，请补充文献或调整方向。", "scientific", "refinement_exhausted")
+                self._prepare_refinement(data, data["feedback"], automatic=True)
+                self._progress(data, event, "正在根据审查依据自动修订方案", operation="refine",
+                               current=data["refinement_round"] + 1, total=MAX_AUTO_REFINEMENTS + 1, unit="轮次")
+
+    def _develop_round(self, data, event):
         if data.get("approved_revision") != data["revision"]:
             raise SessionError("文献版本尚未批准。")
         if data["phase"] == "reading":
-            self._acquire_fulltexts(data, event)
+            if not data.get("refresh_evidence"):
+                self._acquire_fulltexts(data, event)
             chosen = [p for p in data["papers"] if p["selected"] and not p.get("user_excluded")]
             required = [p for p in chosen if p.get("required")]
             optional = [p for p in chosen if not p.get("required")]
@@ -689,28 +750,36 @@ class IdeationService:
                 self._progress(data, event, "正在处理论文", current=number, total=len(pool[:15]),
                                title=p["title"], paper_id=p["paper_id"], operation="download", unit="论文")
                 self._check(data, event)
+                if p["paper_id"] not in data["reading"] and len([r for r in data["reading"].values() if not r.get("supplemental")]) >= 15:
+                    continue
+                if data.get("refresh_evidence") and p["paper_id"] not in data["reading"] and not (source_cache / (p["paper_id"] + ".json")).exists():
+                    continue  # Refresh uses the newly cached approved corpus; explicit fulltext retry owns network retries.
                 try:
                     self._read_paper(data, event, p)
                     p.pop("fulltext_error", None)
                 except Cancelled:
                     raise
                 except Exception as exc:
+                    if isinstance(exc, WorkflowFailure) and exc.category == "budget":
+                        raise
                     p.update(fulltext_status="downloaded" if p.get("fulltext_status") == "downloaded" else "abstract_only" if p.get("abstract") else "failed", fulltext_error=str(exc)[:500])
                     self._save(data, event)
             missing = [p["title"] for p in required if p["paper_id"] not in data["reading"]]
             core_read = sum(p.get("relevance") == "core" and p["paper_id"] in data["reading"] for p in chosen)
             if missing or core_read < 3:
                 downloaded = sum(p.get("fulltext_status") == "downloaded" for p in pool[:15])
-                raise SessionError(f"已完成{core_read}篇核心论文精读，另有{downloaded}篇已取得正文但精读核对未通过。至少需要3篇核心论文的可靠正文证据。" +
-                                   ("缺少指定论文：" + "；".join(missing) if missing else "请查看论文详情中的处理结果后重试。"))
+                raise WorkflowFailure(f"已完成{core_read}篇核心论文精读，另有{downloaded}篇已取得正文但精读核对未通过。至少需要3篇核心论文的可靠正文证据。" +
+                                   ("缺少指定论文：" + "；".join(missing) if missing else "请查看论文详情中的处理结果后重试。"), "evidence", "core_fulltext_missing")
+            data.pop("refresh_evidence", None)
             data["phase"] = "synthesis"
             self._save(data, event)
         if data["phase"] == "synthesis":
-            synthesis = self._json(data, event, "synthesis", {"direction": data["direction"], "reading": self._compact_reading(data)})
+            synthesis = self._json(data, event, "synthesis", {"direction": data["direction"], "reading": self._compact_reading(data),
+                "feedback": data["feedback"], "prior_rejections": data.get("prior_rejections", [])})
             allowed = self._evidence(data)
             gaps = synthesis.get("gaps") or []
             if not synthesis.get("landscape_zh") or not gaps:
-                raise SessionError("未形成有证据支撑的研究缺口：" + str(synthesis.get("missing") or "请补充研究范围。"))
+                raise WorkflowFailure("未形成有证据支撑的研究缺口：" + str(synthesis.get("missing") or "请补充研究范围。"), "evidence", "no_supported_gap")
             comparison = synthesis.get("method_comparison") or []
             if not comparison or any(p.get("paper_id") not in data["reading"] or not p.get("method") or not p.get("boundary") for p in comparison):
                 raise SessionError("领域图景缺少基于已读论文的方法与适用边界对照。")
@@ -722,13 +791,14 @@ class IdeationService:
             self._save(data, event)
         if data["phase"] == "generate":
             result = self._json(data, event, "generate", {"direction": data["direction"], "synthesis": data["synthesis"],
-                "reading": self._compact_reading(data), "feedback": data["feedback"]})
+                "reading": self._compact_reading(data), "feedback": data["feedback"],
+                "prior_rejections": data.get("prior_rejections", [])})
             data.update(candidates=(result.get("cards") or [])[:4], phase="audit", cards=[], rejected_cards=[])
             self._save(data, event)
         if data["phase"] == "audit":
             self._audit(data, event)
             if not data["cards"]:
-                raise SessionError("没有候选通过证据与最近邻审查。请查看未通过原因，补充材料或修改意见后重新生成。")
+                raise CandidateRoundFailure("没有候选通过证据与最近邻审查。")
             data.pop("progress_message", None)
             data.pop("progress", None)
             data.update(phase="idea_review", status="waiting", missing=[])
@@ -746,6 +816,7 @@ class IdeationService:
             item = {**candidate, "candidate_key": key, "card_id": f"r{data['revision']}-c{index + 1}"}
             self._progress(data, event, "正在检索与审查候选机制", current=index + 1, total=len(data["candidates"]),
                            title=candidate.get("title", ""), unit="候选", operation="audit")
+            authors_neighbors = candidate.get("closest_paper_ids") or []
             try:
                 refs = candidate.get("evidence_refs") or []
                 gap_ids = {g["gap_id"] for g in data["synthesis"]["gaps"]}
@@ -769,24 +840,54 @@ class IdeationService:
                 relevance = []
                 for start in range(0, min(len(found), 32), 8):
                     relevance.extend(self._screen(data, event, found[start:start + 8], candidate["method"], stage="neighbors"))
-                relevant_ids = {p["paper_id"] for p in relevance if p.get("relevance") == "core"}
-                neighbors = [p for p in found if p["paper_id"] in relevant_ids][:3]
-                known = {p["paper_id"]: p for p in data["papers"]}
+                relation_rank = {"same_claim": 0, "same_mechanism": 1, "alternative_mechanism": 2}
+                matches = {p["paper_id"]: p for p in relevance if p.get("relevance") == "core" and p.get("relationship") in relation_rank}
+                neighbors = sorted([p for p in found if p["paper_id"] in matches],
+                    key=lambda p: relation_rank[matches[p["paper_id"]]["relationship"]])[:3]
+                known = {pid: {"paper_id": pid, "title": note["title"], "url": note.get("source_url", "")}
+                         for pid, note in data["reading"].items()}
+                known.update({p["paper_id"]: p for p in data["papers"]})
                 approved_ids = {p["paper_id"] for p in data["papers"] if p.get("selected")}
                 for pid in candidate.get("closest_paper_ids") or []:
                     if pid in known and all(p["paper_id"] != pid for p in neighbors):
                         neighbors.append(known[pid])
                 if not neighbors:
                     raise SessionError("未定位可比较的最近邻方法。")
+                item["closest_papers"] = neighbors
                 for p in neighbors:
                     self._read_paper(data, event, p, extra=p["paper_id"] not in approved_ids)
-                review = self._json(data, event, "audit", {"candidate": candidate,
-                    "neighbors": [data["reading"][p["paper_id"]] for p in neighbors]})
+                audit_payload = {"candidate": candidate,
+                    "neighbors": [data["reading"][p["paper_id"]] for p in neighbors]}
+                for design_attempt in range(2):
+                    review = self._json(data, event, "audit", audit_payload)
+                    design = review.get("design_check") or {}
+                    valid_review = review.get("verdict") in ("pass", "overlap", "insufficient_evidence") and design.get("verdict") in ("pass", "revise", "fail")
+                    if not valid_review:
+                        if not design_attempt:
+                            audit_payload["review_validation_feedback"] = "必须完整返回verdict及design_check.verdict，严格使用模板给定枚举；不省略审查字段。"
+                            continue
+                        raise WorkflowFailure("审查输出两次缺少有效结论或实验逻辑字段，未接受该结果。", "technical", "invalid_review_format")
+                    if review.get("verdict") == "overlap" or design.get("verdict") == "pass":
+                        break
+                    patch = design.get("corrected_falsification")
+                    if design_attempt or design.get("verdict") != "revise" or not isinstance(patch, str) or len(patch.strip()) < 20:
+                        break
+                    item.setdefault("design_revisions", []).append({"issues": design.get("issues", []),
+                        "before": item["falsification"], "after": patch})
+                    item["falsification"] = patch
+                    audit_payload["candidate"] = {**candidate, "falsification": patch}
+                item["audit"] = review
                 ids = review.get("closest_paper_ids") or []
                 review_refs = review.get("evidence_refs") or []
                 comparisons = review.get("comparisons") or []
                 if review.get("verdict") != "pass":
-                    raise SessionError(str(review.get("reason") or review.get("missing") or "未通过最近邻审查"))
+                    category = "scientific" if review.get("verdict") == "overlap" or (design and design.get("verdict") != "pass") else "evidence"
+                    code = "mechanism_overlap" if review.get("verdict") == "overlap" else "invalid_design" if category == "scientific" else "insufficient_evidence"
+                    raise WorkflowFailure(str(review.get("reason") or review.get("missing") or "未通过最近邻审查"), category, code)
+                if design.get("verdict") != "pass":
+                    raise WorkflowFailure("实验逻辑未通过独立核对：" + str(design.get("issues") or "缺少可证伪性核对结果"), "scientific" if design else "technical", "invalid_design" if design else "invalid_review_format")
+                if not set(authors_neighbors) <= set(ids):
+                    raise SessionError("审查未覆盖候选依赖的全部关键最近邻。")
                 if not ids or not set(ids) <= {p["paper_id"] for p in neighbors} or not review_refs or not set(review_refs) <= self._evidence(data).keys():
                     raise SessionError("审查缺少真实最近邻与原文引用。")
                 referenced_papers = {self._evidence(data)[ref]["paper_id"] for ref in review_refs}
@@ -802,6 +903,10 @@ class IdeationService:
                 raise
             except Exception as exc:
                 item["rejection_reason"] = str(exc)[:1000]
+                item["failure"] = {"category": getattr(exc, "category", "technical"),
+                    "code": getattr(exc, "code", "stage_failed"), "message": str(exc)[:1000],
+                    "lesson_key": fingerprint([candidate.get("scientific_question"), candidate.get("method"), candidate.get("falsification"),
+                                               getattr(exc, "code", "stage_failed"), sorted(authors_neighbors or [])])}
                 data["rejected_cards"].append(item)
             self._save(data, event)
 
