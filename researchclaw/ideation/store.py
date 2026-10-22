@@ -53,11 +53,13 @@ class SessionStore:
             temp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
             temp.replace(target)
 
-    def create(self, direction: str, budget: float) -> dict[str, Any]:
+    def create(self, direction: str, budget: float, paper_limit: int = 20) -> dict[str, Any]:
         direction = direction.strip()
         if not 4 <= len(direction) <= 4000:
             raise SessionError("研究方向须为4–4000字符", 400)
-        data = {"session_id": "is-" + uuid.uuid4().hex[:20], "direction": direction,
+        if not isinstance(paper_limit, int) or isinstance(paper_limit, bool) or not 3 <= paper_limit <= 30:
+            raise SessionError("文献上限须为3–30篇", 400)
+        data = {"paper_limit": paper_limit, "session_id": "is-" + uuid.uuid4().hex[:20], "direction": direction,
                 "revision": 1, "created_at": now(), "status": "pending", "phase": "retrieval",
                 "papers": [], "cards": [], "rejected_cards": [], "reviews": [],
                 "approved_revision": None, "reading": {}, "synthesis": None,
@@ -90,7 +92,7 @@ class SessionStore:
         for paper in data["papers"]:
             if paper.get("fulltext_status") == "read":
                 paper["fulltext_status"] = "downloaded"
-        for key in ("progress", "progress_message", "presentation_task", "download_task", "refresh_evidence", "prior_rejections", "refinement_round", "blocker", "candidates"):
+        for key in ("progress", "progress_message", "presentation_task", "download_task", "refresh_evidence", "prior_rejections", "refinement_round", "blocker", "candidates", "shortlist_ready", "selection_stats"):
             data.pop(key, None)
         data["revision"] += 1
         data.update(approved_revision=None, reading={}, synthesis=None, cards=[], rejected_cards=[],

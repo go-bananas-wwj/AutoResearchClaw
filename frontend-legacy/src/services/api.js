@@ -56,7 +56,7 @@ const API = {
   ideaPrompt() { return this.get('/ideation/prompt'); },
   ideationSessions() { return this.get('/ideation/sessions'); },
   ideationSession(id) { return this.get(`/ideation/sessions/${id}`); },
-  createIdeation(direction) { return this.post('/ideation/sessions', { direction }); },
+  createIdeation(direction, paper_limit=20) { return this.post('/ideation/sessions', { direction, paper_limit }); },
   ideationAction(id, action, body = {}) { return this.post(`/ideation/sessions/${id}/${action}`, body); },
   async uploadIdeationPaper(id, revision, file) {
     const res = await fetch(`${this.base}/ideation/sessions/${id}/papers/upload?revision=${revision}`, {

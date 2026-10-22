@@ -1,5 +1,6 @@
 """Orchestration contracts: mocks never populate real research sessions."""
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -126,7 +127,7 @@ def test_the_same_framework_reaches_idea_gate_for_other_domains(engine,direction
         if system==PROMPTS['plan']:
             r.update(interpretation=direction,research_object=direction,domain=topic)
             r['queries']=[{'query':f'{topic} mechanism {i}','purpose':'mechanism and validation','period':'all'} for i in range(4)]
-        elif system in (PROMPTS['screen'],PROMPTS['neighbors']):
+        elif system in (PROMPTS['screen'],PROMPTS['summarize'],PROMPTS['neighbors']):
             for row in r['papers']:
                 row['reason']='Relevant to '+topic
                 if 'overview' in row:
@@ -203,3 +204,138 @@ def test_missing_review_schema_is_retried_as_technical_not_scientific(engine,rec
     if recovers:assert data['phase']=='idea_review'
     else:assert data['status']=='blocked' and data['blocker']['category']=='technical' and data['blocker']['code']=='invalid_review_format'
     assert not data['run_id']
+
+
+def test_off_topic_paper_missing_overview_does_not_block_related_downloads(engine):
+    engine.sources=Sources(4);original=engine.llm.chat
+    def incomplete_excluded(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['screen']:
+            result=json.loads(response.content);row=result['papers'][-1]
+            row.update(relevance='off_topic',reason='Different research object')
+            row['overview'].pop('method');response.content=json.dumps(result)
+        return response
+    engine.llm.chat=incomplete_excluded
+    data=first(engine)
+    assert data['phase']=='literature_review' and data['status']=='waiting'
+    assert len(engine.sources.fulltext_calls)==3 and len(engine._related(data))==3
+    assert not data['approved_revision'] and not data['reading'] and not data['run_id']
+    assert data['papers'][-1]['relevance']=='off_topic' and not data['papers'][-1]['in_shortlist']
+
+
+def test_related_overview_missing_field_is_corrected_before_batch_is_accepted(engine):
+    original=engine.llm.chat;calls=[]
+    def incomplete_once(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            payload=json.loads(messages[0]['content']);calls.append(payload)
+            if len(calls)==1:
+                result=json.loads(response.content);result['papers'][0]['overview'].pop('method');response.content=json.dumps(result)
+        return response
+    engine.llm.chat=incomplete_once
+    data=first(engine)
+    assert data['phase']=='literature_review' and len(calls)==2
+    assert 'overview.problem/method/strengths/limitations' in calls[1]['validation_feedback']
+    assert len(engine.sources.fulltext_calls)==3 and not data['reading']
+
+
+def test_candidate_and_shortlist_caps_bound_original_downloads(engine):
+    engine.sources=Sources(100)
+    data=first(engine)
+    assert len(data['papers'])<=60
+    assert data['selection_stats']['selected']==20
+    assert len(engine._related(data))==20 and len(set(engine.sources.fulltext_calls))==20
+    assert not data['approved_revision'] and not data['reading']
+    assert all(not p['in_shortlist'] for p in data['papers'] if p['paper_id'] not in engine.sources.fulltext_calls)
+
+
+def test_custom_paper_limit_is_persistent_and_does_not_drop_pinned_material(engine):
+    engine.sources=Sources(45)
+    data=engine.create('General mechanism research question',paper_limit=10);data=wait(engine,data['session_id'])
+    assert data['paper_limit']==10 and len(engine._related(data))==10 and len(data['papers'])<=30
+    pinned=paper_record({'title':'User supplied essential method','doi':'10.1234/pinned','url':'https://example.org/pinned','abstract':'A user supplied relevant method with independent verification.'})
+    changed=engine.add_paper(data['session_id'],data['revision'],pinned)
+    assert len(engine._related(changed))==10
+    assert pinned['paper_id'] in {p['paper_id'] for p in engine._related(changed)}
+    assert not changed['approved_revision']
+    with pytest.raises(Exception):engine.create('Invalid oversized survey',paper_limit=31)
+
+
+def test_shortlist_keeps_core_relevance_and_recent_classic_coverage(engine):
+    data=engine.store.create('General mechanism research question',50,paper_limit=4)
+    data['papers']=[paper_record({'title':f'Method {i}','year':2000+i,'citation_count':1000 if i==0 else 0,'abstract':'A directly related mechanism and verification.'}) for i in range(8)]
+    for p in data['papers']:p['relevance']='core'
+    data['papers'].append(paper_record({'title':'Background review','year':2026,'citation_count':9999}))
+    data['papers'][-1]['relevance']='adjacent'
+    engine._select_shortlist(data)
+    ids={p['paper_id'] for p in engine._related(data)}
+    assert data['papers'][0]['paper_id'] in ids and data['papers'][7]['paper_id'] in ids
+    assert data['papers'][-1]['paper_id'] not in ids
+
+
+@pytest.mark.asyncio
+async def test_creation_api_validates_and_returns_survey_limits(engine,monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from researchclaw.server.app import _app_state
+    from researchclaw.server.routes import ideation
+    app=FastAPI();app.include_router(ideation.router);monkeypatch.setitem(_app_state,'ideation_service',engine)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        assert (await client.post('/api/ideation/sessions',json={'direction':'General mechanism direction','paper_limit':31})).status_code==422
+        response=await client.post('/api/ideation/sessions',json={'direction':'General mechanism direction','paper_limit':10})
+        assert response.status_code==200 and response.json()['limits']['paper_limit']==10
+        done=await __import__('asyncio').to_thread(wait,engine,response.json()['session_id'])
+        assert done['phase']=='literature_review' and not done['approved_revision']
+
+
+def test_deepseek_summary_receives_original_and_preserves_its_exact_text(engine):
+    original=engine.llm.chat;payloads=[]
+    paragraph='模型撰写的连贯总结，程序必须原样保留，不从字段重新拼接。'
+    def writer(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            payloads.append(json.loads(messages[0]['content']))
+            result=json.loads(response.content)
+            for row in result['papers']:row['summary_zh']=paragraph
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=writer;data=first(engine)
+    assert payloads and all(p['material']['source_type']=='fulltext' and 'Methods:' in p['material']['pages'][0]['text'] for p in payloads[0]['papers'])
+    assert all(p['summary_zh']==paragraph and p['summary_basis']=='fulltext' for p in data['papers'])
+    assert all(p['summary_source_hash'] and p['summary_prompt_hash'] for p in data['papers'])
+    assert not data['reading'] and not data['approved_revision'] and not data['run_id']
+    calls=list(engine.llm.calls)
+    engine._summarize_selected(data,threading.Event())
+    assert engine.llm.calls==calls  # Completed unchanged summaries are checkpointed.
+
+
+def test_abstract_summary_is_ai_authored_and_never_claims_fulltext(engine):
+    engine.sources.abstract_only=True;original=engine.llm.chat;payloads=[]
+    def capture(messages,*,system,**kwargs):
+        if system==PROMPTS['summarize']:payloads.append(json.loads(messages[0]['content']))
+        return original(messages,system=system,**kwargs)
+    engine.llm.chat=capture;data=first(engine)
+    assert all(p['material']['source_type']=='abstract' and 'pages' not in p['material'] for p in payloads[0]['papers'])
+    assert all(p['summary_basis']=='abstract' and p['fulltext_status']=='abstract_only' for p in data['papers'])
+    assert not data['reading']
+
+
+def test_no_source_has_no_title_stitched_or_generated_summary(engine):
+    engine.sources.abstract_only=True
+    for p in engine.sources.rows:p['abstract']=''
+    data=first(engine)
+    assert data['phase']=='literature_review' and 'summarize' not in engine.llm.calls
+    assert all(not p['overview'] and not p['summary_zh'] and p['summary_state']=='awaiting_source' for p in data['papers'])
+
+
+def test_screen_requires_only_relevance_and_reason(engine):
+    original=engine.llm.chat
+    def triage(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['screen']:
+            result=json.loads(response.content)
+            result['papers']=[{k:r[k] for k in ('paper_id','relevance','reason')} for r in result['papers']]
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=triage;data=first(engine)
+    assert data['status']=='waiting' and all(p['summary_state']=='ready' for p in data['papers'])

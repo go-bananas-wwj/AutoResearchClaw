@@ -37,6 +37,8 @@ def invoke(fn, *args, **kwargs):
 
 def public(data):
     result = dict(data)
+    result["limits"] = {"paper_limit": IdeationService.paper_limit(data), "candidate_limit": min(60, IdeationService.paper_limit(data) * 3),
+                        "reading_default": 10, "reading_max": 15}
     result["reading"] = {pid: {k: v for k, v in note.items() if k != "passages"}
                          for pid, note in data.get("reading", {}).items()}
     return result
@@ -44,6 +46,7 @@ def public(data):
 
 class IdeationStartRequest(BaseModel):
     direction: str = Field(min_length=4, max_length=4000)
+    paper_limit: int = Field(default=20, ge=3, le=30)
 
 
 class IdeationStartResponse(BaseModel):
@@ -85,7 +88,7 @@ class ConfirmRequest(VersionRequest):
 
 @router.post("/ideation/sessions")
 async def create_session(req: IdeationStartRequest):
-    return public(invoke(get_service().create, req.direction))
+    return public(invoke(get_service().create, req.direction, req.paper_limit))
 
 
 @router.get("/ideation/sessions")
@@ -277,7 +280,7 @@ async def idea_prompt():
 
 @router.post("/ideation/start", response_model=IdeationStartResponse)
 async def start_ideation(req: IdeationStartRequest):
-    data = invoke(get_service().create, req.direction)
+    data = invoke(get_service().create, req.direction, req.paper_limit)
     return IdeationStartResponse(session_id=data["session_id"], run_id=data["session_id"], status=data["status"],
         output_dir=str(get_service().store.directory(data["session_id"])))
 

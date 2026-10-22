@@ -814,3 +814,6 @@ button, a { touch-action: manipulation; }
 @keyframes literature-spin { to { transform:rotate(360deg); } }
 @media (max-width:750px) { .literature-grid { grid-template-columns:1fr; } .literature-tile { padding:18px; } .literature-gallery-head { align-items:flex-start; } }
 @media (prefers-reduced-motion:reduce) { .literature-spinner { animation:none; } .literature-tile { transition:none; } }
+
+.ideation-limit { display:flex; align-items:center; gap:14px; margin:0 0 18px; }
+.ideation-limit select { width:auto; min-width:100px; }

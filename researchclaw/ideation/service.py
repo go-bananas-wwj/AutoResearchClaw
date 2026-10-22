@@ -30,6 +30,8 @@ class CandidateRoundFailure(SessionError):
     pass
 
 
+DEFAULT_PAPER_LIMIT = 20
+MAX_CANDIDATES = 60
 MAX_AUTO_REFINEMENTS = 2  # Initial generation plus at most two evidence-driven revisions.
 
 
@@ -170,11 +172,11 @@ class IdeationService:
             raise SessionError(f"{stage} 未返回有效结构")
         return restore(result)
 
-    def create(self, direction: str) -> dict[str, Any]:
+    def create(self, direction: str, paper_limit: int = DEFAULT_PAPER_LIMIT) -> dict[str, Any]:
         with self.store.lock:
             self._ensure_capacity()
             budget = float(getattr(getattr(self.config, "hitl", None), "cost_budget_usd", 0) or 0)
-            data = self.store.create(direction, budget)
+            data = self.store.create(direction, budget, paper_limit)
             self.launch(data["session_id"])
             return self.snapshot(data["session_id"])
 
@@ -202,6 +204,7 @@ class IdeationService:
                 paper_id=paper["paper_id"], title=paper["title"], operation="download")
             if data.get("download_task"):
                 self._acquire_fulltexts(data, event, attempt_id=data["download_task"]["attempt_id"])
+                self._summarize_selected(data, event)
                 previous = data.pop("download_task")
                 data.update(status=previous["return_status"], missing=previous["return_missing"])
                 data.pop("progress", None)
@@ -253,8 +256,9 @@ class IdeationService:
             self._editable(data)
             self.store.invalidate(data, "补充论文")
             row = {**row, "selected": True, "required": True, "relevance": "core",
-                   "reason": "用户补充，请审核相关性", "summary_zh": row.get("abstract") or "用户补充材料，尚未精读"}
+                   "reason": "用户补充，请审核相关性", "summary_zh": ""}
             data["papers"] = [p for p in data["papers"] if p["paper_id"] != row["paper_id"]] + [row]
+            self._select_shortlist(data)
             self.store.save(data)
             return data
 
@@ -269,10 +273,47 @@ class IdeationService:
             self.store.invalidate(data, "用户从相关文献中移除论文：" + paper_id)
             paper.update(user_excluded=True, selected=False, required=False, relevance="off_topic",
                          reason="用户认为不属于预期方向，已移出相关文献")
+            self._select_shortlist(data)
             data.pop("progress", None)
             data.pop("progress_message", None)
             self.store.save(data)
             return data
+
+    @staticmethod
+    def paper_limit(data):
+        if data.get("paper_limit"):
+            return data["paper_limit"]
+        # Preserve already-approved legacy scopes; new/unapproved surveys use the bounded default.
+        if data.get("approved_revision") is not None:
+            return max(DEFAULT_PAPER_LIMIT, sum(p.get("selected", False) for p in data["papers"]))
+        return DEFAULT_PAPER_LIMIT
+
+    def _related(self, data):
+        related = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent")
+                   and not p.get("user_excluded") and p.get("in_shortlist") is not False]
+        return related[:self.paper_limit(data)]
+
+    def _select_shortlist(self, data):
+        limit = self.paper_limit(data)
+        eligible = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded")]
+        pinned = [p for p in eligible if p.get("required")]
+        if len(pinned) > limit:
+            raise SessionError("补充文献已超过本会话上限，请提高上限或移除部分文献。", 400)
+        chosen = list(pinned)
+        for kind in ("core", "adjacent"):
+            group = [p for p in eligible if p.get("relevance") == kind]
+            recent = sorted(group, key=lambda p: -int(p.get("year") or 0))
+            classic = sorted(group, key=lambda p: (-int(p.get("citation_count") or 0), int(p.get("year") or 0)))
+            # Alternate newer work and established work after semantic relevance screening.
+            for pair in zip(recent, classic):
+                for paper in pair:
+                    if len(chosen) < limit and paper["paper_id"] not in {p["paper_id"] for p in chosen}:
+                        chosen.append(paper)
+        ids = {p["paper_id"] for p in chosen}
+        for paper in data["papers"]:
+            paper["in_shortlist"] = paper["paper_id"] in ids
+            paper["selection_reason"] = "核心/邻近相关，兼顾近期与经典工作" if paper["in_shortlist"] else "不相关或超出本轮文献上限"
+        data.update(shortlist_ready=True, selection_stats={"candidates": len(data["papers"]), "selected": len(ids), "limit": limit})
 
     def acquire_fulltexts(self, sid, revision):
         """Cache related originals without changing scope, approvals or reading conclusions."""
@@ -280,6 +321,8 @@ class IdeationService:
             data = self.snapshot(sid)
             self.store.require_revision(data, revision)
             self._editable(data)
+            if data["phase"] == "retrieval":
+                raise SessionError("请先完成文献筛选，再获取入选文献原文。")
             self._ensure_capacity()
             if not data.get("download_task"):
                 data["download_task"] = {"attempt_id": now(), "return_status": data["status"],
@@ -308,7 +351,7 @@ class IdeationService:
 
     def _acquire_fulltexts(self, data, event, attempt_id=None):
         attempt_id = attempt_id or f"scope-r{data['revision']}"
-        related = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded")]
+        related = self._related(data)
         related.sort(key=lambda p: (p.get("relevance") != "core", -int(p.get("citation_count") or 0)))
         for index, paper in enumerate(related, 1):
             self._check(data, event)
@@ -333,6 +376,8 @@ class IdeationService:
             self.store.require_revision(data, revision)
             self._editable(data)
             self._ensure_capacity()
+            if data["phase"] == "retrieval":
+                raise SessionError("请先完成文献筛选，系统会自动获取材料并调用AI总结。", 409)
             previous = data["status"]
             data.update(status="running", presentation_task="summaries")
             self.store.save(data)
@@ -345,19 +390,7 @@ class IdeationService:
     def _summary_work(self, sid, event, previous):
         data = self.snapshot(sid)
         try:
-            papers = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded") and p["paper_id"] not in data["reading"]]
-            for start in range(0, len(papers), 8):
-                batch = papers[start:start + 8]
-                self._progress(data, event, "正在更新论文概览", current=start + 1, total=len(papers), operation="summarize")
-                result = self._json(data, event, "summarize", {"papers": [{k: p.get(k) for k in
-                    ("paper_id", "title", "abstract")} for p in batch]})
-                rows = result.get("papers") or []
-                if len(rows) != len(batch) or {p.get("paper_id") for p in rows} != {p["paper_id"] for p in batch}:
-                    raise SessionError("概览未覆盖全部论文身份，未接受该批结果。")
-                by_id = {p["paper_id"]: p for p in batch}
-                for row in rows:
-                    self._apply_summary(by_id[row["paper_id"]], row)
-                self._save(data, event)
+            self._summarize_selected(data, event, force=True)
             data["status"] = previous
         except Cancelled:
             data.update(status="stopped")
@@ -368,19 +401,85 @@ class IdeationService:
         data.pop("progress", None)
         self.store.save(data)
 
+    def _summary_material(self, data, paper):
+        path = self.store.directory(data["session_id"]) / "fulltext" / (paper["paper_id"] + ".json")
+        if path.exists():
+            document = json.loads(path.read_text())
+            pages = document.get("pages") or []
+            size = sum(len(p.get("text", "")) for p in pages)
+            if 2000 <= size <= 180_000:
+                return {"source_type": "fulltext", "pages": pages}
+        abstract = paper.get("abstract") or ""
+        if len(re.sub(r"\W", "", abstract)) >= 20:
+            return {"source_type": "abstract", "abstract": abstract}
+        return None
+
+    def _summarize_selected(self, data, event, force=False):
+        """DeepSeek writes every content field; code selects sources and validates structure only."""
+        tasks = []
+        for paper in self._related(data):
+            if paper["paper_id"] in data["reading"]:
+                continue
+            material = self._summary_material(data, paper)
+            if material is None:
+                self._apply_summary(paper, {})
+                continue
+            source_hash = fingerprint(material)
+            if not force and paper.get("summary_source_hash") == source_hash and paper.get("summary_prompt_hash") == fingerprint(PROMPTS["summarize"]) and paper.get("summary_version") == 3:
+                continue
+            tasks.append((paper, material, source_hash))
+        completed = 0
+        while tasks:
+            batch, size = [], 0
+            while tasks and len(batch) < 4:
+                item = tasks[0]
+                count = len(json.dumps(item[1], ensure_ascii=False))
+                if batch and size + count > 120_000:
+                    break
+                batch.append(tasks.pop(0)); size += count
+            self._progress(data, event, "正在由DeepSeek阅读材料并撰写论文概览", operation="summarize",
+                           current=completed + 1, total=completed + len(batch) + len(tasks), unit="篇", title="", paper_id="")
+            payload = {"papers": [{"paper_id": p["paper_id"], "title": p["title"], "material": material}
+                                   for p, material, _ in batch]}
+            for attempt in range(2):
+                result = self._json(data, event, "summarize", payload)
+                rows = result.get("papers") or []
+                by_id = {p["paper_id"]: (p, material, source_hash) for p, material, source_hash in batch}
+                errors = []
+                valid_ids = len(rows) == len(batch) and {p.get("paper_id") for p in rows} == set(by_id)
+                if valid_ids:
+                    for row in rows:
+                        paper, material, _ = by_id[row["paper_id"]]
+                        try:
+                            self._apply_summary(copy.deepcopy(paper), row, material)
+                        except SessionError:
+                            errors.append(row["paper_id"] + "缺少overview.problem/method/strengths/limitations或summary_zh")
+                if valid_ids and not errors:
+                    break
+                if attempt:
+                    raise WorkflowFailure("AI论文概览返回不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_overview")
+                payload["validation_feedback"] = "完整返回全部给定ID及非空字符串字段。" + "；".join(errors) + "。材料未说明的内容请明确写未报告，不编造。"
+            for row in rows:
+                paper, material, source_hash = by_id[row["paper_id"]]
+                self._apply_summary(paper, row, material)
+                paper.update(summary_source_hash=source_hash, summary_prompt_hash=fingerprint(PROMPTS["summarize"]))
+            completed += len(batch)
+            self._save(data, event)
+        self._save(data, event)
+
     @staticmethod
-    def _apply_summary(paper, info):
+    def _apply_summary(paper, info, material=None):
+        basis = material.get("source_type") if material else "abstract" if len(re.sub(r"\W", "", paper.get("abstract") or "")) >= 20 else None
+        if not basis:
+            paper.update(overview={}, summary_zh="", summary_basis=None, summary_state="awaiting_source", summary_version=3)
+            paper.pop("summary_source_hash", None)
+            return
         overview = info.get("overview") or {}
-        if not info.get("summary_zh") or not all(isinstance(overview.get(k), str) and overview[k].strip()
-                for k in ("problem", "method", "strengths", "limitations")):
-            raise SessionError("论文概览缺少科学问题、方法、优势或局限，未接受。")
-        has_abstract = len(re.sub(r"\W", "", paper.get("abstract") or "")) >= 20
-        if not has_abstract:
-            overview = {"problem": "题名所指研究：" + paper["title"], "method": "需正文核实",
-                        "strengths": "需正文核实", "limitations": "需正文核实"}
-            info = {**info, "summary_zh": "题名所指研究：" + paper["title"] + "。方法、优势与局限需正文核实。"}
-        paper.update(overview=overview, summary_zh=info["summary_zh"], summary_basis="abstract" if has_abstract else "title",
-                     summary_version=2)
+        if not isinstance(info.get("summary_zh"), str) or not info["summary_zh"].strip() or not all(
+                isinstance(overview.get(k), str) and overview[k].strip() for k in ("problem", "method", "strengths", "limitations")):
+            raise WorkflowFailure("AI论文概览返回不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_overview")
+        paper.update(overview=overview, summary_zh=info["summary_zh"], summary_basis=basis,
+                     summary_state="ready", summary_version=3)
 
     def revise_scope(self, sid, revision, direction):
         with self.store.lock:
@@ -404,7 +503,7 @@ class IdeationService:
             self._editable(data)
             if data["phase"] != "literature_review":
                 raise SessionError("请等待相关文献调研完成后确认研究方向。")
-            related = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded")]
+            related = self._related(data)
             if not related:
                 raise SessionError("暂未找到相关文献，请调整研究方向后重新调研。")
             return self.review_literature(sid, revision, [p["paper_id"] for p in related],
@@ -447,6 +546,8 @@ class IdeationService:
             self.store.require_revision(data, revision)
             self._editable(data)
             ids = {p["paper_id"] for p in data["papers"] if not p.get("user_excluded")}
+            if len(selected) > self.paper_limit(data):
+                raise SessionError("保留文献数量超过本会话上限。", 400)
             if not selected or not set(selected) <= ids or not set(required) <= set(selected):
                 raise SessionError("须保留真实论文，且必读论文必须在保留列表中。", 400)
             if len(required) > 15:
@@ -570,10 +671,16 @@ class IdeationService:
             output = response.get("papers") or []
             valid_relations = stage != "neighbors" or all(p.get("relationship") in
                 ("same_claim", "same_mechanism", "alternative_mechanism", "background") for p in output)
-            if valid_relations and len(output) == len(mapping) and {p.get("paper_id") for p in output} == set(mapping):
+            valid_ids = len(output) == len(mapping) and {p.get("paper_id") for p in output} == set(mapping)
+            errors = []
+            if valid_ids:
+                for item in output:
+                    if item.get("relevance") not in ("core", "adjacent", "off_topic") or not item.get("reason"):
+                        errors.append(item["paper_id"] + "缺少有效相关性或理由")
+            if valid_relations and valid_ids and not errors:
                 return [{**p, "paper_id": mapping[p["paper_id"]]} for p in output]
-            payload["validation_feedback"] = "上次结果未覆盖全部给定ID。仅允许并必须完整返回：" + ", ".join(mapping)
-        raise SessionError("论文筛选结果两次未完整覆盖给定论文ID，已暂停；未接受未知或遗漏身份。")
+            payload["validation_feedback"] = "请完整返回全部给定ID：" + ", ".join(mapping) + "。" + "；".join(errors)
+        raise WorkflowFailure("文献筛选返回格式经修正仍不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_screen")
 
     def _retrieve(self, data, event):
         if not data.get("plan"):
@@ -583,15 +690,34 @@ class IdeationService:
                 raise SessionError("检索规划不完整，请重试或补充研究范围。")
             data["plan"] = plan
             self._save(data, event)
+        data.setdefault("paper_limit", DEFAULT_PAPER_LIMIT)
+        candidate_limit = min(MAX_CANDIDATES, self.paper_limit(data) * 3)
         rows = list(data["papers"])
+        if len(rows) > candidate_limit:
+            ranked = sorted(rows, key=lambda p: (not p.get("required"), p.get("relevance") == "unreviewed"))
+            data.setdefault("excluded_candidates", []).extend({**p, "exclusion_reason": "超出检索候选上限"} for p in ranked[candidate_limit:])
+            rows = ranked[:candidate_limit]
+            data["papers"] = rows
         completed = data.setdefault("completed_queries", [])
-        for query in data["plan"]["queries"]:
+        queries = data["plan"]["queries"]
+        per_query = max(1, (candidate_limit + len(queries) - 1) // len(queries))
+        for query_index, query in enumerate(queries, 1):
             if query in completed:
                 continue
             self._progress(data, event, "正在检索：" + query["query"], operation="search",
-                           current=len(completed) + 1, total=len(data["plan"]["queries"]))
+                           current=query_index, total=len(queries), unit="检索式", title="", paper_id="")
             found = self._search(data, event, query["query"], query.get("period", "all"))
-            rows = self._merge(rows + found)
+            existing = {p["paper_id"] for p in rows}
+            new_ids = set()
+            accepted = []
+            for paper in found:
+                pid = paper["paper_id"]
+                if pid in existing or pid in new_ids:
+                    accepted.append(paper)
+                elif len(new_ids) < per_query and len(rows) + len(new_ids) < candidate_limit:
+                    new_ids.add(pid)
+                    accepted.append(paper)
+            rows = self._merge(rows + accepted)
             data["papers"] = rows
             # Empty search must be retryable, not a permanently completed query.
             if found:
@@ -599,26 +725,26 @@ class IdeationService:
             self._save(data, event)
         if not rows:
             raise SessionError("检索未取得真实论文：可能限流、网络不可用或检索范围不合适。请重试、改方向或补充DOI/PDF。")
-        for start in range(0, len(rows), 8):
-            batch = rows[start:start + 8]
-            if all(p.get("relevance") != "unreviewed" for p in batch):
-                continue
+        pending = [p for p in rows if p.get("relevance") == "unreviewed"]
+        for start in range(0, len(pending), 8):
+            batch = pending[start:start + 8]
+            done = sum(p.get("relevance") != "unreviewed" for p in rows)
+            self._progress(data, event, "正在筛选文献相关性", operation="screen", unit="篇",
+                           current=done, total=len(rows), title="", paper_id="", source="", query="")
             screened = {p["paper_id"]: p for p in self._screen(data, event, batch,
                 data["direction"] + "\n" + data["plan"]["interpretation"])}
-            if set(screened) != {p["paper_id"] for p in batch}:
-                raise SessionError("论文筛选结果不完整或含未知论文ID，未接受该批结果。")
             for p in batch:
                 info = screened[p["paper_id"]]
-                if info.get("relevance") not in ("core", "adjacent", "off_topic") or not info.get("reason") or not info.get("summary_zh"):
-                    raise SessionError("论文相关性判断缺少理由或摘要说明。")
-                self._apply_summary(p, info)
-                p.update(relevance=info["relevance"], reason=info["reason"], summary_zh=p["summary_zh"],
-                         selected=info["relevance"] == "core")
-            self._save(data, event)
+                p.update(relevance=info["relevance"], reason=info["reason"], selected=info["relevance"] == "core")
+            self._progress(data, event, "已完成本组文献筛选", operation="screen", unit="篇",
+                           current=done + len(batch), total=len(rows))
         if not any(p["relevance"] == "core" for p in rows):
             raise SessionError("未筛选出核心相关论文，请修改范围或补充文献；不会补入无关论文凑数。")
+        self._select_shortlist(data)
+        self._save(data, event)
         self._enrich_papers(data, event)
         self._acquire_fulltexts(data, event)
+        self._summarize_selected(data, event)
         data.pop("progress_message", None)
         data.pop("progress", None)
         data.update(phase="literature_review", status="waiting", missing=[])
@@ -628,7 +754,7 @@ class IdeationService:
         enrich = getattr(self.sources, "enrich_metadata", None)
         if enrich is None:
             return
-        papers = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and p.get("bibliography_version") != 1]
+        papers = [p for p in self._related(data) if p.get("bibliography_version") != 1]
         with ThreadPoolExecutor(max_workers=4) as pool:
             pending = {pool.submit(enrich, p): p for p in papers}
             for future in as_completed(pending):
@@ -660,7 +786,7 @@ class IdeationService:
             result = self._json(data, event, "read", payload)
             evidence = result.get("evidence") or []
             if result.get("has_methods") is not True or not all(result.get(k) for k in
-                ("problem", "method", "data", "experiments", "findings", "limitations")) or not evidence:
+                ("problem", "method", "data", "experiments", "findings", "strengths", "limitations")) or not evidence:
                 raise SessionError("未取得可靠方法正文或精读证据。")
             invalid = []
             for item in evidence:
@@ -690,7 +816,7 @@ class IdeationService:
         data["reading"][key] = result
         paper["fulltext_status"] = "read"
         paper.update(overview={"problem": result["problem"], "method": result["method"],
-                     "strengths": result.get("strengths") or "全文提供了研究结论，未单独陈述比较优势。", "limitations": result["limitations"]}, summary_basis="fulltext", summary_version=2)
+                     "strengths": result["strengths"], "limitations": result["limitations"]}, summary_basis="fulltext", summary_version=3)
         self._save(data, event)
         return result
 

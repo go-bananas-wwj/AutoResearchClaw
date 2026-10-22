@@ -62,7 +62,7 @@ class LLM:
         elif stage == 'read':
             p = data['passages'][0]
             result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
-                'findings':'条件性结论','limitations':'特定地形','evidence':[{'passage_id':p['passage_id'],
+                'findings':'条件性结论','strengths':'有依据的对照贡献','limitations':'特定地形','evidence':[{'passage_id':p['passage_id'],
                 'quote':'this quotation was invented' if self.fabricate else p['text'][:80], 'claim':'采用汇流计算','kind':'source','role':'method'}]}
         elif stage == 'synthesis':
             ref = data['reading'][0]['evidence'][0]['passage_id']
@@ -115,7 +115,7 @@ def test_two_reviews_and_provenance(engine):
     data = first(engine); sid=data['session_id']
     assert data['status']=='waiting' and len(engine.sources.fulltext_calls)==3
     assert not data['reading'] and all(p['fulltext_status']=='downloaded' for p in data['papers'])
-    assert engine.llm.calls==['plan','screen']
+    assert engine.llm.calls==['plan','screen','summarize']
     assert not list(engine.store.root.parent.glob('rc-*'))
     with pytest.raises(SessionError): engine.regenerate(sid,data['revision'],'skip')
     with pytest.raises(SessionError): engine.confirmation(sid,data['revision'],'fake')
@@ -390,7 +390,7 @@ def test_summary_refresh_is_presentation_only(engine):
     assert done['phase']=='literature_review' and done['status']=='waiting'
     assert not done['reading'] and not done['cards'] and not done['run_id']
     assert engine.sources.fulltext_calls==downloads and engine.llm.calls[len(before):]==['summarize']
-    assert all(p['summary_version']==2 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
+    assert all(p['summary_version']==3 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
 
 
 def test_backfill_uses_related_reserve_and_never_exceeds_fifteen(engine):
@@ -429,6 +429,7 @@ def test_read_repair_preserves_exact_source_requirement(engine):
 
 
 def test_invalid_json_is_retried_once_and_accounted(engine):
+    data=first(engine);sid=data['session_id'];before=len(data['usage'])
     original=engine.llm.chat
     def malformed(messages,*,system,**kwargs):
         result=original(messages,system=system,**kwargs)
@@ -436,19 +437,18 @@ def test_invalid_json_is_retried_once_and_accounted(engine):
             result.content='{"papers": [broken JSON'
         return result
     engine.llm.chat=malformed
-    data=first(engine);sid=data['session_id'];before=len(data['usage'])
     engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
     assert done['status']=='blocked' and '两次' in done['missing'][0]
     assert len(done['usage'])==before+2 and not done['approved_revision'] and not done['cards']
-    assert len(list((engine.store.directory(sid)/'model_outputs').glob('*summarize.txt')))==2
+    assert len(list((engine.store.directory(sid)/'model_outputs').glob('*summarize.txt')))==3
 
 
 def test_empty_abstract_label_does_not_create_a_long_invented_summary(engine):
     paper={'title':'LS factor methods','abstract':'摘要：'}
     engine._apply_summary(paper,{'overview':dict.fromkeys(['problem','method','strengths','limitations'],'unsupported'),
                                 'summary_zh':'unsupported long generic paragraph'})
-    assert paper['summary_basis']=='title' and 'unsupported' not in paper['summary_zh']
-    assert len(paper['summary_zh'])<80 and paper['overview']['method']=='需正文核实'
+    assert paper['summary_basis'] is None and not paper['summary_zh']
+    assert paper['overview']=={} and paper['summary_state']=='awaiting_source'
 
 
 def test_quote_id_can_only_be_corrected_from_unique_exact_same_paper_text(engine):
