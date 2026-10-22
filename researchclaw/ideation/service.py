@@ -100,7 +100,7 @@ class IdeationService:
     def _json(self, data, event, stage, payload, _format_attempt=0):
         self._check(data, event)
         labels = {"plan": "正在理解研究方向并规划检索", "screen": "正在核对文献相关性与科学问题",
-                  "summarize": "正在整理论文的科学问题、方法、优势与局限", "synthesis": "正在比较方法并定位研究缺口",
+                  "summarize": "正在整理论文的科学问题、方法、优势与局限", "neighbors": "正在筛选最近邻方法", "synthesis": "正在比较方法并定位研究缺口",
                   "generate": "正在根据原文证据构思创新点", "audit": "正在独立审查最近邻工作与方案差异"}
         if stage in labels:
             self._progress(data, event, labels[stage], operation=stage,
@@ -116,7 +116,8 @@ class IdeationService:
         # Reserve before the request so a process restart cannot erase an in-flight charge.
         data["cost_usd"] = round(data["cost_usd"] + reserve, 6)
         entry = {"stage": stage, "at": now(), "cost_usd": reserve, "status": "pending",
-                 "cost_basis": "conservative_reservation_5_input_25_output_usd_per_million_not_invoice"}
+                 "cost_basis": "conservative_reservation_5_input_25_output_usd_per_million_not_invoice",
+                 "prompt_hash": fingerprint(PROMPTS[stage])[:16]}
         data["usage"].append(entry)
         self.store.save(data)
         response = None
@@ -166,7 +167,7 @@ class IdeationService:
         with self.store.lock:
             self._ensure_capacity()
             data = self.snapshot(sid)
-            if data.get("run_id") or data["phase"] in ("literature_review", "idea_review", "handed_off"):
+            if data.get("run_id") or (data["phase"] in ("literature_review", "idea_review", "handed_off") and not data.get("download_task")):
                 raise SessionError("当前阶段需要审核，不能跳过。")
             data.update(status="running", missing=[])
             self.store.save(data)
@@ -178,11 +179,18 @@ class IdeationService:
     def _work(self, sid, event):
         data = self.snapshot(sid)
         try:
-            if data["phase"] == "retrieval":
+            self.sources.progress = lambda paper, message: self._progress(data, event, message,
+                paper_id=paper["paper_id"], title=paper["title"], operation="download")
+            if data.get("download_task"):
+                self._acquire_fulltexts(data, event, attempt_id=data["download_task"]["attempt_id"])
+                previous = data.pop("download_task")
+                data.update(status=previous["return_status"], missing=previous["return_missing"])
+                data.pop("progress", None)
+                data.pop("progress_message", None)
+                self._save(data, event)
+            elif data["phase"] == "retrieval":
                 self._retrieve(data, event)
             else:
-                self.sources.progress = lambda paper, message: self._progress(data, event, message,
-                    paper_id=paper["paper_id"], title=paper["title"], operation="download")
                 self._develop(data, event)
         except Cancelled:
             data.update(status="stopped", missing=["已停止，可从最近完成点继续。"])
@@ -241,6 +249,59 @@ class IdeationService:
             data.pop("progress_message", None)
             self.store.save(data)
             return data
+
+    def acquire_fulltexts(self, sid, revision):
+        """Cache related originals without changing scope, approvals or reading conclusions."""
+        with self.store.lock:
+            data = self.snapshot(sid)
+            self.store.require_revision(data, revision)
+            self._editable(data)
+            self._ensure_capacity()
+            if not data.get("download_task"):
+                data["download_task"] = {"attempt_id": now(), "return_status": data["status"],
+                                         "return_missing": data["missing"]}
+            self.store.save(data)
+            self.launch(sid)
+            return self.snapshot(sid)
+
+    def _obtain_fulltext(self, data, event, paper):
+        directory = self.store.directory(data["session_id"])
+        cache = directory / "fulltext"
+        cache.mkdir(exist_ok=True)
+        target = cache / (paper["paper_id"] + ".json")
+        self._progress(data, event, "正在读取已缓存原文" if target.exists() else "正在获取论文原文",
+                       paper_id=paper["paper_id"], title=paper["title"], operation="download")
+        document = json.loads(target.read_text()) if target.exists() else self.sources.fulltext(paper, directory)
+        if sum(len(p["text"]) for p in document.get("pages", [])) < 2000:
+            raise SessionError("仅取得摘要或过短正文，未标记为原文已获取。")
+        if not target.exists():
+            temp = target.with_suffix(".tmp")
+            temp.write_text(json.dumps(document, ensure_ascii=False))
+            temp.replace(target)
+        paper.update(fulltext_status="read" if paper["paper_id"] in data["reading"] else "downloaded",
+                     fulltext_url=document.get("source_url"))
+        return document
+
+    def _acquire_fulltexts(self, data, event, attempt_id=None):
+        attempt_id = attempt_id or f"scope-r{data['revision']}"
+        related = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded")]
+        related.sort(key=lambda p: (p.get("relevance") != "core", -int(p.get("citation_count") or 0)))
+        for index, paper in enumerate(related, 1):
+            self._check(data, event)
+            if paper.get("fulltext_attempt_id") == attempt_id:
+                continue
+            self._progress(data, event, "正在获取相关文献原文", current=index, total=len(related),
+                           title=paper["title"], paper_id=paper["paper_id"], operation="download", unit="论文")
+            try:
+                self._obtain_fulltext(data, event, paper)
+                paper.pop("fulltext_error", None)
+            except Cancelled:
+                raise
+            except Exception as exc:
+                paper.update(fulltext_status="abstract_only" if paper.get("abstract") else "failed",
+                             fulltext_error=str(exc)[:500])
+            paper["fulltext_attempt_id"] = attempt_id
+            self._save(data, event)
 
     def refresh_summaries(self, sid, revision):
         with self.store.lock:
@@ -404,9 +465,13 @@ class IdeationService:
             data = self.snapshot(sid)
             self.store.require_revision(data, revision)
             self._editable(data)
-            if data["phase"] in ("literature_review", "idea_review"):
+            if data["phase"] in ("literature_review", "idea_review") and not data.get("download_task"):
                 raise SessionError("当前需要人工审核，请使用对应审核按钮。")
-            if data["phase"] == "audit":
+            if data["phase"] == "reading" and data["status"] == "blocked" and not data.get("download_task"):
+                for paper in data["papers"]:
+                    if paper.get("fulltext_status") in ("abstract_only", "failed"):
+                        paper.pop("fulltext_attempt_id", None)
+            if data["phase"] == "audit" and not data.get("download_task"):
                 data["rejected_cards"] = []  # Retry failed evidence fetches; keep successful receipts.
             if data["phase"] == "retrieval" and not any(p.get("relevance") == "core" for p in data["papers"]):
                 data["completed_queries"] = []  # Retry recovered providers, even when another returned only noise.
@@ -458,14 +523,14 @@ class IdeationService:
                 merged[key] = copy.deepcopy(paper)
         return list(merged.values())
 
-    def _screen(self, data, event, rows, direction):
+    def _screen(self, data, event, rows, direction, stage="screen"):
         # Short request-local aliases eliminate hash-copy mistakes without weakening identity checks.
         mapping = {f"P{i + 1}": p["paper_id"] for i, p in enumerate(rows)}
         payload = {"direction": direction, "papers": [{"paper_id": alias,
             **{k: p.get(k) for k in ("title", "year", "abstract")}}
             for alias, p in zip(mapping, rows)]}
         for attempt in range(2):
-            response = self._json(data, event, "screen", payload)
+            response = self._json(data, event, stage, payload)
             output = response.get("papers") or []
             if len(output) == len(mapping) and {p.get("paper_id") for p in output} == set(mapping):
                 return [{**p, "paper_id": mapping[p["paper_id"]]} for p in output]
@@ -515,6 +580,7 @@ class IdeationService:
         if not any(p["relevance"] == "core" for p in rows):
             raise SessionError("未筛选出核心相关论文，请修改范围或补充文献；不会补入无关论文凑数。")
         self._enrich_papers(data, event)
+        self._acquire_fulltexts(data, event)
         data.pop("progress_message", None)
         data.pop("progress", None)
         data.update(phase="literature_review", status="waiting", missing=[])
@@ -539,20 +605,12 @@ class IdeationService:
         key = paper["paper_id"]
         if key in data["reading"]:
             return data["reading"][key]
-        directory = self.store.directory(data["session_id"])
-        cache = directory / "fulltext"
-        cache.mkdir(exist_ok=True)
-        target = cache / (key + ".json")
-        self._progress(data, event, "正在读取缓存正文" if target.exists() else "正在寻找公开全文",
-                       paper_id=key, title=paper["title"], operation="download")
-        document = json.loads(target.read_text()) if target.exists() else self.sources.fulltext(paper, directory)
-        paper["fulltext_status"] = "downloaded"
-        paper["fulltext_url"] = document.get("source_url")
+        if data["phase"] == "reading" and paper.get("fulltext_attempt_id") == f"scope-r{data['revision']}" and paper.get("fulltext_status") in ("abstract_only", "failed"):
+            raise SessionError(paper.get("fulltext_error") or "本轮未获取原文，请补充材料或稍后重试。")
+        document = self._obtain_fulltext(data, event, paper)
         chunks = passages(key, document)
-        if sum(len(p["text"]) for p in chunks) < 2000:
+        if sum(len(c["text"]) for c in chunks) < 2000:
             raise SessionError("正文不足以精读，不能使用摘要代替全文。")
-        if not target.exists():
-            target.write_text(json.dumps(document, ensure_ascii=False))
         # Read all source text; reject oversize rather than silently claiming to read omitted pages.
         if sum(len(c["text"]) for c in chunks) > 180_000:
             raise SessionError("论文超过精读窗口，请提供聚焦方法正文的版本。")
@@ -577,7 +635,7 @@ class IdeationService:
                         source = matches[0]
                         item.update(model_passage_id=item.get("passage_id"), passage_id=source["passage_id"],
                                     citation_resolution="unique_exact_quote")
-                if not source or len(item.get("quote", "")) < 12 or quoted(item["quote"]) not in quoted(source["text"]) or item.get("kind") not in ("source", "inference"):
+                if not source or len(item.get("quote", "")) < 12 or quoted(item["quote"]) not in quoted(source["text"]) or item.get("kind") not in ("source", "inference") or item.get("role") not in ("method", "result", "limitation", "context"):
                     invalid.append(item)
                 else:
                     item.update(location=source["location"], paper_id=key)
@@ -587,8 +645,8 @@ class IdeationService:
                 raise SessionError("精读引用未匹配原文，拒绝保存虚构证据。")
             payload["validation_feedback"] = {"invalid_evidence": invalid,
                 "instruction": "上次引文未通过逐字匹配。重新返回完整精读JSON；quote必须保持原文语言，从对应片段连续复制12–120字符，不能翻译、拼接或省略。"}
-        if not any(e["kind"] == "source" for e in evidence):
-            raise SessionError("精读只有模型推断，缺少原文事实证据。")
+        if not any(e["kind"] == "source" and e.get("role") == "method" for e in evidence):
+            raise SessionError("精读缺少来自方法正文的原文证据，未接受只含摘要或模型推断的记录。")
         result.update(paper_id=key, title=paper["title"], passages=chunks,
                       source_hash=fingerprint(document), source_url=document.get("source_url"), supplemental=extra)
         data["reading"][key] = result
@@ -605,6 +663,7 @@ class IdeationService:
         if data.get("approved_revision") != data["revision"]:
             raise SessionError("文献版本尚未批准。")
         if data["phase"] == "reading":
+            self._acquire_fulltexts(data, event)
             chosen = [p for p in data["papers"] if p["selected"] and not p.get("user_excluded")]
             required = [p for p in chosen if p.get("required")]
             optional = [p for p in chosen if not p.get("required")]
@@ -628,7 +687,7 @@ class IdeationService:
                 if number > max(10, len(required)) and len([r for r in data["reading"].values() if not r.get("supplemental")]) >= max(10, len(required)):
                     break
                 self._progress(data, event, "正在处理论文", current=number, total=len(pool[:15]),
-                               title=p["title"], paper_id=p["paper_id"], operation="download")
+                               title=p["title"], paper_id=p["paper_id"], operation="download", unit="论文")
                 self._check(data, event)
                 try:
                     self._read_paper(data, event, p)
@@ -685,6 +744,8 @@ class IdeationService:
             if key in checked:
                 continue
             item = {**candidate, "candidate_key": key, "card_id": f"r{data['revision']}-c{index + 1}"}
+            self._progress(data, event, "正在检索与审查候选机制", current=index + 1, total=len(data["candidates"]),
+                           title=candidate.get("title", ""), unit="候选", operation="audit")
             try:
                 refs = candidate.get("evidence_refs") or []
                 gap_ids = {g["gap_id"] for g in data["synthesis"]["gaps"]}
@@ -706,8 +767,8 @@ class IdeationService:
                 # Rank actual retrieved abstracts against the mechanism using a fresh screen call.
                 found = self._merge(found)
                 relevance = []
-                for start in range(0, min(len(found), 32), 16):
-                    relevance.extend(self._screen(data, event, found[start:start + 16], candidate["method"]))
+                for start in range(0, min(len(found), 32), 8):
+                    relevance.extend(self._screen(data, event, found[start:start + 8], candidate["method"], stage="neighbors"))
                 relevant_ids = {p["paper_id"] for p in relevance if p.get("relevance") == "core"}
                 neighbors = [p for p in found if p["paper_id"] in relevant_ids][:3]
                 known = {p["paper_id"]: p for p in data["papers"]}

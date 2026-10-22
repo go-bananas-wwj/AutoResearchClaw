@@ -87,7 +87,10 @@ class SessionStore:
             json.dumps(copy.deepcopy(data), ensure_ascii=False, indent=2))
         data["reviews"].append({"event": "invalidate", "reason": reason, "at": now(),
                                 "revision": data["revision"]})
-        for key in ("progress", "progress_message", "presentation_task"):
+        for paper in data["papers"]:
+            if paper.get("fulltext_status") == "read":
+                paper["fulltext_status"] = "downloaded"
+        for key in ("progress", "progress_message", "presentation_task", "download_task"):
             data.pop(key, None)
         data["revision"] += 1
         data.update(approved_revision=None, reading={}, synthesis=None, cards=[], rejected_cards=[],

@@ -789,7 +789,7 @@ button, a { touch-action: manipulation; }
 }
 
 /* Related literature: compact, paginated cards and a paper-detail sheet. */
-.literature-gallery-head { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:20px; }
+.literature-gallery-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:16px; margin-bottom:20px; }
 .literature-gallery-head h3 { margin:0; font-size:17px; }
 .literature-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
 .literature-tile { display:flex; flex-direction:column; text-align:left; font:inherit; color:var(--text-primary); background:rgba(255,255,255,.78); border:1px solid var(--border); border-radius:20px; padding:22px; cursor:pointer; transition:box-shadow .18s,transform .18s; min-width:0; }

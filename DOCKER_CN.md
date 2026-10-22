@@ -101,3 +101,15 @@ docker compose up -d dashboard      # 常驻，改代码/配置后 docker compos
 论文概览参考 IdeaSpark 将瓶颈与未解决问题分开的调研记录方式（[retrieval-runbook](https://github.com/microsoft/ResearchStudio/blob/main/ResearchStudio-Idea/skills/idea_spark/references/retrieval-runbook.md)），本系统另以“科学问题→方法→优势→局限”组织展示。页面“生成方式与提示词”返回正在使用的实际模板，包括摘要概览与全文精读，不能将摘要未说明的事项认定为研究缺口。
 
 2026-10-22 验证记录：科研、调研与交接相关回归测试 381 项通过，JS 语法与 Python 编译通过；实际服务接口正常，`/ws/events`、`/ws/chat` 均返回 101。DOM 模拟验证了 13 篇论文的三页卡片、摘要论文弹窗、移除与版本失效、即时反馈、精读进度及独立创新点批准。LS 因子会话 `is-6d5924d11be24da58dc7` 已有 3 篇核心论文通过全文精读与引文校验，继续自动调研，未代替用户确认创新点。尚未完成原生浏览器视觉验收；服务器未配置 OpenAlex Key，缓存全文鉴权仅完成模拟验证。
+
+### 原文优先与提示词改进（2026-10-22）
+
+初筛后对全部核心及邻近相关论文尝试获取原文，优先使用已配置 Key 的 OpenAlex 缓存 PDF，再尝试出版社、公开仓储和 arXiv；支持含中文或希腊字母的来源 URL。已获取原文单独缓存，卡片详情“查看已获取原文”由本服务返回 PDF 或正文文本，不向浏览器暴露 API Key。获取失败仍保留真实状态，不能视作已读。方向确认前只获取原文，不启动全文精读或实验；方向确认后默认精读10篇、最多15篇，最近邻关键工作另行核对正文。
+
+“获取相关原文”可给已有会话补齐原文，不修改文献范围、版本、已有创新点或审批；停止与恢复沿用任务检查点，成功缓存不重复下载。同一轮获取失败不会立刻在精读阶段重复请求；明确重试后再尝试失败来源。
+
+提示词参考 [IdeaSpark 调研与瓶颈诊断](https://github.com/microsoft/ResearchStudio/blob/main/ResearchStudio-Idea/skills/idea_spark/references/retrieval-runbook.md)、[Keshav 的三遍阅读方法](https://www.cl.cam.ac.uk/~ey204/teaching/ACS/R244_2025_2026/aid/keshav.pdf)及 [DeepSeek JSON 输出指南](https://api-docs.deepseek.com/guides/json_mode/)。精读重建方法、假设及验证逻辑，要求方法正文的逐字证据；缺口分析主动排查已有解决机制，构思围绕单一可证伪假设，查重识别换名、换场景及常规参数扫描。最近邻筛选使用单独短模板，不重复生成论文概览；每次调用记录模板哈希。
+
+当前主模型配置仍为官方 `deepseek-flash`，备用 `deepseek-v4-pro`，`thinking: disabled`。截至2026-10-22，[官方模型说明](https://api-docs.deepseek.com/quick_start/pricing/)将 `deepseek-flash` 映射到 DeepSeek-V4.1-Flash-1017；不要擅自将版本展示名写成 API 模型 ID。OpenAlex Key 已完成真实 PDF 下载验证，保存在未跟踪的 `.env`。
+
+本轮验证：387 项相关回归通过；实际原文接口返回 Geoderma LS 方法论文 PDF（HTTP 200），两条 WebSocket 均为101。DOM 模拟验证了原文补全按钮、本地原文链接及八个实际模板。47 篇相关文献的原文补全已在现有会话运行；该操作保留原版本与人工批准记录。原生浏览器视觉验收尚未完成。

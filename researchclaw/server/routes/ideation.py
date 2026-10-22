@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from researchclaw.ideation.service import IdeationService
 from researchclaw.ideation.store import SessionError, now
@@ -112,6 +113,28 @@ async def confirm_direction(sid: str, req: DirectionConfirmation):
 @router.post("/ideation/sessions/{sid}/metadata")
 async def refresh_metadata(sid: str, req: VersionRequest):
     return public(invoke(get_service().refresh_metadata, sid, req.revision))
+
+
+@router.post("/ideation/sessions/{sid}/fulltexts")
+async def acquire_fulltexts(sid: str, req: VersionRequest):
+    return public(invoke(get_service().acquire_fulltexts, sid, req.revision))
+
+
+@router.get("/ideation/sessions/{sid}/papers/{paper_id}/fulltext")
+async def paper_fulltext(sid: str, paper_id: str):
+    service = get_service()
+    data = invoke(service.snapshot, sid)
+    if not re.fullmatch(r"p-[a-f0-9]{20}", paper_id) or paper_id not in {p["paper_id"] for p in data["papers"]} | data["reading"].keys():
+        raise HTTPException(404, "论文不存在")
+    directory = service.store.directory(sid)
+    cache = directory / "fulltext" / (paper_id + ".json")
+    if not cache.exists():
+        raise HTTPException(404, "该论文尚未获取原文")
+    pdf = directory / "downloads" / (paper_id + ".pdf")
+    if pdf.exists():
+        return FileResponse(pdf, media_type="application/pdf", filename=paper_id + ".pdf")
+    document = json.loads(cache.read_text())
+    return PlainTextResponse("\n\n".join(p["location"] + "\n" + p["text"] for p in document["pages"]))
 
 
 @router.post("/ideation/sessions/{sid}/summaries")

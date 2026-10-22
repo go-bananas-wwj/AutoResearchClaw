@@ -56,14 +56,14 @@ class LLM:
         if stage == 'plan':
             result = {'interpretation':'USLE/RUSLE坡长—坡度因子','domain':'水土保持',
                 'queries':[{'query':f'LS factor watershed {i}','purpose':'方法与验证','period':'recent' if i == 3 else 'all'} for i in range(4)]}
-        elif stage in ('screen','summarize'):
+        elif stage in ('screen','summarize','neighbors'):
             result = {'papers':[{'paper_id':p['paper_id'],'relevance':'off_topic' if self.off_topic else 'core',
                 'reason':'相关：分析坡长与坡度','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','method':'DEM汇流','strengths':'提供对照','limitations':'摘要未说明'}} for p in data['papers']]}
         elif stage == 'read':
             p = data['passages'][0]
             result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
                 'findings':'条件性结论','limitations':'特定地形','evidence':[{'passage_id':p['passage_id'],
-                'quote':'this quotation was invented' if self.fabricate else p['text'][:80], 'claim':'采用汇流计算','kind':'source'}]}
+                'quote':'this quotation was invented' if self.fabricate else p['text'][:80], 'claim':'采用汇流计算','kind':'source','role':'method'}]}
         elif stage == 'synthesis':
             ref = data['reading'][0]['evidence'][0]['passage_id']
             result = {'landscape_zh':'现有方法及适用边界。','method_comparison':[{'paper_id':data['reading'][0]['paper_id'],'method':'汇流计算','boundary':'特定地形'}],
@@ -113,7 +113,8 @@ def develop(engine):
 
 def test_two_reviews_and_provenance(engine):
     data = first(engine); sid=data['session_id']
-    assert data['status']=='waiting' and engine.sources.fulltext_calls==[]
+    assert data['status']=='waiting' and len(engine.sources.fulltext_calls)==3
+    assert not data['reading'] and all(p['fulltext_status']=='downloaded' for p in data['papers'])
     assert engine.llm.calls==['plan','screen']
     assert not list(engine.store.root.parent.glob('rc-*'))
     with pytest.raises(SessionError): engine.regenerate(sid,data['revision'],'skip')
@@ -157,7 +158,8 @@ def test_no_fallback_success(engine,failure):
 
 def test_must_read_is_not_optional(engine):
     engine.sources=Sources(4)
-    data=first(engine); pid=data['papers'][0]['paper_id'];engine.sources.fail_ids={pid}
+    pid=engine.sources.rows[0]['paper_id'];engine.sources.fail_ids={pid}
+    data=first(engine)
     engine.review_literature(data['session_id'],data['revision'],[p['paper_id'] for p in data['papers']],[pid])
     data=wait(engine,data['session_id'])
     assert len(data['reading'])==3 and data['status']=='blocked' and 'LS method 0' in data['missing'][0]
@@ -192,7 +194,7 @@ def test_direction_confirmation_delegates_selection_and_reading(engine):
     data['papers'][2]['selected']=True
     engine.store.save(data)
     chosen={p['paper_id'] for p in data['papers'] if p['relevance'] in ('core','adjacent')}
-    assert not engine.sources.fulltext_calls
+    assert not data['reading'] and 'read' not in engine.llm.calls
     engine.confirm_direction(sid,data['revision'],'关注流域尺度的LS计算')
     result=wait(engine,sid)
     assert result['phase']=='idea_review' and result['run_id'] is None
@@ -205,14 +207,14 @@ def test_direction_confirmation_delegates_selection_and_reading(engine):
 
 
 def test_metadata_refresh_does_not_approve_or_start_reading(engine):
-    data=first(engine);sid=data['session_id'];calls=list(engine.llm.calls)
+    data=first(engine);sid=data['session_id'];calls=list(engine.llm.calls);downloads=list(engine.sources.fulltext_calls)
     engine.sources.enrich_metadata=lambda paper:{'venue':'Soil Research','venue_type':'journal',
         'authors':[{'name':'Researcher A','affiliation':'University A'}],'institutions':['University A'], 'bibliography_version':1}
     engine.refresh_metadata(sid,data['revision']);result=wait(engine,sid)
     assert result['phase']=='literature_review' and result['status']=='waiting'
     assert result['revision']==data['revision'] and result['approved_revision'] is None
     assert not result['reading'] and not result['cards'] and not result['run_id']
-    assert engine.llm.calls==calls and not engine.sources.fulltext_calls
+    assert engine.llm.calls==calls and engine.sources.fulltext_calls==downloads
     assert all(p['venue']=='Soil Research' for p in result['papers'])
 
 
@@ -382,23 +384,23 @@ def test_remove_paper_invalidates_downstream_and_agent_does_not_reselect(engine)
 
 
 def test_summary_refresh_is_presentation_only(engine):
-    data=first(engine);sid=data['session_id'];before=list(engine.llm.calls)
+    data=first(engine);sid=data['session_id'];before=list(engine.llm.calls);downloads=list(engine.sources.fulltext_calls)
     engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
     assert done['revision']==data['revision'] and done['approved_revision'] is None
     assert done['phase']=='literature_review' and done['status']=='waiting'
     assert not done['reading'] and not done['cards'] and not done['run_id']
-    assert not engine.sources.fulltext_calls and engine.llm.calls[len(before):]==['summarize']
+    assert engine.sources.fulltext_calls==downloads and engine.llm.calls[len(before):]==['summarize']
     assert all(p['summary_version']==2 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
 
 
 def test_backfill_uses_related_reserve_and_never_exceeds_fifteen(engine):
     engine.sources=Sources(18)
+    engine.sources.fail_ids={p['paper_id'] for p in engine.sources.rows[:8]}
     data=first(engine);sid=data['session_id']
-    engine.sources.fail_ids={p['paper_id'] for p in data['papers'][:8]}
     engine.confirm_direction(sid,data['revision']);done=wait(engine,sid)
     assert done['phase'] in ('audit','idea_review')
     primary=[p for p in done['papers'] if p.get('fulltext_status')=='read']
-    assert len(primary)>=3 and len({p['paper_id'] for p in done['papers'] if p.get('fulltext_status') in ('read','abstract_only','failed')})<=15
+    assert len(primary)>=3 and len([r for r in done['reading'].values() if not r.get('supplemental')])<=15
     assert not done['run_id']
 
 
@@ -487,3 +489,81 @@ def test_quote_id_can_only_be_corrected_from_unique_exact_same_paper_text(engine
         e=note['evidence'][0]
         assert e['model_passage_id']=='wrong-passage-id' and e['citation_resolution']=='unique_exact_quote'
         assert e['passage_id'] in {p['passage_id'] for p in note['passages']}
+
+
+def test_acquisition_covers_all_related_without_starting_deep_reading(engine):
+    engine.sources=Sources(18)
+    data=first(engine)
+    assert len(set(engine.sources.fulltext_calls))==18
+    assert all(p['fulltext_status']=='downloaded' for p in data['papers'])
+    assert not data['reading'] and not data['cards'] and data['approved_revision'] is None and data['run_id'] is None
+    assert 'read' not in engine.llm.calls
+    assert len(list((engine.store.directory(data['session_id'])/'fulltext').glob('*.json')))==18
+
+
+def test_original_downloads_are_checkpoints_not_new_approvals(engine):
+    data=first(engine);sid=data['session_id'];calls=list(engine.llm.calls);downloads=list(engine.sources.fulltext_calls)
+    engine.acquire_fulltexts(sid,data['revision']);done=wait(engine,sid)
+    assert done['phase']=='literature_review' and done['status']=='waiting'
+    assert done['revision']==data['revision'] and done['approved_revision'] is None
+    assert not done['reading'] and not done['run_id'] and engine.llm.calls==calls
+    assert engine.sources.fulltext_calls==downloads and 'download_task' not in done
+
+
+def test_original_download_stop_and_restart_resume_preserve_first_gate(engine):
+    data=first(engine);sid=data['session_id'];first_id=data['papers'][0]['paper_id']
+    (engine.store.directory(sid)/'fulltext'/(first_id+'.json')).unlink()
+    started=threading.Event();release=threading.Event();original=engine.sources.fulltext
+    def slow(paper,directory):
+        started.set();assert release.wait(5)
+        return original(paper,directory)
+    engine.sources.fulltext=slow
+    engine.acquire_fulltexts(sid,data['revision']);assert started.wait(3)
+    assert engine.stop(sid)['status']=='stopping'
+    release.set();stopped=wait(engine,sid)
+    assert stopped['status']=='stopped' and stopped['download_task']
+    count=len(engine.sources.fulltext_calls)
+    restarted=IdeationService(engine.store.root,engine.config,llm=engine.llm,sources=engine.sources)
+    restarted.resume(sid,stopped['revision']);done=wait(restarted,sid)
+    assert done['status']=='waiting' and done['phase']=='literature_review'
+    assert not done['approved_revision'] and not done['reading'] and not done['run_id']
+    assert len(engine.sources.fulltext_calls)==count and 'download_task' not in done
+
+
+def test_read_must_quote_method_instead_of_only_results(engine):
+    original=engine.llm.chat
+    def result_only(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['read']:
+            payload=json.loads(response.content);payload['evidence'][0]['role']='result';response.content=json.dumps(payload)
+        return response
+    engine.llm.chat=result_only
+    data=develop(engine)
+    assert data['status']=='blocked' and not data['reading'] and not data['cards']
+    assert all(p['fulltext_status']=='downloaded' for p in data['papers'])
+    assert any('方法正文' in p.get('fulltext_error','') for p in data['papers'])
+
+
+@pytest.mark.asyncio
+async def test_original_api_serves_private_cache_without_credentials_or_approval(engine,monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from researchclaw.server.app import _app_state
+    from researchclaw.server.routes import ideation
+    data=first(engine);sid=data['session_id'];pid=data['papers'][0]['paper_id']
+    app=FastAPI();app.include_router(ideation.router);monkeypatch.setitem(_app_state,'ideation_service',engine)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        url=f'/api/ideation/sessions/{sid}/papers/{pid}/fulltext'
+        response=await client.get(url)
+        assert response.status_code==200 and 'Methods:' in response.text
+        pdf=engine.store.directory(sid)/'downloads'/(pid+'.pdf');pdf.parent.mkdir(exist_ok=True);pdf.write_bytes(b'%PDF-source-fixture')
+        response=await client.get(url)
+        assert response.status_code==200 and response.content==b'%PDF-source-fixture'
+        assert response.headers['content-type']=='application/pdf'
+        stale=await client.post(f'/api/ideation/sessions/{sid}/fulltexts',json={'revision':999})
+        assert stale.status_code==409
+        response=await client.post(f'/api/ideation/sessions/{sid}/fulltexts',json={'revision':data['revision']})
+        assert response.status_code==200
+        done=await asyncio.to_thread(wait,engine,sid)
+        assert not done['approved_revision'] and not done['reading'] and not done['run_id']
+        assert (await client.get(f'/api/ideation/sessions/{sid}/papers/p-unknown/fulltext')).status_code==404

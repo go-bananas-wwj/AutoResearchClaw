@@ -112,3 +112,22 @@ def test_missing_content_key_and_http_failure_are_distinct(monkeypatch,tmp_path)
     with pytest.raises(SessionError,match='OPENALEX_API_KEY.*访问被拒绝'):
         Sources(None).fulltext(p,tmp_path)
     assert {a['outcome'] for a in p['fetch_attempts']}=={'OpenAlex缓存全文需要配置OPENALEX_API_KEY','访问被拒绝'}
+
+
+def test_fetch_encodes_unicode_publisher_links_without_leaking_key(monkeypatch):
+    from researchclaw.ideation import sources
+    monkeypatch.setenv('OPENALEX_API_KEY','private-test-key')
+    monkeypatch.setattr(sources,'check_url_ssrf',lambda url:None)
+    class Reply:
+        headers={'Content-Type':'text/html'}
+        url='https://journal.example/article'
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def read(self,size):return b'paper'
+    class Opener:
+        def open(self,req,timeout):
+            assert '%CE%BB' in req.full_url and '%E5%9D%A1' in req.full_url
+            assert not req.has_header('Authorization') and 'private-test-key' not in req.full_url
+            return Reply()
+    monkeypatch.setattr(sources.urllib.request,'build_opener',lambda *args:Opener())
+    sources.fetch('https://journal.example/slope-λ?topic=坡长')

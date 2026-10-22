@@ -98,6 +98,10 @@ def fetch(url: str, limit: int = 25 * 1024 * 1024, *, timeout: float = 30) -> tu
         params = dict(urllib.parse.parse_qsl(parts.query))
         params["api_key"] = os.environ["OPENALEX_API_KEY"]
         url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(params), parts.fragment))
+    parts = urllib.parse.urlsplit(url)
+    url = urllib.parse.urlunsplit((parts.scheme, parts.netloc,
+        urllib.parse.quote(parts.path, safe="/%:@!$&'()*+,;=-._~"),
+        urllib.parse.quote(parts.query, safe="=&%/:?@!$'()*+,;=-._~"), parts.fragment))
     req = urllib.request.Request(url, headers={"User-Agent": "ResearchClaw/0.5 AcademicResearch"})
     # Never forward credentials across redirects, including signed storage redirects.
     if urllib.parse.urlsplit(url).scheme == "https" and urllib.parse.urlsplit(url).hostname in ("api.openalex.org", "content.openalex.org"):
