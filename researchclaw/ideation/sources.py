@@ -5,6 +5,8 @@ import html
 import json
 import os
 import re
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -88,15 +90,39 @@ class PublicRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch(url: str, limit: int = 25 * 1024 * 1024) -> tuple[bytes, str, str]:
+def fetch(url: str, limit: int = 25 * 1024 * 1024, *, timeout: float = 30) -> tuple[bytes, str, str]:
     if check_url_ssrf(url):
         raise SessionError("仅允许获取公共 HTTP/HTTPS 论文地址", 400)
+    if urllib.parse.urlsplit(url).scheme == "https" and urllib.parse.urlsplit(url).hostname == "content.openalex.org" and os.getenv("OPENALEX_API_KEY"):
+        parts = urllib.parse.urlsplit(url)
+        params = dict(urllib.parse.parse_qsl(parts.query))
+        params["api_key"] = os.environ["OPENALEX_API_KEY"]
+        url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(params), parts.fragment))
     req = urllib.request.Request(url, headers={"User-Agent": "ResearchClaw/0.5 AcademicResearch"})
-    with urllib.request.build_opener(PublicRedirect()).open(req, timeout=30) as response:
+    # Never forward credentials across redirects, including signed storage redirects.
+    if urllib.parse.urlsplit(url).scheme == "https" and urllib.parse.urlsplit(url).hostname in ("api.openalex.org", "content.openalex.org"):
+        key = os.getenv("OPENALEX_API_KEY", "")
+        if key:
+            req.add_unredirected_header("Authorization", "Bearer " + key)
+    with urllib.request.build_opener(PublicRedirect()).open(req, timeout=timeout) as response:
         data = response.read(limit + 1)
         if len(data) > limit:
             raise SessionError("论文文件超过25MB，请提供较小PDF", 400)
-        return data, response.headers.get("Content-Type", ""), response.url
+        return data, response.headers.get("Content-Type", ""), safe_url(response.url)
+
+
+def safe_url(url):
+    parts = urllib.parse.urlsplit(url)
+    # Store the source location, never signed download tokens or API keys.
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def fetch_failure(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return {401: "需要授权", 403: "访问被拒绝", 404: "链接不存在", 429: "来源限流"}.get(exc.code, f"来源返回HTTP {exc.code}")
+    if isinstance(exc, SessionError):
+        return str(exc)
+    return "网络连接或正文解析失败"
 
 
 def paper_record(row: dict[str, Any], query: str = "", source: str = "") -> dict[str, Any]:
@@ -241,28 +267,52 @@ class Sources:
         uploaded = paper.get("uploaded_pdf")
         if uploaded:
             return {**self.pdf_document(directory / uploaded), "source_url": "user_pdf"}
+        deadline = time.monotonic() + 90
+        def read_url(url):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SessionError("本篇全文获取超时，可稍后重试")
+            return fetch(url, timeout=min(30, remaining))
         urls = list(paper.get("pdf_urls") or [])
         if paper.get("arxiv_id"):
-            urls += ["https://arxiv.org/pdf/" + paper["arxiv_id"]]
+            urls += ["https://arxiv.org/pdf/" + paper["arxiv_id"], "https://arxiv.org/html/" + paper["arxiv_id"]]
         doi = paper.get("doi")
-        if doi:
+        attempts = []
+        paper["fetch_attempts"] = attempts
+        identifier = "https://doi.org/" + urllib.parse.quote(doi, safe="/") if doi else ""
+        if not identifier and re.fullmatch(r"https://openalex.org/W[0-9]+", paper.get("url", "")):
+            identifier = paper["url"].rsplit("/", 1)[-1]
+        if identifier:
+            lookup = "https://api.openalex.org/works/" + identifier
             try:
-                data, _, _ = fetch("https://api.openalex.org/works/https://doi.org/" + urllib.parse.quote(doi, safe="/"))
+                data, _, _ = read_url(lookup)
                 meta = json.loads(data)
+                content = (meta.get("content_urls") or {}).get("pdf")
+                if content:
+                    if os.getenv("OPENALEX_API_KEY"):
+                        urls.insert(0, content)
+                    else:
+                        attempts.append({"url": safe_url(content), "outcome": "OpenAlex缓存全文需要配置OPENALEX_API_KEY"})
                 for loc in [meta.get("best_oa_location"), meta.get("primary_location"), *(meta.get("locations") or [])]:
                     if loc:
                         urls.extend(u for u in [loc.get("pdf_url"), loc.get("landing_page_url")] if u)
-            except Exception:
-                pass
+            except Exception as exc:
+                attempts.append({"url": safe_url(lookup), "outcome": fetch_failure(exc)})
         urls += [paper.get("url") or ("https://doi.org/" + doi if doi else "")]
         # Publisher HTML comes before a PDF fallback when that is the available URL.
         visited: set[str] = set()
         for url in urls:
-            if not url or url in visited or len(visited) >= 8:
+            if not url or url in visited or len(visited) >= 12:
                 continue
+            if time.monotonic() >= deadline:
+                attempts.append({"url": safe_url(url), "outcome": "本篇全文获取超时，可稍后重试"})
+                break
             visited.add(url)
+            callback = getattr(self, "progress", None)
+            if callback:
+                callback(paper, "正在获取正文：" + (urllib.parse.urlsplit(url).hostname or "公开来源"))
             try:
-                raw, kind, final = fetch(url)
+                raw, kind, final = read_url(url)
                 if raw.startswith(b"%PDF"):
                     target = directory / "downloads" / (paper["paper_id"] + ".pdf")
                     target.parent.mkdir(exist_ok=True)
@@ -271,7 +321,10 @@ class Sources:
                 else:
                     text = raw.decode("utf-8", "replace")
                     # Discover publisher-provided PDF links, never guess a paper URL.
-                    links = re.findall(r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)', text, re.I)
+                    parser = CitationMetadataParser()
+                    parser.feed(text)
+                    links = parser.tags.get("citation_pdf_url", [])
+                    links += re.findall(r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)', text, re.I)
                     links += re.findall(r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']', text, re.I)
                     urls.extend(urllib.parse.urljoin(final, html.unescape(link)) for link in links[:3])
                     from researchclaw.web.crawler import WebCrawler
@@ -282,7 +335,10 @@ class Sources:
                     document = {"pages": [{"location": "HTML正文", "text": html.unescape(WebCrawler._html_to_markdown(body))}]}
                 full = "\n".join(p["text"] for p in document["pages"])
                 if len(full) >= 2000 and re.search(r"\bmethod(?:s|ology)?\b|\bmaterials\b|\balgorithm\b|方法|模型构建", full, re.I):
+                    attempts.append({"url": safe_url(url), "outcome": "已取得方法正文"})
                     return {**document, "source_url": final}
-            except Exception:
-                continue
-        raise SessionError("未取得含方法正文的全文，可补充PDF或公开链接后重试")
+                attempts.append({"url": safe_url(url), "outcome": "页面未提供可提取的方法正文"})
+            except Exception as exc:
+                attempts.append({"url": safe_url(url), "outcome": fetch_failure(exc)})
+        reasons = list(dict.fromkeys(a["outcome"] for a in attempts))
+        raise SessionError("未取得方法正文：" + "；".join(reasons or ["未提供公开全文地址"]))

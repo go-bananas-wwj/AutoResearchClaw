@@ -114,6 +114,16 @@ async def refresh_metadata(sid: str, req: VersionRequest):
     return public(invoke(get_service().refresh_metadata, sid, req.revision))
 
 
+@router.post("/ideation/sessions/{sid}/summaries")
+async def refresh_summaries(sid: str, req: VersionRequest):
+    return public(invoke(get_service().refresh_summaries, sid, req.revision))
+
+
+@router.post("/ideation/sessions/{sid}/papers/{paper_id}/remove")
+async def remove_paper(sid: str, paper_id: str, req: VersionRequest):
+    return public(invoke(get_service().remove_paper, sid, req.revision, paper_id))
+
+
 @router.post("/ideation/sessions/{sid}/scope")
 async def revise_scope(sid: str, req: ScopeRequest):
     return public(invoke(get_service().revise_scope, sid, req.revision, req.direction))

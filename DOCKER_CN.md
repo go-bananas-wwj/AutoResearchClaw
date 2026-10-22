@@ -89,3 +89,15 @@ docker compose up -d dashboard      # 常驻，改代码/配置后 docker compos
 ## 合规提醒
 
 产出的 `paper.tex` 用于投稿时，请按目标会议（ICLR/ICML 2026 等）政策如实披露 AI 辅助使用情况；本系统定位是研究助理，作者栏只列对内容负责的人。
+
+### 文献卡片、全文与 OpenAlex Key（本 fork 适配）
+
+相关文献按页展示卡片；点击可查看科学问题、方法、优势与局限、出版信息及原文获取记录。初筛概览只依据摘要，全文精读后展示正文记录。首轮只需确认方向；详情中的“从相关文献中删除”用于纠正不相关结果，会撤销该版本的下游批准，返回方向确认。
+
+服务器 `.env` 可配置 `OPENALEX_API_KEY`（[申请入口](https://openalex.org/settings/api)）。检索、元数据解析与 OpenAlex 缓存全文下载共用此配置；未配置时仍会尝试出版社、公开仓储与 arXiv 正文。OpenAlex 只对有 `content_urls.pdf` 的记录提供缓存全文，Key 不能解锁所有出版商付费内容。[官方全文说明](https://help.openalex.org/access/fulltext/)。
+
+修改 `.env` 后，先确认没有科研或调研任务运行，再执行 `docker compose up -d --force-recreate dashboard`（单纯 restart 不会更新容器环境）。不要把 Key 写入 YAML、Git 或聊天。服务器只将清除查询凭据后的来源地址与分类结果写入获取记录。
+
+论文概览参考 IdeaSpark 将瓶颈与未解决问题分开的调研记录方式（[retrieval-runbook](https://github.com/microsoft/ResearchStudio/blob/main/ResearchStudio-Idea/skills/idea_spark/references/retrieval-runbook.md)），本系统另以“科学问题→方法→优势→局限”组织展示。页面“生成方式与提示词”返回正在使用的实际模板，包括摘要概览与全文精读，不能将摘要未说明的事项认定为研究缺口。
+
+2026-10-22 验证记录：科研、调研与交接相关回归测试 381 项通过，JS 语法与 Python 编译通过；实际服务接口正常，`/ws/events`、`/ws/chat` 均返回 101。DOM 模拟验证了 13 篇论文的三页卡片、摘要论文弹窗、移除与版本失效、即时反馈、精读进度及独立创新点批准。LS 因子会话 `is-6d5924d11be24da58dc7` 已有 3 篇核心论文通过全文精读与引文校验，继续自动调研，未代替用户确认创新点。尚未完成原生浏览器视觉验收；服务器未配置 OpenAlex Key，缓存全文鉴权仅完成模拟验证。

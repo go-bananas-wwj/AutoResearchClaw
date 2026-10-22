@@ -47,3 +47,68 @@ def test_enrichment_only_updates_real_publication_fields(monkeypatch):
     assert result['venue']=='Real Journal' and result['institutions']==['Real University']
     assert result['bibliography_sources'][0]['source']=='OpenAlex'
     assert not {'paper_id','title','selected','required','relevance','summary_zh'} & result.keys()
+
+
+def test_fulltext_resolves_openalex_id_without_doi_and_discovers_pdf(monkeypatch,tmp_path):
+    from researchclaw.ideation import sources
+    from researchclaw.ideation.sources import paper_record
+    calls=[]
+    def fetch(url,limit=25*1024*1024,**kwargs):
+        calls.append(url)
+        if url.startswith('https://api.openalex.org/'):
+            return json.dumps({'primary_location':{'landing_page_url':'https://journal.example/article'}}).encode(),'application/json',url
+        if url=='https://journal.example/article':
+            return b'<meta content="/paper.pdf" name="citation_pdf_url">','text/html',url
+        if url=='https://journal.example/paper.pdf':return b'%PDF fixture','application/pdf',url
+        return b'Index only','text/html',url
+    monkeypatch.setattr(sources,'fetch',fetch)
+    monkeypatch.setattr(Sources,'pdf_document',staticmethod(lambda path:{'pages':[{'location':'page 2','text':'Methods: terrain routing and validation. '*100}]}))
+    p=paper_record({'title':'LS factor','url':'https://openalex.org/W123'})
+    doc=Sources(None).fulltext(p,tmp_path)
+    assert calls[0]=='https://api.openalex.org/works/W123'
+    assert doc['source_url']=='https://journal.example/paper.pdf'
+    assert p['fetch_attempts'][-1]['outcome']=='已取得方法正文'
+
+
+def test_content_auth_is_not_stored_or_forwarded(monkeypatch):
+    from researchclaw.ideation import sources
+    requests=[]
+    monkeypatch.setenv('OPENALEX_API_KEY','secret-fixture-never-store')
+    monkeypatch.setattr(sources,'check_url_ssrf',lambda url:None)
+    class Response:
+        headers={'Content-Type':'application/pdf'}
+        url='https://storage.example/doc.pdf?signature=hidden'
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def read(self,size):return b'%PDF test'
+    class Opener:
+        def open(self,req,timeout):requests.append(req);return Response()
+    monkeypatch.setattr(sources.urllib.request,'build_opener',lambda *args:Opener())
+    _,_,url=sources.fetch('https://content.openalex.org/works/W123.pdf')
+    assert url=='https://storage.example/doc.pdf'
+    req=requests[0]
+    assert 'api_key=secret-fixture-never-store' in req.full_url
+    assert 'Authorization' not in req.headers and 'Authorization' in req.unredirected_hdrs
+    redirected=sources.PublicRedirect().redirect_request(req,None,302,'Found',{},'https://storage.example/doc.pdf')
+    assert not redirected.has_header('Authorization') and 'secret-fixture' not in redirected.full_url
+    sources.fetch('https://journal.example/paper.pdf')
+    assert not requests[-1].has_header('Authorization') and 'api_key' not in requests[-1].full_url
+
+
+def test_missing_content_key_and_http_failure_are_distinct(monkeypatch,tmp_path):
+    import urllib.error
+    from researchclaw.ideation import sources
+    from researchclaw.ideation.sources import paper_record
+    from researchclaw.ideation.store import SessionError
+    import pytest
+    monkeypatch.delenv('OPENALEX_API_KEY',raising=False)
+    def fetch(url,limit=25*1024*1024,**kwargs):
+        if 'api.openalex.org' in url:
+            return json.dumps({'content_urls':{'pdf':'https://content.openalex.org/works/W123.pdf'},
+                'primary_location':{'pdf_url':'https://publisher.example/paper.pdf'}}).encode(),'application/json',url
+        raise urllib.error.HTTPError(url,403,'Forbidden',{},None)
+    monkeypatch.setattr(sources,'fetch',fetch)
+    p=paper_record({'title':'Paper','doi':'10.1234/test'})
+    with pytest.raises(SessionError,match='OPENALEX_API_KEY.*访问被拒绝'):
+        Sources(None).fulltext(p,tmp_path)
+    assert {a['outcome'] for a in p['fetch_attempts']}=={'OpenAlex缓存全文需要配置OPENALEX_API_KEY','访问被拒绝'}

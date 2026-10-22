@@ -56,9 +56,9 @@ class LLM:
         if stage == 'plan':
             result = {'interpretation':'USLE/RUSLE坡长—坡度因子','domain':'水土保持',
                 'queries':[{'query':f'LS factor watershed {i}','purpose':'方法与验证','period':'recent' if i == 3 else 'all'} for i in range(4)]}
-        elif stage == 'screen':
+        elif stage in ('screen','summarize'):
             result = {'papers':[{'paper_id':p['paper_id'],'relevance':'off_topic' if self.off_topic else 'core',
-                'reason':'相关：分析坡长与坡度','summary_zh':'基于DEM的LS计算。'} for p in data['papers']]}
+                'reason':'相关：分析坡长与坡度','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','method':'DEM汇流','strengths':'提供对照','limitations':'摘要未说明'}} for p in data['papers']]}
         elif stage == 'read':
             p = data['passages'][0]
             result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
@@ -184,7 +184,7 @@ def test_regenerate_uses_approved_evidence(engine):
 
 
 def test_direction_confirmation_delegates_selection_and_reading(engine):
-    engine.sources=Sources(4)
+    engine.sources=Sources(5)
     data=first(engine);sid=data['session_id']
     data['papers'][0]['selected']=False  # Stale per-paper toggles must not control this flow.
     data['papers'][1]['relevance']='adjacent'
@@ -364,3 +364,126 @@ async def test_pdf_upload_invalidates_review(engine,monkeypatch):
         paper=result['papers'][-1];assert paper['source']=='user_pdf' and paper['required']
         assert (engine.store.directory(sid)/paper['uploaded_pdf']).exists()
         stale=await client.post(path,content=raw);assert stale.status_code==409
+
+
+def test_remove_paper_invalidates_downstream_and_agent_does_not_reselect(engine):
+    engine.sources=Sources(4)
+    data=develop(engine);sid=data['session_id'];old=data['revision'];pid=data['papers'][0]['paper_id']
+    updated=engine.remove_paper(sid,old,pid)
+    assert updated['revision']==old+1 and updated['approved_revision'] is None
+    assert not updated['reading'] and not updated['cards'] and updated['phase']=='literature_review'
+    assert next(p for p in updated['papers'] if p['paper_id']==pid)['user_excluded']
+    with pytest.raises(SessionError):engine.confirm_direction(sid,old)
+    calls=len(engine.sources.fulltext_calls)
+    engine.confirm_direction(sid,updated['revision']);done=wait(engine,sid)
+    assert done['phase']=='idea_review' and not done['run_id']
+    assert pid not in {p['paper_id'] for p in done['papers'] if p['selected']}
+    assert pid not in engine.sources.fulltext_calls[calls:]
+
+
+def test_summary_refresh_is_presentation_only(engine):
+    data=first(engine);sid=data['session_id'];before=list(engine.llm.calls)
+    engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
+    assert done['revision']==data['revision'] and done['approved_revision'] is None
+    assert done['phase']=='literature_review' and done['status']=='waiting'
+    assert not done['reading'] and not done['cards'] and not done['run_id']
+    assert not engine.sources.fulltext_calls and engine.llm.calls[len(before):]==['summarize']
+    assert all(p['summary_version']==2 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
+
+
+def test_backfill_uses_related_reserve_and_never_exceeds_fifteen(engine):
+    engine.sources=Sources(18)
+    data=first(engine);sid=data['session_id']
+    engine.sources.fail_ids={p['paper_id'] for p in data['papers'][:8]}
+    engine.confirm_direction(sid,data['revision']);done=wait(engine,sid)
+    assert done['phase'] in ('audit','idea_review')
+    primary=[p for p in done['papers'] if p.get('fulltext_status')=='read']
+    assert len(primary)>=3 and len({p['paper_id'] for p in done['papers'] if p.get('fulltext_status') in ('read','abstract_only','failed')})<=15
+    assert not done['run_id']
+
+
+def test_adjacent_fulltext_cannot_replace_three_core_papers(engine):
+    data=first(engine);sid=data['session_id']
+    data['papers'][0]['relevance']='adjacent';engine.store.save(data)
+    engine.confirm_direction(sid,data['revision']);done=wait(engine,sid)
+    assert len(done['reading'])==3 and done['status']=='blocked' and not done['cards']
+    assert '2篇核心论文' in done['missing'][0]
+
+
+def test_read_repair_preserves_exact_source_requirement(engine):
+    original=engine.llm.chat;attempts=[]
+    def chat(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['read']:
+            payload=json.loads(messages[0]['content']);attempts.append(payload)
+            if 'validation_feedback' not in payload:
+                result=json.loads(response.content);result['evidence'][0]['quote']='a fabricated quotation with no source'
+                response.content=json.dumps(result)
+        return response
+    engine.llm.chat=chat
+    data=develop(engine)
+    assert data['phase']=='idea_review' and any('validation_feedback' in p for p in attempts)
+    assert all(e['quote']!='a fabricated quotation with no source' for r in data['reading'].values() for e in r['evidence'])
+
+
+def test_invalid_json_is_retried_once_and_accounted(engine):
+    original=engine.llm.chat
+    def malformed(messages,*,system,**kwargs):
+        result=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            result.content='{"papers": [broken JSON'
+        return result
+    engine.llm.chat=malformed
+    data=first(engine);sid=data['session_id'];before=len(data['usage'])
+    engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
+    assert done['status']=='blocked' and '两次' in done['missing'][0]
+    assert len(done['usage'])==before+2 and not done['approved_revision'] and not done['cards']
+    assert len(list((engine.store.directory(sid)/'model_outputs').glob('*summarize.txt')))==2
+
+
+def test_empty_abstract_label_does_not_create_a_long_invented_summary(engine):
+    paper={'title':'LS factor methods','abstract':'摘要：'}
+    engine._apply_summary(paper,{'overview':dict.fromkeys(['problem','method','strengths','limitations'],'unsupported'),
+                                'summary_zh':'unsupported long generic paragraph'})
+    assert paper['summary_basis']=='title' and 'unsupported' not in paper['summary_zh']
+    assert len(paper['summary_zh'])<80 and paper['overview']['method']=='需正文核实'
+
+
+def test_quote_id_can_only_be_corrected_from_unique_exact_same_paper_text(engine):
+    original=engine.llm.chat
+    def wrong_id(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['read']:
+            result=json.loads(response.content)
+            result['evidence'][0]['passage_id']='wrong-passage-id'
+            result['evidence'][0]['quote']='a fabricated quotation that is absent from the article'
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=wrong_id
+    data=develop(engine)
+    assert data['status']=='blocked' and not data['reading'] and not data['cards']
+    # Use a source whose passage text is unique rather than repeated fixture boilerplate.
+    engine.llm.chat=original
+    source_fulltext=engine.sources.fulltext
+    def fulltext(paper,directory):
+        doc=source_fulltext(paper,directory)
+        doc['pages'][0]['text']='Methods: unique routing operator with independent observations. '+doc['pages'][0]['text']
+        return doc
+    engine.sources.fulltext=fulltext
+    def correctable(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['read']:
+            result=json.loads(response.content);result['evidence'][0]['passage_id']='wrong-passage-id'
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=correctable
+    engine.sources.fulltext=source_fulltext
+    ambiguous=develop(engine)
+    assert ambiguous['status']=='blocked' and not ambiguous['reading'] and not ambiguous['cards']
+    engine.sources.fulltext=fulltext
+    fresh=develop(engine)
+    assert fresh['phase']=='idea_review'
+    for note in fresh['reading'].values():
+        e=note['evidence'][0]
+        assert e['model_passage_id']=='wrong-passage-id' and e['citation_resolution']=='unique_exact_quote'
+        assert e['passage_id'] in {p['passage_id'] for p in note['passages']}
