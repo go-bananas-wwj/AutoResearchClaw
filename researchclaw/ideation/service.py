@@ -39,6 +39,19 @@ def quoted(text: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text).replace("\u00ad", ""))
 
 
+def summary_json(text):
+    """Parse model JSON; tolerate one missing delimiter before the known selection key only."""
+    from researchclaw.ideation.cards import _extract_json
+    try:
+        return _extract_json(text), False
+    except json.JSONDecodeError as exc:
+        raw = text[text.find("{"):text.rfind("}") + 1]
+        if exc.msg != "Expecting ',' delimiter" or not raw[:exc.pos].rstrip().endswith('"') or not re.match(r'"selection"\s*:', raw[exc.pos:]):
+            raise
+        # Insert punctuation outside strings; never rewrite a scientific claim or invent a field.
+        return json.loads(raw[:exc.pos] + "," + raw[exc.pos:]), True
+
+
 def reference_aliases(payload):
     """Lossless request-local ids: model copies E1/P1, server retains content hashes."""
     papers, excerpts = {}, {}
@@ -162,7 +175,13 @@ class IdeationService:
         output_dir.mkdir(exist_ok=True)
         (output_dir / f"r{data['revision']}-{len(data['usage'])}-{stage}.txt").write_text(response.content)
         try:
-            result = _extract_json(response.content)
+            if stage == "summarize":
+                result, repaired = summary_json(response.content)
+                if repaired:
+                    entry["json_syntax_repair"] = "missing_comma_before_selection"
+                    self.store.save(data)
+            else:
+                result = _extract_json(response.content)
         except ValueError as exc:
             if not _format_attempt:
                 return self._json(data, event, stage, {**original_payload,

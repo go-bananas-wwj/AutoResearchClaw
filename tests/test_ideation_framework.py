@@ -483,3 +483,20 @@ def test_missing_required_original_cannot_be_skipped_via_direction_confirmation(
     done['curation_version']=1;engine.store.save(done)
     with pytest.raises(SessionError,match='指定论文'):
         engine.review_literature(sid,done['revision'],[p['paper_id'] for p in engine._related(done)],[])
+
+
+def test_summary_missing_selection_comma_preserves_model_text_and_avoids_repeat_call(engine):
+    original=engine.llm.chat
+    def missing_comma(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            result=json.loads(response.content)
+            for row in result['papers']:
+                selection=row.pop('selection');paragraph=row.pop('summary_zh')
+                row['summary_zh']=paragraph;row['selection']=selection
+            response.content=json.dumps(result).replace(', "selection":',' "selection":',1)
+        return response
+    engine.llm.chat=missing_comma;data=first(engine)
+    assert data['status']=='waiting' and engine.llm.calls.count('summarize')==1
+    assert all(p['summary_zh']=='基于DEM的LS计算。' for p in engine._related(data))
+    assert next(u for u in data['usage'] if u['stage']=='summarize')['json_syntax_repair']=='missing_comma_before_selection'
