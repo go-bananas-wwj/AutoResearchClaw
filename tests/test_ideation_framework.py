@@ -235,7 +235,7 @@ def test_related_overview_missing_field_is_corrected_before_batch_is_accepted(en
     engine.llm.chat=incomplete_once
     data=first(engine)
     assert data['phase']=='literature_review' and len(calls)==2
-    assert 'overview.problem/method/strengths/limitations' in calls[1]['validation_feedback']
+    assert calls[1]['validation_feedback']['errors'] and calls[1]['validation_feedback']['errors'][0]['paper_id']
     assert len(engine.sources.fulltext_calls)==3 and not data['reading']
 
 
@@ -256,7 +256,8 @@ def test_custom_paper_limit_is_persistent_and_does_not_drop_pinned_material(engi
     pinned=paper_record({'title':'User supplied essential method','doi':'10.1234/pinned','url':'https://example.org/pinned','abstract':'A user supplied relevant method with independent verification.'})
     changed=engine.add_paper(data['session_id'],data['revision'],pinned)
     assert len(engine._related(changed))==10
-    assert pinned['paper_id'] in {p['paper_id'] for p in engine._related(changed)}
+    assert pinned['paper_id'] not in {p['paper_id'] for p in engine._related(changed)}
+    assert pinned['paper_id'] in {p['paper_id'] for p in engine._ranked_candidates(changed)}
     assert not changed['approved_revision']
     with pytest.raises(Exception):engine.create('Invalid oversized survey',paper_limit=31)
 
@@ -267,8 +268,8 @@ def test_shortlist_keeps_core_relevance_and_recent_classic_coverage(engine):
     for p in data['papers']:p['relevance']='core'
     data['papers'].append(paper_record({'title':'Background review','year':2026,'citation_count':9999}))
     data['papers'][-1]['relevance']='adjacent'
-    engine._select_shortlist(data)
-    ids={p['paper_id'] for p in engine._related(data)}
+    ranked=engine._ranked_candidates(data)[:4]
+    ids={p['paper_id'] for p in ranked}
     assert data['papers'][0]['paper_id'] in ids and data['papers'][7]['paper_id'] in ids
     assert data['papers'][-1]['paper_id'] not in ids
 
@@ -300,7 +301,7 @@ def test_deepseek_summary_receives_original_and_preserves_its_exact_text(engine)
             response.content=json.dumps(result)
         return response
     engine.llm.chat=writer;data=first(engine)
-    assert payloads and all(p['material']['source_type']=='fulltext' and 'Methods:' in p['material']['pages'][0]['text'] for p in payloads[0]['papers'])
+    assert payloads and all(p['material']['source_type']=='fulltext' and 'Methods:' in p['material']['passages'][0]['text'] for p in payloads[0]['papers'])
     assert all(p['summary_zh']==paragraph and p['summary_basis']=='fulltext' for p in data['papers'])
     assert all(p['summary_source_hash'] and p['summary_prompt_hash'] for p in data['papers'])
     assert not data['reading'] and not data['approved_revision'] and not data['run_id']
@@ -309,22 +310,22 @@ def test_deepseek_summary_receives_original_and_preserves_its_exact_text(engine)
     assert engine.llm.calls==calls  # Completed unchanged summaries are checkpointed.
 
 
-def test_abstract_summary_is_ai_authored_and_never_claims_fulltext(engine):
+def test_abstract_only_sources_never_get_summary_or_first_review(engine):
     engine.sources.abstract_only=True;original=engine.llm.chat;payloads=[]
     def capture(messages,*,system,**kwargs):
         if system==PROMPTS['summarize']:payloads.append(json.loads(messages[0]['content']))
         return original(messages,system=system,**kwargs)
     engine.llm.chat=capture;data=first(engine)
-    assert all(p['material']['source_type']=='abstract' and 'pages' not in p['material'] for p in payloads[0]['papers'])
-    assert all(p['summary_basis']=='abstract' and p['fulltext_status']=='abstract_only' for p in data['papers'])
-    assert not data['reading']
+    assert not payloads and not engine._related(data)
+    assert data['status']=='blocked' and not data['reading']
+    assert all(not p.get('summary_zh') and not p.get('in_shortlist') for p in data['papers'])
 
 
 def test_no_source_has_no_title_stitched_or_generated_summary(engine):
     engine.sources.abstract_only=True
     for p in engine.sources.rows:p['abstract']=''
     data=first(engine)
-    assert data['phase']=='literature_review' and 'summarize' not in engine.llm.calls
+    assert data['status']=='blocked' and 'summarize' not in engine.llm.calls
     assert all(not p['overview'] and not p['summary_zh'] and p['summary_state']=='awaiting_source' for p in data['papers'])
 
 
@@ -339,3 +340,146 @@ def test_screen_requires_only_relevance_and_reason(engine):
         return response
     engine.llm.chat=triage;data=first(engine)
     assert data['status']=='waiting' and all(p['summary_state']=='ready' for p in data['papers'])
+
+
+def test_unavailable_originals_are_replaced_without_entering_review(engine):
+    engine.sources=Sources(12)
+    engine.sources.fail_ids={p['paper_id'] for p in engine.sources.rows[:5]}
+    data=engine.create('Generic method with independent verification',paper_limit=4)
+    data=wait(engine,data['session_id']);related=engine._related(data)
+    assert data['status']=='waiting' and len(related)==4
+    assert not engine.sources.fail_ids.intersection(p['paper_id'] for p in related)
+    assert all(p['summary_basis']=='fulltext' and p['selection']['evidence'] for p in related)
+    assert all(not p['in_shortlist'] and not p.get('summary_zh') for p in data['papers'] if p['paper_id'] in engine.sources.fail_ids)
+    assert len(set(engine.sources.fulltext_calls))<=12
+    assert not data['approved_revision'] and not data['reading'] and not data['run_id']
+
+
+def test_high_citations_cannot_override_fulltext_method_failure(engine):
+    engine.sources=Sources(6);engine.sources.rows[0]['citation_count']=999999
+    original=engine.llm.chat
+    def quality(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            payload=json.loads(messages[0]['content']);result=json.loads(response.content)
+            for row,paper in zip(result['papers'],payload['papers']):
+                if paper['title']=='LS method 0':
+                    row['selection'].update(decision='exclude',rigor='weak',reason='所给正文缺少支持核心结论的有效对照')
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=quality;data=engine.create('Generic independent method validation',paper_limit=3)
+    data=wait(engine,data['session_id']);rejected=data['papers'][0]
+    assert data['status']=='waiting' and len(engine._related(data))==3
+    assert rejected['fulltext_status']=='downloaded' and not rejected['in_shortlist']
+    assert rejected['selection']['rigor']=='weak'
+
+
+def test_fabricated_selection_quote_is_rejected_before_first_gate(engine):
+    original=engine.llm.chat
+    def invented(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            result=json.loads(response.content)
+            for row in result['papers']:row['selection']['evidence'][0]['quote']='This quotation has no match in the supplied paper.'
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=invented;data=first(engine)
+    assert data['status']=='blocked' and not data.get('curation_version') and not data['approved_revision']
+    assert not data['reading'] and not data['cards'] and not data['run_id']
+
+
+def test_added_paper_requires_curation_before_direction_approval(engine):
+    from researchclaw.ideation.store import SessionError
+    data=first(engine)
+    row=paper_record({'title':'New relevant paper','doi':'10.1234/supplement','abstract':'An independent experimental design with controls.'})
+    changed=engine.add_paper(data['session_id'],data['revision'],row)
+    with pytest.raises(SessionError,match='整理全文文献'):
+        engine.confirm_direction(changed['session_id'],changed['revision'])
+    with pytest.raises(SessionError,match='全文'):
+        engine.review_literature(changed['session_id'],changed['revision'],[row['paper_id']],[])
+    assert not changed['approved_revision'] and row['paper_id'] not in {p['paper_id'] for p in engine._related(changed)}
+
+
+def test_selection_page_can_be_corrected_only_from_exact_unique_same_paper_quote(engine):
+    original=engine.llm.chat
+    def wrong_label(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            result=json.loads(response.content)
+            for row in result['papers']:row['selection']['evidence'][0]['location']='invented section label'
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=wrong_label;data=first(engine)
+    assert data['status']=='waiting'
+    for paper in engine._related(data):
+        e=paper['selection']['evidence'][0]
+        assert e['location']=='第 2 页' and e['model_location']=='invented section label'
+        assert e['citation_resolution']=='unique_exact_quote'
+
+
+def test_summary_excerpts_keep_entire_original_and_model_selects_source_ids(engine):
+    original=engine.llm.chat;materials=[]
+    def references(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            payload=json.loads(messages[0]['content']);result=json.loads(response.content)
+            for row,paper in zip(result['papers'],payload['papers']):
+                material=paper['material'];materials.append(material)
+                row['selection'].pop('evidence')
+                row['selection']['evidence_refs']=[material['passages'][0]['passage_id']]
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=references;data=first(engine)
+    assert data['status']=='waiting'
+    for material,paper in zip(materials,engine.sources.rows):
+        assert 'pages' not in material
+        assert ''.join(p['text'] for p in material['passages'])==engine.sources.fulltext(paper,None)['pages'][0]['text']
+    for p in engine._related(data):
+        evidence=p['selection']['evidence'][0]
+        assert evidence['passage_id'] in p['selection']['evidence_refs']
+        assert len(evidence['quote'])==160 and evidence['location']=='第 2 页'
+
+
+def test_summary_cannot_use_unknown_source_ids(engine):
+    original=engine.llm.chat
+    def unknown(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            result=json.loads(response.content)
+            for row in result['papers']:row['selection']['evidence_refs']=['unknown-source-id']
+            response.content=json.dumps(result)
+        return response
+    engine.llm.chat=unknown;data=first(engine)
+    assert data['status']=='blocked' and not data['approved_revision'] and not data['cards']
+
+
+def test_long_technical_overview_is_sent_back_to_ai_instead_of_program_shortening(engine):
+    original=engine.llm.chat;attempts=[]
+    def verbose(messages,*,system,**kwargs):
+        response=original(messages,system=system,**kwargs)
+        if system==PROMPTS['summarize']:
+            attempts.append(json.loads(messages[0]['content']))
+            if len(attempts)==1:
+                result=json.loads(response.content)
+                result['papers'][0]['overview']['method']='专业术语和长流程'*50
+                response.content=json.dumps(result)
+        return response
+    engine.llm.chat=verbose;data=first(engine)
+    assert data['status']=='waiting' and len(attempts)==2
+    assert '160' in attempts[1]['validation_feedback']['errors'][0]['error']
+    assert all(p['overview']['method']=='DEM汇流' for p in engine._related(data))
+
+
+def test_missing_required_original_cannot_be_skipped_via_direction_confirmation(engine):
+    from researchclaw.ideation.store import SessionError
+    data=first(engine);sid=data['session_id']
+    row=paper_record({'title':'Required unavailable method','doi':'10.1234/required-unavailable','abstract':'A related method needing unavailable original material.'})
+    engine.sources.fail_ids.add(row['paper_id'])
+    changed=engine.add_paper(sid,data['revision'],row)
+    engine.acquire_fulltexts(sid,changed['revision']);done=wait(engine,sid)
+    assert done['status']=='blocked' and done.get('curation_version') is None and not done['approved_revision']
+    with pytest.raises(SessionError):engine.confirm_direction(sid,done['revision'])
+    # The compatibility endpoint also cannot drop the requested paper.
+    done['curation_version']=1;engine.store.save(done)
+    with pytest.raises(SessionError,match='指定论文'):
+        engine.review_literature(sid,done['revision'],[p['paper_id'] for p in engine._related(done)],[])

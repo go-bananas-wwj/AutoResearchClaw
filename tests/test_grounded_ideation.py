@@ -59,6 +59,11 @@ class LLM:
         elif stage in ('screen','summarize','neighbors'):
             result = {'papers':[{'paper_id':p['paper_id'],'relevance':'off_topic' if self.off_topic else 'core',
                 'reason':'相关：分析坡长与坡度','relationship':'same_mechanism','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','method':'DEM汇流','strengths':'提供对照','limitations':'摘要未说明'}} for p in data['papers']]}
+            if stage == 'summarize':
+                for row,paper in zip(result['papers'],data['papers']):
+                    page=paper['material']['passages'][0]
+                    row['selection']={'decision':'include','fit':'direct','rigor':'adequate','reason':'方法和验证直接回答用户的问题',
+                        'evidence':[{'location':page['location'],'quote':page['text'][:80]}]}
         elif stage == 'read':
             p = data['passages'][0]
             result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
@@ -160,9 +165,10 @@ def test_must_read_is_not_optional(engine):
     engine.sources=Sources(4)
     pid=engine.sources.rows[0]['paper_id'];engine.sources.fail_ids={pid}
     data=first(engine)
-    engine.review_literature(data['session_id'],data['revision'],[p['paper_id'] for p in data['papers']],[pid])
-    data=wait(engine,data['session_id'])
-    assert len(data['reading'])==3 and data['status']=='blocked' and 'LS method 0' in data['missing'][0]
+    with pytest.raises(SessionError,match='全文'):
+        engine.review_literature(data['session_id'],data['revision'],[p['paper_id'] for p in data['papers']],[pid])
+    assert not engine.snapshot(data['session_id'])['approved_revision']
+    assert pid not in {p['paper_id'] for p in engine._related(data)}
 
 
 def test_revision_invalidation_and_session_isolation(engine):
@@ -390,7 +396,7 @@ def test_summary_refresh_is_presentation_only(engine):
     assert done['phase']=='literature_review' and done['status']=='waiting'
     assert not done['reading'] and not done['cards'] and not done['run_id']
     assert engine.sources.fulltext_calls==downloads and engine.llm.calls[len(before):]==['summarize']
-    assert all(p['summary_version']==3 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
+    assert all(p['summary_version']==4 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
 
 
 def test_backfill_uses_related_reserve_and_never_exceeds_fifteen(engine):

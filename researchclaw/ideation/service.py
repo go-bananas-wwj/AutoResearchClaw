@@ -203,10 +203,10 @@ class IdeationService:
             self.sources.progress = lambda paper, message: self._progress(data, event, message,
                 paper_id=paper["paper_id"], title=paper["title"], operation="download")
             if data.get("download_task"):
-                self._acquire_fulltexts(data, event, attempt_id=data["download_task"]["attempt_id"])
-                self._summarize_selected(data, event)
-                previous = data.pop("download_task")
-                data.update(status=previous["return_status"], missing=previous["return_missing"])
+                previous = dict(data["download_task"])
+                self._curate_fulltext_literature(data, event, attempt_id=data["download_task"]["attempt_id"])
+                data.pop("download_task", None)
+                data.update(status="waiting" if data.get("approved_revision") is None else previous["return_status"], missing=[])
                 data.pop("progress", None)
                 data.pop("progress_message", None)
                 self._save(data, event)
@@ -255,6 +255,7 @@ class IdeationService:
             self.store.require_revision(data, revision)
             self._editable(data)
             self.store.invalidate(data, "补充论文")
+            data.pop("curation_version", None)
             row = {**row, "selected": True, "required": True, "relevance": "core",
                    "reason": "用户补充，请审核相关性", "summary_zh": ""}
             data["papers"] = [p for p in data["papers"] if p["paper_id"] != row["paper_id"]] + [row]
@@ -290,33 +291,93 @@ class IdeationService:
 
     def _related(self, data):
         related = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent")
-                   and not p.get("user_excluded") and p.get("in_shortlist") is not False]
+                   and not p.get("user_excluded") and p.get("in_shortlist") is not False
+                   and p.get("fulltext_status") in ("downloaded", "read")
+                   and self._summary_material(data, p) is not None]
         return related[:self.paper_limit(data)]
 
-    def _select_shortlist(self, data):
-        limit = self.paper_limit(data)
+    def _ranked_candidates(self, data):
         eligible = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded")]
-        pinned = [p for p in eligible if p.get("required")]
-        if len(pinned) > limit:
-            raise SessionError("补充文献已超过本会话上限，请提高上限或移除部分文献。", 400)
-        chosen = list(pinned)
+        ordered = [p for p in eligible if p.get("required")]
         for kind in ("core", "adjacent"):
             group = [p for p in eligible if p.get("relevance") == kind]
             recent = sorted(group, key=lambda p: -int(p.get("year") or 0))
             classic = sorted(group, key=lambda p: (-int(p.get("citation_count") or 0), int(p.get("year") or 0)))
-            # Alternate newer work and established work after semantic relevance screening.
             for pair in zip(recent, classic):
                 for paper in pair:
-                    if len(chosen) < limit and paper["paper_id"] not in {p["paper_id"] for p in chosen}:
-                        chosen.append(paper)
+                    if paper["paper_id"] not in {p["paper_id"] for p in ordered}:
+                        ordered.append(paper)
+        return ordered
+
+    def _select_shortlist(self, data):
+        limit = self.paper_limit(data)
+        ranked = self._ranked_candidates(data)
+        if sum(bool(p.get("required")) for p in ranked) > limit:
+            raise SessionError("补充文献已超过本会话上限，请移除部分文献。", 400)
+        eligible = [p for p in ranked if p.get("fulltext_status") in ("downloaded", "read")
+                    and self._summary_material(data, p) is not None
+                    and (p.get("selection") or {}).get("decision") == "include"]
+        # Fulltext-grounded relevance and rigor precede citation counts or recency.
+        eligible.sort(key=lambda p: (not p.get("required"),
+            (p.get("selection") or {}).get("fit") != "direct",
+            (p.get("selection") or {}).get("rigor") != "strong"))
+        chosen = eligible[:limit]
         ids = {p["paper_id"] for p in chosen}
         for paper in data["papers"]:
             paper["in_shortlist"] = paper["paper_id"] in ids
-            paper["selection_reason"] = "核心/邻近相关，兼顾近期与经典工作" if paper["in_shortlist"] else "不相关或超出本轮文献上限"
+            paper["selection_reason"] = (paper.get("selection") or {}).get("reason") or "尚未完成全文筛选"
         data.update(shortlist_ready=True, selection_stats={"candidates": len(data["papers"]), "selected": len(ids), "limit": limit})
 
+    def _curate_fulltext_literature(self, data, event, attempt_id=None):
+        """Only readable full texts with model-grounded selection enter the human review."""
+        ranked = self._ranked_candidates(data)
+        limit = self.paper_limit(data)
+        old_ids = {p["paper_id"] for p in data["papers"] if p.get("in_shortlist")}
+        data.pop("curation_version", None)
+        attempt_id = attempt_id or f"scope-r{data['revision']}"
+        ready = []
+        # The retrieval candidate ceiling bounds network attempts even when many originals fail.
+        start = 0
+        while start < min(len(ranked), MAX_CANDIDATES) and len(ready) < limit:
+            batch = ranked[start:start + min(4, limit - len(ready), MAX_CANDIDATES - start)]
+            for index, paper in enumerate(batch, start + 1):
+                self._check(data, event)
+                if paper.get("fulltext_attempt_id") != attempt_id or self._summary_material(data, paper) is not None:
+                    self._progress(data, event, "正在获取并筛选可阅读全文的论文", operation="download", unit="篇",
+                                   current=index, total=min(len(ranked), MAX_CANDIDATES), title=paper["title"], paper_id=paper["paper_id"])
+                    try:
+                        self._obtain_fulltext(data, event, paper)
+                        paper.pop("fulltext_error", None)
+                    except Cancelled:
+                        raise
+                    except Exception as exc:
+                        paper.update(fulltext_status="failed", fulltext_error=str(exc)[:500])
+                    paper["fulltext_attempt_id"] = attempt_id
+                if self._summary_material(data, paper) is None:
+                    paper.update(in_shortlist=False, selected=False, overview={}, summary_zh="", summary_basis=None,
+                                 summary_state="unavailable", shortlist_exclusion="未取得可用于阅读的完整正文")
+                self._save(data, event)
+            start += len(batch)
+            self._summarize_selected(data, event, papers=batch)
+            ready += [p for p in batch if (p.get("selection") or {}).get("decision") == "include" and self._summary_material(data, p) is not None]
+            self._select_shortlist(data)
+            self._save(data, event)
+        self._select_shortlist(data)
+        new_ids = {p["paper_id"] for p in self._related(data)}
+        if data["phase"] != "retrieval" and old_ids != new_ids:
+            self.store.invalidate(data, "全文筛选改变文献范围")
+            self._select_shortlist(data)
+        self._save(data, event)
+        missing = [p["title"] for p in ranked if p.get("required") and p["paper_id"] not in new_ids]
+        if missing:
+            raise WorkflowFailure("指定论文未通过全文获取或正文检查，请补充原文：" + "；".join(missing), "evidence", "required_fulltext_missing")
+        if not new_ids:
+            raise WorkflowFailure("本轮没有取得既相关又能阅读全文的合格论文，请补充PDF或调整方向后重试。", "evidence", "no_readable_literature")
+        data["curation_version"] = 1
+        self._save(data, event)
+
     def acquire_fulltexts(self, sid, revision):
-        """Cache related originals without changing scope, approvals or reading conclusions."""
+        """Curate readable originals; scope changes invalidate downstream approval."""
         with self.store.lock:
             data = self.snapshot(sid)
             self.store.require_revision(data, revision)
@@ -390,7 +451,13 @@ class IdeationService:
     def _summary_work(self, sid, event, previous):
         data = self.snapshot(sid)
         try:
+            old_ids = {p["paper_id"] for p in self._related(data)}
             self._summarize_selected(data, event, force=True)
+            if data.get("approved_revision") is None:
+                self._select_shortlist(data)
+                if old_ids != {p["paper_id"] for p in self._related(data)}:
+                    self.store.invalidate(data, "正文检查改变推荐文献")
+                    self._select_shortlist(data)
             data["status"] = previous
         except Cancelled:
             data.update(status="stopped")
@@ -409,15 +476,19 @@ class IdeationService:
             size = sum(len(p.get("text", "")) for p in pages)
             if 2000 <= size <= 180_000:
                 return {"source_type": "fulltext", "pages": pages}
-        abstract = paper.get("abstract") or ""
-        if len(re.sub(r"\W", "", abstract)) >= 20:
-            return {"source_type": "abstract", "abstract": abstract}
         return None
 
-    def _summarize_selected(self, data, event, force=False):
+    @staticmethod
+    def _summary_excerpts(paper_id, material):
+        """Lossless source segmentation; these are excerpts, never generated summaries."""
+        return [{"passage_id": paper_id + ":overview:" + fingerprint([page["location"], start, page["text"][start:start + 160]])[:16],
+                 "location": page["location"], "text": page["text"][start:start + 160]}
+                for page in material["pages"] for start in range(0, len(page["text"]), 160)]
+
+    def _summarize_selected(self, data, event, force=False, papers=None):
         """DeepSeek writes every content field; code selects sources and validates structure only."""
         tasks = []
-        for paper in self._related(data):
+        for paper in (self._related(data) if papers is None else papers):
             if paper["paper_id"] in data["reading"]:
                 continue
             material = self._summary_material(data, paper)
@@ -425,7 +496,7 @@ class IdeationService:
                 self._apply_summary(paper, {})
                 continue
             source_hash = fingerprint(material)
-            if not force and paper.get("summary_source_hash") == source_hash and paper.get("summary_prompt_hash") == fingerprint(PROMPTS["summarize"]) and paper.get("summary_version") == 3:
+            if not force and paper.get("summary_source_hash") == source_hash and paper.get("summary_prompt_hash") == fingerprint(PROMPTS["summarize"]) and paper.get("summary_version") == 4:
                 continue
             tasks.append((paper, material, source_hash))
         completed = 0
@@ -439,7 +510,9 @@ class IdeationService:
                 batch.append(tasks.pop(0)); size += count
             self._progress(data, event, "正在由DeepSeek阅读材料并撰写论文概览", operation="summarize",
                            current=completed + 1, total=completed + len(batch) + len(tasks), unit="篇", title="", paper_id="")
-            payload = {"papers": [{"paper_id": p["paper_id"], "title": p["title"], "material": material}
+            payload = {"direction": data["direction"], "papers": [{"paper_id": p["paper_id"], "title": p["title"],
+                                   "year": p.get("year"), "venue": p.get("venue"), "venue_type": p.get("venue_type"),
+                                   "material": {"source_type": "fulltext", "passages": self._summary_excerpts(p["paper_id"], material)}}
                                    for p, material, _ in batch]}
             for attempt in range(2):
                 result = self._json(data, event, "summarize", payload)
@@ -452,13 +525,15 @@ class IdeationService:
                         paper, material, _ = by_id[row["paper_id"]]
                         try:
                             self._apply_summary(copy.deepcopy(paper), row, material)
-                        except SessionError:
-                            errors.append(row["paper_id"] + "缺少overview.problem/method/strengths/limitations或summary_zh")
+                        except SessionError as exc:
+                            errors.append({"paper_id": row["paper_id"], "error": str(exc),
+                                           "invalid_evidence": (row.get("selection") or {}).get("evidence", [])})
                 if valid_ids and not errors:
                     break
                 if attempt:
                     raise WorkflowFailure("AI论文概览返回不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_overview")
-                payload["validation_feedback"] = "完整返回全部给定ID及非空字符串字段。" + "；".join(errors) + "。材料未说明的内容请明确写未报告，不编造。"
+                payload["validation_feedback"] = {"errors": errors, "required_ids": list(by_id),
+                    "instruction": "重新返回完整JSON。概览每项不超过160字符，用普通人能懂的短句。selection.evidence_refs只需选择本篇1–2个能支持判断的输入passage_id，不自己抄写引文或编造页码；服务器会展示对应原文。材料未说明的内容写未报告。"}
             for row in rows:
                 paper, material, source_hash = by_id[row["paper_id"]]
                 self._apply_summary(paper, row, material)
@@ -469,17 +544,44 @@ class IdeationService:
 
     @staticmethod
     def _apply_summary(paper, info, material=None):
-        basis = material.get("source_type") if material else "abstract" if len(re.sub(r"\W", "", paper.get("abstract") or "")) >= 20 else None
+        basis = material.get("source_type") if material else None
         if not basis:
-            paper.update(overview={}, summary_zh="", summary_basis=None, summary_state="awaiting_source", summary_version=3)
+            paper.update(overview={}, summary_zh="", summary_basis=None, summary_state="awaiting_source", summary_version=4)
             paper.pop("summary_source_hash", None)
             return
         overview = info.get("overview") or {}
         if not isinstance(info.get("summary_zh"), str) or not info["summary_zh"].strip() or not all(
                 isinstance(overview.get(k), str) and overview[k].strip() for k in ("problem", "method", "strengths", "limitations")):
             raise WorkflowFailure("AI论文概览返回不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_overview")
+        if any(len(overview[k]) > 160 for k in ("problem", "method", "strengths", "limitations")):
+            raise SessionError("概览太长：每项用零基础读者能懂的1–2个短句，硬上限160字符；删掉算法清单、参数与长流程，用普通话保留核心意思。")
+        selection = info.get("selection") or {}
+        if selection.get("decision") not in ("include", "exclude") or selection.get("fit") not in ("direct", "supporting", "off_topic") or selection.get("rigor") not in ("strong", "adequate", "weak", "unclear") or not selection.get("reason"):
+            raise SessionError("缺少基于正文的相关性与方法质量判断。")
+        if "evidence_refs" in selection:
+            refs = selection["evidence_refs"]
+            excerpts = {p["passage_id"]: p for p in IdeationService._summary_excerpts(paper["paper_id"], material)}
+            if not isinstance(refs, list) or not 1 <= len(refs) <= 2 or any(not isinstance(ref, str) or ref not in excerpts for ref in refs):
+                raise SessionError("selection.evidence_refs必须选择本篇输入中1–2个真实原文片段ID，不能引用其他论文或未知编号。")
+            selection["evidence"] = [{"passage_id": ref, "location": excerpts[ref]["location"], "quote": excerpts[ref]["text"]} for ref in refs]
+        evidence = selection.get("evidence") or []
+        pages = material.get("pages", [])
+        if not evidence:
+            raise SessionError("selection.evidence缺少原文引文。")
+        for index, item in enumerate(evidence, 1):
+            if not isinstance(item, dict) or not isinstance(item.get("quote"), str) or not 12 <= len(item["quote"]) <= 200:
+                raise SessionError(f"selection第{index}条引文必须为12–200字符；请只摘一个连续短句，不复制整段。")
+            matches = [page for page in pages if quoted(item["quote"]) in quoted(page.get("text", ""))]
+            if not any(item.get("location") == page.get("location") for page in matches) and len(matches) == 1:
+                item.update(model_location=item.get("location"), location=matches[0]["location"],
+                            citation_resolution="unique_exact_quote")
+            if not any(item.get("location") == page.get("location") for page in matches):
+                raise SessionError(f"selection第{index}条引文未在对应页码逐字匹配。请重新从原文复制连续短句，保留断行连字符。")
+        if selection["decision"] == "include" and (selection["fit"] == "off_topic" or selection["rigor"] in ("weak", "unclear")):
+            raise SessionError("相关性或方法依据不足的论文不能入选。")
+        paper["selection"] = selection
         paper.update(overview=overview, summary_zh=info["summary_zh"], summary_basis=basis,
-                     summary_state="ready", summary_version=3)
+                     summary_state="ready", summary_version=4)
 
     def revise_scope(self, sid, revision, direction):
         with self.store.lock:
@@ -504,6 +606,8 @@ class IdeationService:
             if data["phase"] != "literature_review":
                 raise SessionError("请等待相关文献调研完成后确认研究方向。")
             related = self._related(data)
+            if data.get("curation_version") != 1:
+                raise SessionError("请先点击整理全文文献，完成原文与方法质量筛选。")
             if not related:
                 raise SessionError("暂未找到相关文献，请调整研究方向后重新调研。")
             return self.review_literature(sid, revision, [p["paper_id"] for p in related],
@@ -545,11 +649,16 @@ class IdeationService:
             data = self.snapshot(sid)
             self.store.require_revision(data, revision)
             self._editable(data)
-            ids = {p["paper_id"] for p in data["papers"] if not p.get("user_excluded")}
+            ids = {p["paper_id"] for p in self._related(data)}
+            if data.get("curation_version") != 1:
+                raise SessionError("须先完成全文与方法质量筛选。")
+            pinned = {p["paper_id"] for p in data["papers"] if p.get("required") and not p.get("user_excluded")}
+            if not pinned <= set(selected):
+                raise SessionError("指定论文尚未通过全文筛选，不能跳过；请补充原文或明确移除该论文。")
             if len(selected) > self.paper_limit(data):
                 raise SessionError("保留文献数量超过本会话上限。", 400)
             if not selected or not set(selected) <= ids or not set(required) <= set(selected):
-                raise SessionError("须保留真实论文，且必读论文必须在保留列表中。", 400)
+                raise SessionError("只能确认通过全文筛选的论文；指定论文也必须有可读正文。", 400)
             if len(required) > 15:
                 raise SessionError("必读论文最多15篇，请缩小范围。", 400)
             self._ensure_capacity()
@@ -743,8 +852,8 @@ class IdeationService:
         self._select_shortlist(data)
         self._save(data, event)
         self._enrich_papers(data, event)
-        self._acquire_fulltexts(data, event)
-        self._summarize_selected(data, event)
+        self._curate_fulltext_literature(data, event)
+        self._enrich_papers(data, event)
         data.pop("progress_message", None)
         data.pop("progress", None)
         data.update(phase="literature_review", status="waiting", missing=[])
@@ -754,7 +863,7 @@ class IdeationService:
         enrich = getattr(self.sources, "enrich_metadata", None)
         if enrich is None:
             return
-        papers = [p for p in self._related(data) if p.get("bibliography_version") != 1]
+        papers = [p for p in (self._related(data) or self._ranked_candidates(data)[:self.paper_limit(data)]) if p.get("bibliography_version") != 1]
         with ThreadPoolExecutor(max_workers=4) as pool:
             pending = {pool.submit(enrich, p): p for p in papers}
             for future in as_completed(pending):
@@ -781,7 +890,7 @@ class IdeationService:
         by_id = {c["passage_id"]: c for c in chunks}
         payload = {"paper": paper["title"], "passages": chunks}
         for attempt in range(2):
-            self._progress(data, event, "正在精读并核对原文引文" + ("（校正引文）" if attempt else ""),
+            self._progress(data, event, "正在核对论文方法与原文依据" + ("（校正引文）" if attempt else ""),
                            paper_id=key, title=paper["title"], operation="read")
             result = self._json(data, event, "read", payload)
             evidence = result.get("evidence") or []
@@ -816,7 +925,7 @@ class IdeationService:
         data["reading"][key] = result
         paper["fulltext_status"] = "read"
         paper.update(overview={"problem": result["problem"], "method": result["method"],
-                     "strengths": result["strengths"], "limitations": result["limitations"]}, summary_basis="fulltext", summary_version=3)
+                     "strengths": result["strengths"], "limitations": result["limitations"]}, summary_basis="fulltext", summary_version=4)
         self._save(data, event)
         return result
 
@@ -894,7 +1003,7 @@ class IdeationService:
             core_read = sum(p.get("relevance") == "core" and p["paper_id"] in data["reading"] for p in chosen)
             if missing or core_read < 3:
                 downloaded = sum(p.get("fulltext_status") == "downloaded" for p in pool[:15])
-                raise WorkflowFailure(f"已完成{core_read}篇核心论文精读，另有{downloaded}篇已取得正文但精读核对未通过。至少需要3篇核心论文的可靠正文证据。" +
+                raise WorkflowFailure(f"已完成{core_read}篇核心论文的依据核对，另有{downloaded}篇已取得正文但原文核对未通过。至少需要3篇核心论文的可靠正文证据。" +
                                    ("缺少指定论文：" + "；".join(missing) if missing else "请查看论文详情中的处理结果后重试。"), "evidence", "core_fulltext_missing")
             data.pop("refresh_evidence", None)
             data["phase"] = "synthesis"
