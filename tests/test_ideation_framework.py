@@ -131,7 +131,7 @@ def test_the_same_framework_reaches_idea_gate_for_other_domains(engine,direction
             for row in r['papers']:
                 row['reason']='Relevant to '+topic
                 if 'overview' in row:
-                    row['overview']={'problem':direction,'method':'Controlled comparison','strengths':'Evidence-based comparison','limitations':'Declared validation conditions'}
+                    row['overview']={'problem':direction,'background':'Prior methods and stated boundaries','innovation':'A declared mechanism difference','method':'Controlled comparison','data':'Declared observations','results':'Conditional verification','strengths':'Evidence-based comparison','limitations':'Declared validation conditions'}
                     row['summary_zh']='Controlled comparison for '+topic
         elif system==PROMPTS['read']:
             r.update(problem=direction,method='Controlled comparison of the declared mechanism',data='Declared experimental inputs',findings='Conditional measured finding',limitations='Declared validation conditions')
@@ -499,4 +499,114 @@ def test_summary_missing_selection_comma_preserves_model_text_and_avoids_repeat_
     engine.llm.chat=missing_comma;data=first(engine)
     assert data['status']=='waiting' and engine.llm.calls.count('summarize')==1
     assert all(p['summary_zh']=='基于DEM的LS计算。' for p in engine._related(data))
-    assert next(u for u in data['usage'] if u['stage']=='summarize')['json_syntax_repair']=='missing_comma_before_selection'
+    assert next(u for u in data['usage'] if u['stage']=='summarize')['json_syntax_repair']=='bounded_structural_punctuation'
+
+
+def test_presentation_refresh_updates_all_sections_without_changing_approved_evidence(engine):
+    data=develop(engine);sid=data['session_id'];approved=data['approved_revision']
+    notes=json.loads(json.dumps(data['reading']));cards=json.loads(json.dumps(data['cards']))
+    selections={p['paper_id']:p['selection'] for p in data['papers']}
+    engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
+    assert done['reading']==notes and done['cards']==cards and done['approved_revision']==approved
+    assert done['revision']==data['revision'] and not done['run_id']
+    assert all(p['summary_version']==5 and set(p['overview'])=={'problem','background','innovation','method','data','results','strengths','limitations'} for p in done['papers'])
+    assert {p['paper_id']:p['selection'] for p in done['papers']}==selections
+
+
+def test_unlimited_setting_restores_budget_block_and_keeps_usage(engine):
+    data=first(engine);sid=data['session_id']
+    data.update(status='blocked',budget_usd=.000001,blocker={'category':'budget','code':'budget_exhausted'},missing=['budget'])
+    engine.store.save(data);engine.config.hitl.cost_budget_usd=0
+    engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
+    assert done['budget_usd']==0 and done['status']=='waiting' and done['missing']==[]
+    assert done['cost_usd']>data['cost_usd'] and len(done['usage'])>len(data['usage'])
+    assert any(r.get('event')=='budget_policy' for r in done['reviews'])
+
+
+def test_classic_and_citation_routes_are_screened_and_checkpointed(engine):
+    sources=Sources(4);sources.citation_calls=[]
+    older=paper_record({'title':'Foundational method','doi':'10.1234/foundation','url':'https://example.org/foundation','year':1990,'citation_count':1000,'abstract':'A foundation for measuring the declared mechanism.'})
+    newer=paper_record({'title':'Recent follow-up','doi':'10.1234/followup','url':'https://example.org/followup','year':2026,'citation_count':0,'abstract':'Recent verification of the declared mechanism.'})
+    def neighbors(seed,limit=8):
+        sources.citation_calls.append(seed['paper_id'])
+        return [json.loads(json.dumps(older)),json.loads(json.dumps(newer))]
+    sources.citation_neighbors=neighbors;engine.sources=sources
+    data=first(engine)
+    assert data['status']=='waiting' and len(sources.citation_calls)==3
+    assert data['plan']['queries'][0]['period']=='classic' and any(q['period']=='recent' for q in data['plan']['queries'])
+    assert older['paper_id'] in {p['paper_id'] for p in engine._related(data)}
+    assert newer['paper_id'] in {p['paper_id'] for p in engine._related(data)}
+    before=list(sources.citation_calls);engine._expand_citations(data,threading.Event(),data['papers'],60)
+    assert sources.citation_calls==before and len(data['citation_seed_ids'])==3
+
+
+def test_source_assets_are_preserved_with_truthful_format_labels(engine):
+    data=first(engine);directory=engine.store.directory(data['session_id'])
+    index=json.loads((directory/'related work'/'index.json').read_text())
+    assert len(index['papers'])==3
+    for paper in data['papers']:
+        assets=paper['reading_assets'];text=(directory/assets['extracted_text']).read_text()
+        assert 'Methods:' in text and assets['latex_source'] is None and 'pdf' not in assets
+        assert paper['overview']['data']=='DEM与独立观测'
+
+
+def test_extra_json_closers_are_removed_without_touching_literal_strings():
+    from researchclaw.ideation.service import summary_json
+    payload={'papers':[{'paper_id':'P1','overview':{'method':'Literal braces stay: }] and escaped quote: "'},'summary_zh':'AI original text'}]}
+    raw=json.dumps(payload)
+    broken=raw[:-2]+'}]}]}'
+    restored,repaired=summary_json(broken)
+    assert repaired and restored==payload
+    with pytest.raises(ValueError):summary_json('{"papers":[{"paper_id":"P1"')
+
+
+def test_cached_abstract_landing_is_quarantined_and_refetched(engine):
+    data=first(engine);paper=data['papers'][0];directory=engine.store.directory(data['session_id'])
+    target=directory/'fulltext'/(paper['paper_id']+'.json')
+    target.write_text(json.dumps({'pages':[{'location':'HTML正文','text':'## Abstract\n'+('Methods in abstract. '*200)+'\n## References\n'+('Reference methods. '*100)}]}))
+    assert engine._summary_material(data,paper) is None
+    calls=len(engine.sources.fulltext_calls)
+    actual=engine._obtain_fulltext(data,threading.Event(),paper)
+    assert len(engine.sources.fulltext_calls)==calls+1 and actual['pages'][0]['location']=='第 2 页'
+    assert (directory/'rejected_fulltext'/target.name).exists()
+
+
+def test_source_repair_can_keep_existing_scope_without_filling_unrequested_papers(engine):
+    engine.sources=Sources(5);data=first(engine)
+    keep=[p['paper_id'] for p in data['papers'][:4]];data['curation_candidate_ids']=keep
+    engine._curate_fulltext_literature(data,threading.Event())
+    assert {p['paper_id'] for p in engine._related(data)}==set(keep)
+
+
+def test_confirmation_rejects_abstract_landing_even_if_its_hash_was_recorded(engine):
+    from researchclaw.ideation.store import SessionError,fingerprint
+    data=develop(engine);sid=data['session_id'];pid=next(iter(data['reading']))
+    landing={'pages':[{'location':'HTML正文','text':'## Abstract\n'+('Methods only described in abstract. '*100)+'\n## References\n'+('Reference. '*100)}]}
+    path=engine.store.directory(sid)/'fulltext'/(pid+'.json');path.write_text(json.dumps(landing))
+    data['reading'][pid]['source_hash']=fingerprint(landing);engine.store.save(data)
+    with pytest.raises(SessionError):engine.confirmation(sid,data['revision'],data['cards'][0]['card_id'])
+
+
+@pytest.mark.asyncio
+async def test_api_does_not_present_or_serve_legacy_abstract_cache_as_fulltext(engine,monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from researchclaw.server.app import _app_state
+    from researchclaw.server.routes import ideation
+    data=first(engine);sid=data['session_id'];paper=data['papers'][0]
+    path=engine.store.directory(sid)/'fulltext'/(paper['paper_id']+'.json')
+    path.write_text(json.dumps({'pages':[{'location':'HTML正文','text':'## Abstract\n'+('Methods in abstract. '*200)+'\n## References\n'+('Reference. '*100)}]}))
+    app=FastAPI();app.include_router(ideation.router);monkeypatch.setitem(_app_state,'ideation_service',engine)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        current=(await client.get('/api/ideation/sessions/'+sid)).json()
+        assert next(p for p in current['papers'] if p['paper_id']==paper['paper_id'])['fulltext_verified'] is False
+        assert (await client.get(f'/api/ideation/sessions/{sid}/papers/{paper["paper_id"]}/fulltext')).status_code==409
+
+
+def test_invalid_cached_reading_is_not_counted_as_verified_evidence(engine):
+    from researchclaw.ideation.store import SessionError
+    data=develop(engine);pid=next(iter(data['reading']));paper=next(p for p in data['papers'] if p['paper_id']==pid)
+    path=engine.store.directory(data['session_id'])/'fulltext'/(pid+'.json')
+    path.write_text(json.dumps({'pages':[{'location':'HTML正文','text':'## Abstract\n'+('Methods in abstract. '*200)+'\n## References\n'+('Reference. '*100)}]}))
+    with pytest.raises(SessionError):engine._read_paper(data,threading.Event(),paper)
+    assert pid not in data['reading']

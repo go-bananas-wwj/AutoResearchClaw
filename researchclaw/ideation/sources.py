@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -142,12 +144,78 @@ def paper_record(row: dict[str, Any], query: str = "", source: str = "") -> dict
             "required": False}
 
 
+def readable_document(document):
+    """Reject long abstract/reference landing pages masquerading as HTML full text."""
+    pages = document.get("pages") or []
+    full = "\n".join(p.get("text", "") for p in pages)
+    if len(re.sub(r"\s+", "", full)) < 1500:
+        return False
+    if not all(str(p.get("location", "")).startswith("HTML") for p in pages):
+        return True
+    headings = list(re.finditer(r"(?m)^#{1,6}\s+([^\n]+)", full.replace("\r", "")))
+    normalized = full.replace("\r", "")
+    sections = []
+    for index, heading in enumerate(headings):
+        title = heading.group(1).strip()
+        if re.search(r"abstract|references|bibliograph|keywords|acknowledg|author|funding|摘要|参考文献|关键词|致谢", title, re.I):
+            continue
+        if re.search(r"introduction|background|method|material|data|result|discussion|conclusion|study area|theory|analysis|framework|引言|方法|材料|数据|结果|讨论|结论|研究区|理论|分析|框架", title, re.I):
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(normalized)
+            sections.append(re.sub(r"\s+", "", normalized[heading.end():end]))
+    return len([s for s in sections if len(s) >= 200]) >= 2 and sum(len(s) for s in sections) >= 1500
+
+
+def document_matches_paper(paper, document):
+    """Match front matter to the requested work, not a PDF linked in its references."""
+    if paper.get("uploaded_pdf") and paper.get("content_hash") and document.get("upload_sha256") == paper["content_hash"]:
+        return True
+    pages = document.get("pages") or []
+    front = "\n".join(p.get("text", "") for p in pages[:2])[:15000]
+    normalize = lambda text: re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(text)).lower())
+    title = normalize(paper.get("title", ""))
+    if len(title) >= 12 and title in normalize(front):
+        return True
+    first = (pages[0].get("text", "") if pages else "")[:4000]
+    first = re.split(r"(?im)^\s*(?:references|bibliography|参考文献)\s*$", first)[0]
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", first)).lower()
+    doi = str(paper.get("doi") or "").lower().removeprefix("https://doi.org/")
+    if doi and ("doi:" + doi in compact or "doi.org/" + doi in compact or "doi" + doi in compact):
+        return True
+    arxiv_id = str(paper.get("arxiv_id") or "").split("v")[0]
+    return bool(arxiv_id and "arxiv:" + arxiv_id.lower() in compact)
+
+
+def openalex_record(item, query="", relation=""):
+    from researchclaw.literature.openalex_client import _parse_openalex_work
+    parsed = _parse_openalex_work(item).to_dict()
+    return paper_record({**parsed, **openalex_metadata(item), "openalex_id": item.get("id", ""),
+        "discovery_relation": relation, "is_retracted": item.get("is_retracted", False),
+        "pdf_urls": _unique(loc.get("pdf_url") for loc in [item.get("best_oa_location"), item.get("primary_location"), *(item.get("locations") or [])] if loc)}, query, "openalex")
+
+
 class Sources:
     def __init__(self, config: Any):
         self.config = config
 
+    @staticmethod
+    def validate_document(paper, document):
+        return readable_document(document) and document_matches_paper(paper, document)
+
     def search(self, query: str, period: str = "all", source: str = "openalex") -> list[dict[str, Any]]:
         from researchclaw.literature.search import search_papers
+
+        if source == "openalex" and period == "classic":
+            from researchclaw.literature.cache import get_cached, put_cache
+            cached = get_cached(query, "ideation_classic_openalex", 8)
+            if cached:
+                return cached
+            # A classic search has no date floor; citation order is recall, not a quality verdict.
+            params = {"search": query, "sort": "cited_by_count:desc", "per_page": "8"}
+            raw, _, _ = fetch("https://api.openalex.org/works?" + urllib.parse.urlencode(params))
+            rows = [openalex_record(item, query, "classic_search") for item in json.loads(raw).get("results", []) if item.get("title")]
+            if rows:
+                put_cache(query, "ideation_classic_openalex", 8, rows)
+            return rows
 
         if source == "crossref":
             params = {"query.bibliographic": query, "rows": "8"}
@@ -197,6 +265,47 @@ class Sources:
         return paper_record({"title": title, "url": reference, "source": "user_url",
                              "abstract": "", "year": 0}, reference, "user_url")
 
+    def citation_neighbors(self, paper, limit=8):
+        """Bounded backward/forward snowballing around real retrieved seed works."""
+        identity = paper.get("openalex_id") or ("https://doi.org/" + paper["doi"] if paper.get("doi") else "")
+        if not identity:
+            return []
+        from researchclaw.literature.cache import get_cached, put_cache
+        cache_key = "citations:" + identity
+        cached = get_cached(cache_key, "ideation_citations_openalex", limit)
+        if cached:
+            return cached
+        raw, _, _ = fetch("https://api.openalex.org/works/" + urllib.parse.quote(identity, safe=":/"))
+        seed = json.loads(raw)
+        refs = [str(value).rsplit("/", 1)[-1] for value in seed.get("referenced_works", [])]
+        refs = [value for value in refs if re.fullmatch(r"W[0-9]+", value)][:100]
+        branches = []
+        if refs:
+            branches.append(("reference", {"filter": "openalex:" + "|".join(refs), "sort": "cited_by_count:desc", "per_page": str(limit)}))
+        seed_id = str(seed.get("id", "")).rsplit("/", 1)[-1]
+        if re.fullmatch(r"W[0-9]+", seed_id):
+            branches.append(("citing", {"filter": "cites:" + seed_id, "sort": "publication_date:desc", "per_page": str(limit)}))
+        found = {}
+        for relation, params in branches:
+            try:
+                body, _, _ = fetch("https://api.openalex.org/works?" + urllib.parse.urlencode(params))
+                rows = json.loads(body).get("results", [])
+                found[relation] = [openalex_record(item, "引用追踪：" + paper["title"], relation) for item in rows if item.get("title")]
+                for row in found[relation]:
+                    row["discovery_seed_id"] = paper["paper_id"]
+            except Exception:
+                found[relation] = []
+        output = []
+        # Give early foundations and recent follow-ups an equal chance at semantic screening.
+        for index in range(limit):
+            for relation in ("reference", "citing"):
+                rows = found.get(relation, [])
+                if index < len(rows) and len(output) < limit:
+                    output.append(rows[index])
+        if output:
+            put_cache(cache_key, "ideation_citations_openalex", limit, output)
+        return output
+
     def enrich_metadata(self, paper: dict[str, Any]) -> dict[str, Any]:
         """Return verifiable bibliographic fields without changing paper identity or evidence."""
         if paper.get("bibliography_version") == 1:
@@ -215,6 +324,7 @@ class Sources:
                 raw, _, _ = fetch(endpoint, 2 * 1024 * 1024)
                 record = json.loads(raw)
                 metadata = openalex_metadata(record)
+                result["is_retracted"] = bool(record.get("is_retracted", False))
                 result.update({k: v for k, v in metadata.items() if v and v != "unknown"})
                 provenance.append({"source": "OpenAlex", "url": endpoint})
                 landing_pages = _unique(loc.get("landing_page_url") for loc in record.get("locations", []) if loc)
@@ -270,7 +380,11 @@ class Sources:
     def fulltext(self, paper: dict[str, Any], directory: Path) -> dict[str, Any]:
         uploaded = paper.get("uploaded_pdf")
         if uploaded:
-            return {**self.pdf_document(directory / uploaded), "source_url": "user_pdf"}
+            path = directory / uploaded
+            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+            if paper.get("content_hash") and checksum != paper["content_hash"]:
+                raise SessionError("上传PDF与原始内容哈希不一致。")
+            return {**self.pdf_document(path), "source_url": "user_pdf", "upload_sha256": checksum}
         deadline = time.monotonic() + 90
         def read_url(url):
             remaining = deadline - time.monotonic()
@@ -338,7 +452,10 @@ class Sources:
                     body = re.sub(r"<(nav|footer|header)\b[^>]*>.*?</\1>", "", body, flags=re.S | re.I)
                     document = {"pages": [{"location": "HTML正文", "text": html.unescape(WebCrawler._html_to_markdown(body))}]}
                 full = "\n".join(p["text"] for p in document["pages"])
-                if len(full) >= 2000 and re.search(r"\bmethod(?:s|ology)?\b|\bmaterials\b|\balgorithm\b|方法|模型构建", full, re.I):
+                if readable_document(document) and not document_matches_paper(paper, document):
+                    attempts.append({"url": safe_url(url), "outcome": "正文题名/DOI与请求论文不匹配，拒绝关联"})
+                    continue
+                if self.validate_document(paper, document) and re.search(r"\bmethod(?:s|ology)?\b|\bmaterials\b|\balgorithm\b|方法|模型构建", full, re.I):
                     attempts.append({"url": safe_url(url), "outcome": "已取得方法正文"})
                     return {**document, "source_url": final}
                 attempts.append({"url": safe_url(url), "outcome": "页面未提供可提取的方法正文"})

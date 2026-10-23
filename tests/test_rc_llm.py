@@ -734,3 +734,20 @@ class TestStripThinkingIsLosslessOnCleanText:
 
         out = strip_thinking_tags("<think>a</think>\n\n\n\nBody text.\n")
         assert out == "Body text."
+
+
+@pytest.mark.parametrize('base_url,structured',[
+    ('https://api.deepseek.com/v1',True),
+    ('https://proxy.example/v1',False),
+])
+def test_deepseek_json_output_is_enabled_only_on_official_endpoint(monkeypatch,base_url,structured):
+    captured={}
+    def fake_urlopen(request,timeout):
+        captured['body']=json.loads(request.data)
+        return _DummyHTTPResponse({'model':'deepseek-flash','choices':[{'message':{'content':'{"ok":true}'},'finish_reason':'stop'}],'usage':{}})
+    monkeypatch.setattr(urllib.request,'urlopen',fake_urlopen)
+    client=_make_client(primary_model='deepseek-flash')
+    client.config.base_url=base_url
+    client._raw_call('deepseek-flash',[{'role':'user','content':'Return JSON.'}],1024,0.2,True)
+    if structured:assert captured['body']['response_format']=={'type':'json_object'}
+    else:assert 'response_format' not in captured['body']

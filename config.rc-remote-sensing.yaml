@@ -39,6 +39,8 @@ experiment:
   scale: "pilot"               # 规模诚实标签：smoke(≤5min)/pilot(分钟-小时)/full(全尺寸)，论文强制声明
   time_budget_sec: 900         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
   max_iterations: 10
+  cli_agent:
+    max_budget_usd: 0.0       # 本地适配：后续科研也不施加美元上限
   metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致
   metric_direction: "maximize"
   docker:
@@ -69,7 +71,7 @@ experiment:
 hitl:
   enabled: true
   mode: co-pilot               # 官方消融实验里效果最好的模式
-  cost_budget_usd: 50.0        # API 花费护栏，超限自动暂停
+  cost_budget_usd: 0.0         # 本地适配：用户要求不限 API 预算；继续记录用量
   notifications:
     on_pause: true
     on_quality_drop: true

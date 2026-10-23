@@ -62,8 +62,8 @@ def test_fulltext_resolves_openalex_id_without_doi_and_discovers_pdf(monkeypatch
         if url=='https://journal.example/paper.pdf':return b'%PDF fixture','application/pdf',url
         return b'Index only','text/html',url
     monkeypatch.setattr(sources,'fetch',fetch)
-    monkeypatch.setattr(Sources,'pdf_document',staticmethod(lambda path:{'pages':[{'location':'page 2','text':'Methods: terrain routing and validation. '*100}]}))
-    p=paper_record({'title':'LS factor','url':'https://openalex.org/W123'})
+    monkeypatch.setattr(Sources,'pdf_document',staticmethod(lambda path:{'pages':[{'location':'page 2','text':'LS factor calculation and validation. Methods: terrain routing and validation. '*100}]}))
+    p=paper_record({'title':'LS factor calculation and validation','url':'https://openalex.org/W123'})
     doc=Sources(None).fulltext(p,tmp_path)
     assert calls[0]=='https://api.openalex.org/works/W123'
     assert doc['source_url']=='https://journal.example/paper.pdf'
@@ -131,3 +131,61 @@ def test_fetch_encodes_unicode_publisher_links_without_leaking_key(monkeypatch):
             return Reply()
     monkeypatch.setattr(sources.urllib.request,'build_opener',lambda *args:Opener())
     sources.fetch('https://journal.example/slope-λ?topic=坡长')
+
+
+def test_openalex_classic_and_citation_search_use_real_distinct_routes(monkeypatch):
+    from urllib.parse import urlparse,parse_qs
+    from researchclaw.ideation import sources
+    from researchclaw.literature import cache
+    monkeypatch.setattr(cache,'get_cached',lambda *a,**kw:None)
+    monkeypatch.setattr(cache,'put_cache',lambda *a,**kw:None)
+    calls=[]
+    def work(wid,title,year,citations=1):
+        return {'id':'https://openalex.org/'+wid,'title':title,'publication_year':year,'cited_by_count':citations,'doi':'https://doi.org/10.1234/'+wid,'authorships':[]}
+    def fetch(url,*args,**kwargs):
+        calls.append(url);query=parse_qs(urlparse(url).query)
+        if query.get('search'):
+            return json.dumps({'results':[work('W11','Classic method',1990,500)]}).encode(),'application/json',url
+        if query.get('filter',[''])[0].startswith('openalex:'):
+            records=[work('W11','Classic method',1990,500)]
+        elif query.get('filter',[''])[0].startswith('cites:'):
+            records=[work('W12','Recent continuation',2026)]
+        else:
+            return json.dumps({'id':'https://openalex.org/W10','referenced_works':['https://openalex.org/W11']}).encode(),'application/json',url
+        return json.dumps({'results':records}).encode(),'application/json',url
+    monkeypatch.setattr(sources,'fetch',fetch)
+    client=sources.Sources(None)
+    classic=client.search('core mechanism',period='classic',source='openalex')
+    assert classic[0]['year']==1990 and classic[0]['discovery_relation']=='classic_search'
+    assert parse_qs(urlparse(calls[0]).query)['sort']==['cited_by_count:desc']
+    assert 'publication_date' not in calls[0]
+    seed=sources.paper_record({'title':'Seed method','doi':'10.1234/seed'})
+    found=client.citation_neighbors(seed)
+    assert [p['discovery_relation'] for p in found]==['reference','citing']
+    assert all(p['discovery_seed_id']==seed['paper_id'] and p['relevance']=='unreviewed' for p in found)
+
+
+def test_html_abstract_and_reference_landing_is_not_fulltext():
+    from researchclaw.ideation.sources import readable_document
+    landing={'pages':[{'location':'HTML正文','text':'# Paper title\n## Abstract\n'+('Methods are discussed in this abstract. '*90)+'\n## References\n'+('Study methods reference. '*100)}]}
+    assert not readable_document(landing)
+    full={'pages':[{'location':'HTML正文','text':'# Paper title\n## 1 Introduction\n'+('The study context and physical question. '*40)+'\n## 2 Methods\n'+('The actual method and controls are described here. '*40)+'\n## 3 Results\n'+('Independent observations validate the stated mechanism. '*40)}]}
+    assert readable_document(full)
+
+
+def test_pdf_of_a_reference_cannot_be_attached_to_the_requested_paper():
+    from researchclaw.ideation.sources import document_matches_paper
+    paper={'title':'Probabilistic landslide time-of-failure prediction','doi':'10.1007/landslide-test'}
+    wrong={'pages':[{'location':'第 1 页','text':'A Density-Based Algorithm for Discovering Clusters. DBSCAN method. '*60}]}
+    assert not document_matches_paper(paper,wrong)
+    right={'pages':[{'location':'第 1 页','text':'Probabilistic landslide time-of-failure prediction\nMethods and independent observations. '*60}]}
+    assert document_matches_paper(paper,right)
+
+
+def test_user_uploaded_pdf_identity_can_use_server_bound_content_hash():
+    from researchclaw.ideation.sources import document_matches_paper
+    paper={'title':'paper.pdf','uploaded_pdf':'uploads/paper.pdf','content_hash':'verified-upload-sha'}
+    doc={'upload_sha256':'verified-upload-sha','pages':[{'location':'第 1 页','text':'Methods and actual original observations. '*80}]}
+    assert document_matches_paper(paper,doc)
+    doc['upload_sha256']='different-upload-sha'
+    assert not document_matches_paper(paper,doc)

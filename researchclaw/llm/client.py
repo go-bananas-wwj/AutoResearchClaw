@@ -16,6 +16,7 @@ import logging
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -517,11 +518,13 @@ class LLMClient:
                 # Many OpenAI-compatible providers don't support the
                 # response_format parameter and return HTTP 400.
                 # Fall back to system-prompt injection for known-incompatible
-                # models (Claude, DeepSeek, Qwen, etc.) and the responses API.
+                # models and the responses API. The official DeepSeek API
+                # supports JSON Output; preserve fallback for third-party proxies.
                 _model_lower = model.lower()
                 _no_response_format = (
                     _model_lower.startswith("claude")
-                    or _model_lower.startswith("deepseek")
+                    or (_model_lower.startswith("deepseek")
+                        and urllib.parse.urlsplit(self.config.base_url).hostname != "api.deepseek.com")
                     or _model_lower.startswith("qwen")
                     or _model_lower.startswith("yi-")
                     or _model_lower.startswith("glm")

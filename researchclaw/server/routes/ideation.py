@@ -37,6 +37,9 @@ def invoke(fn, *args, **kwargs):
 
 def public(data):
     result = dict(data)
+    service = get_service()
+    result["papers"] = [{**p, "fulltext_verified": service._summary_material(data, p) is not None}
+                        for p in data.get("papers", [])]
     result["limits"] = {"paper_limit": IdeationService.paper_limit(data), "candidate_limit": min(60, IdeationService.paper_limit(data) * 3),
                         "reading_default": 10, "reading_max": 15}
     result["reading"] = {pid: {k: v for k, v in note.items() if k != "passages"}
@@ -133,6 +136,10 @@ async def paper_fulltext(sid: str, paper_id: str):
     cache = directory / "fulltext" / (paper_id + ".json")
     if not cache.exists():
         raise HTTPException(404, "该论文尚未获取原文")
+    paper = next((p for p in data["papers"] if p["paper_id"] == paper_id),
+                 {"paper_id": paper_id, "title": data.get("reading", {}).get(paper_id, {}).get("title", "")})
+    if service._summary_material(data, paper) is None:
+        raise HTTPException(409, "缓存未通过全文与论文身份核验，请重新整理全文文献。")
     pdf = directory / "downloads" / (paper_id + ".pdf")
     if pdf.exists():
         return FileResponse(pdf, media_type="application/pdf", filename=paper_id + ".pdf")

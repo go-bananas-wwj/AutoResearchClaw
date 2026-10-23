@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from researchclaw.ideation.prompts import OUTPUT_TOKENS, PROMPTS
-from researchclaw.ideation.sources import Sources, paper_record
+from researchclaw.ideation.sources import Sources, paper_record, readable_document
 from researchclaw.ideation.store import SessionError, SessionStore, fingerprint, now
 
 
@@ -30,6 +30,8 @@ class CandidateRoundFailure(SessionError):
     pass
 
 
+OVERVIEW_FIELDS = ("problem", "background", "innovation", "method", "data", "results", "strengths", "limitations")
+SUMMARY_VERSION = 5
 DEFAULT_PAPER_LIMIT = 20
 MAX_CANDIDATES = 60
 MAX_AUTO_REFINEMENTS = 2  # Initial generation plus at most two evidence-driven revisions.
@@ -40,16 +42,44 @@ def quoted(text: str) -> str:
 
 
 def summary_json(text):
-    """Parse model JSON; tolerate one missing delimiter before the known selection key only."""
+    """Repair bounded punctuation errors outside strings; never rewrite paper content."""
     from researchclaw.ideation.cards import _extract_json
     try:
         return _extract_json(text), False
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         raw = text[text.find("{"):text.rfind("}") + 1]
-        if exc.msg != "Expecting ',' delimiter" or not raw[:exc.pos].rstrip().endswith('"') or not re.match(r'"selection"\s*:', raw[exc.pos:]):
-            raise
-        # Insert punctuation outside strings; never rewrite a scientific claim or invent a field.
-        return json.loads(raw[:exc.pos] + "," + raw[exc.pos:]), True
+        # Some model replies contain redundant closing brackets. Remove at most three,
+        # using a string/escape-aware stack; never append missing structure or values.
+        stack, output, in_string, escaped, removed = [], [], False, False, 0
+        for char in raw:
+            if in_string:
+                output.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True; output.append(char)
+            elif char in "{[":
+                stack.append(char); output.append(char)
+            elif char in "}]":
+                if stack and stack[-1] == ("{" if char == "}" else "["):
+                    stack.pop(); output.append(char)
+                else:
+                    removed += 1
+                    if removed > 3:
+                        raise ValueError("Too many unmatched JSON delimiters")
+            else:
+                output.append(char)
+        repaired = "".join(output)
+        try:
+            return json.loads(repaired), bool(removed)
+        except json.JSONDecodeError as exc:
+            if exc.msg != "Expecting ',' delimiter" or not repaired[:exc.pos].rstrip().endswith('"') or not re.match(r'"selection"\s*:', repaired[exc.pos:]):
+                raise
+            return json.loads(repaired[:exc.pos] + "," + repaired[exc.pos:]), True
 
 
 def reference_aliases(payload):
@@ -109,6 +139,12 @@ class IdeationService:
 
     def snapshot(self, sid: str) -> dict[str, Any]:
         return self.store.load(sid)
+
+    def _sync_unlimited_budget(self, data):
+        configured = float(getattr(getattr(self.config, "hitl", None), "cost_budget_usd", 0) or 0)
+        if configured <= 0 and data.get("budget_usd", 0) > 0:
+            data["reviews"].append({"event": "budget_policy", "at": now(), "previous_limit": data["budget_usd"], "limit": 0})
+            data["budget_usd"] = 0
 
     def _check(self, data, event):
         if event.is_set():
@@ -178,7 +214,7 @@ class IdeationService:
             if stage == "summarize":
                 result, repaired = summary_json(response.content)
                 if repaired:
-                    entry["json_syntax_repair"] = "missing_comma_before_selection"
+                    entry["json_syntax_repair"] = "bounded_structural_punctuation"
                     self.store.save(data)
             else:
                 result = _extract_json(response.content)
@@ -218,6 +254,7 @@ class IdeationService:
 
     def _work(self, sid, event):
         data = self.snapshot(sid)
+        self._sync_unlimited_budget(data)
         try:
             self.sources.progress = lambda paper, message: self._progress(data, event, message,
                 paper_id=paper["paper_id"], title=paper["title"], operation="download")
@@ -278,6 +315,8 @@ class IdeationService:
             row = {**row, "selected": True, "required": True, "relevance": "core",
                    "reason": "用户补充，请审核相关性", "summary_zh": ""}
             data["papers"] = [p for p in data["papers"] if p["paper_id"] != row["paper_id"]] + [row]
+            if data.get("curation_candidate_ids") is not None and row["paper_id"] not in data["curation_candidate_ids"]:
+                data["curation_candidate_ids"].append(row["paper_id"])
             self._select_shortlist(data)
             self.store.save(data)
             return data
@@ -316,7 +355,9 @@ class IdeationService:
         return related[:self.paper_limit(data)]
 
     def _ranked_candidates(self, data):
-        eligible = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded")]
+        eligible = [p for p in data["papers"] if p.get("relevance") in ("core", "adjacent") and not p.get("user_excluded") and not p.get("is_retracted")]
+        if data.get("curation_candidate_ids") is not None:
+            eligible = [p for p in eligible if p["paper_id"] in data["curation_candidate_ids"]]
         ordered = [p for p in eligible if p.get("required")]
         for kind in ("core", "adjacent"):
             group = [p for p in eligible if p.get("relevance") == kind]
@@ -386,6 +427,7 @@ class IdeationService:
         if data["phase"] != "retrieval" and old_ids != new_ids:
             self.store.invalidate(data, "全文筛选改变文献范围")
             self._select_shortlist(data)
+        self._archive_index(data)
         self._save(data, event)
         missing = [p["title"] for p in ranked if p.get("required") and p["paper_id"] not in new_ids]
         if missing:
@@ -411,6 +453,48 @@ class IdeationService:
             self.launch(sid)
             return self.snapshot(sid)
 
+    def _archive_paper(self, data, paper, document):
+        """Store source formats, without synthesizing or rewriting paper content."""
+        import os
+        import shutil
+        directory = self.store.directory(data["session_id"])
+        asset = directory / "related work" / paper["paper_id"]
+        asset.mkdir(parents=True, exist_ok=True)
+        text = asset / "fulltext.txt"
+        if paper.get("asset_document_hash") != fingerprint(document) or not text.exists():
+            temporary = text.with_suffix(".tmp")
+            temporary.write_text("\n\n".join(p["location"] + "\n" + p["text"] for p in document["pages"]))
+            temporary.replace(text)
+        files = {"extracted_text": str(text.relative_to(directory)), "latex_source": None}
+        candidates = [directory / "downloads" / (paper["paper_id"] + ".pdf")]
+        if paper.get("uploaded_pdf"):
+            candidates.append(directory / paper["uploaded_pdf"])
+        for source in candidates:
+            if source.exists() and source.resolve().is_relative_to(directory.resolve()):
+                target = asset / "paper.pdf"
+                if not target.exists():
+                    try:
+                        os.link(source, target)
+                    except OSError:
+                        shutil.copy2(source, target)
+                files["pdf"] = str(target.relative_to(directory))
+                break
+        paper.update(reading_assets=files, asset_document_hash=fingerprint(document))
+
+    def _archive_index(self, data):
+        directory = self.store.directory(data["session_id"]) / "related work"
+        directory.mkdir(exist_ok=True)
+        papers = [{k: p.get(k) for k in ("paper_id", "title", "year", "doi", "venue", "reading_assets", "overview", "selection_reason")}
+                  for p in self._related(data)]
+        target = directory / "index.json"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"revision": data["revision"], "papers": papers}, ensure_ascii=False, indent=2))
+        temporary.replace(target)
+
+    def _valid_document(self, paper, document):
+        validate = getattr(self.sources, "validate_document", None)
+        return readable_document(document) and (validate(paper, document) if callable(validate) else True)
+
     def _obtain_fulltext(self, data, event, paper):
         directory = self.store.directory(data["session_id"])
         cache = directory / "fulltext"
@@ -418,13 +502,21 @@ class IdeationService:
         target = cache / (paper["paper_id"] + ".json")
         self._progress(data, event, "正在读取已缓存原文" if target.exists() else "正在获取论文原文",
                        paper_id=paper["paper_id"], title=paper["title"], operation="download")
-        document = json.loads(target.read_text()) if target.exists() else self.sources.fulltext(paper, directory)
-        if sum(len(p["text"]) for p in document.get("pages", [])) < 2000:
+        document = json.loads(target.read_text()) if target.exists() else None
+        if document is not None and not self._valid_document(paper, document):
+            quarantine = directory / "rejected_fulltext"
+            quarantine.mkdir(exist_ok=True)
+            target.replace(quarantine / (paper["paper_id"] + ".json"))
+            document = None
+        if document is None:
+            document = self.sources.fulltext(paper, directory)
+        if sum(len(p["text"]) for p in document.get("pages", [])) < 2000 or not self._valid_document(paper, document):
             raise SessionError("仅取得摘要或过短正文，未标记为原文已获取。")
         if not target.exists():
             temp = target.with_suffix(".tmp")
             temp.write_text(json.dumps(document, ensure_ascii=False))
             temp.replace(target)
+        self._archive_paper(data, paper, document)
         paper.update(fulltext_status="read" if paper["paper_id"] in data["reading"] else "downloaded",
                      fulltext_url=document.get("source_url"))
         return document
@@ -459,6 +551,7 @@ class IdeationService:
             if data["phase"] == "retrieval":
                 raise SessionError("请先完成文献筛选，系统会自动获取材料并调用AI总结。", 409)
             previous = data["status"]
+            self._sync_unlimited_budget(data)
             data.update(status="running", presentation_task="summaries")
             self.store.save(data)
             event = threading.Event()
@@ -470,18 +563,17 @@ class IdeationService:
     def _summary_work(self, sid, event, previous):
         data = self.snapshot(sid)
         try:
-            old_ids = {p["paper_id"] for p in self._related(data)}
-            self._summarize_selected(data, event, force=True)
-            if data.get("approved_revision") is None:
-                self._select_shortlist(data)
-                if old_ids != {p["paper_id"] for p in self._related(data)}:
-                    self.store.invalidate(data, "正文检查改变推荐文献")
-                    self._select_shortlist(data)
+            self._summarize_selected(data, event, force=True, presentation_only=True)
             data["status"] = previous
+            if (data.get("blocker") or {}).get("category") == "budget" and data["budget_usd"] <= 0:
+                data.update(status="waiting" if data["phase"] in ("literature_review", "idea_review") else "interrupted", missing=[], blocker=None)
         except Cancelled:
             data.update(status="stopped")
         except Exception as exc:
-            data.update(status="blocked", missing=[str(exc)[:1000]])
+            category = getattr(exc, "category", "technical")
+            data.update(status="blocked", missing=[str(exc)[:1000]], blocker={"category": category,
+                "code": getattr(exc, "code", "summary_failed"), "message": str(exc)[:1000],
+                "actions": ["重试全文解读"]})
         data.pop("presentation_task", None)
         data.pop("progress_message", None)
         data.pop("progress", None)
@@ -493,7 +585,7 @@ class IdeationService:
             document = json.loads(path.read_text())
             pages = document.get("pages") or []
             size = sum(len(p.get("text", "")) for p in pages)
-            if 2000 <= size <= 180_000:
+            if 2000 <= size <= 180_000 and self._valid_document(paper, document):
                 return {"source_type": "fulltext", "pages": pages}
         return None
 
@@ -504,18 +596,19 @@ class IdeationService:
                  "location": page["location"], "text": page["text"][start:start + 160]}
                 for page in material["pages"] for start in range(0, len(page["text"]), 160)]
 
-    def _summarize_selected(self, data, event, force=False, papers=None):
+    def _summarize_selected(self, data, event, force=False, papers=None, presentation_only=False):
         """DeepSeek writes every content field; code selects sources and validates structure only."""
         tasks = []
         for paper in (self._related(data) if papers is None else papers):
-            if paper["paper_id"] in data["reading"]:
+            if paper["paper_id"] in data["reading"] and not presentation_only:
                 continue
             material = self._summary_material(data, paper)
             if material is None:
                 self._apply_summary(paper, {})
                 continue
+            self._archive_paper(data, paper, json.loads((self.store.directory(data["session_id"]) / "fulltext" / (paper["paper_id"] + ".json")).read_text()))
             source_hash = fingerprint(material)
-            if not force and paper.get("summary_source_hash") == source_hash and paper.get("summary_prompt_hash") == fingerprint(PROMPTS["summarize"]) and paper.get("summary_version") == 4:
+            if not force and paper.get("summary_source_hash") == source_hash and paper.get("summary_prompt_hash") == fingerprint(PROMPTS["summarize"]) and paper.get("summary_version") == SUMMARY_VERSION:
                 continue
             tasks.append((paper, material, source_hash))
         completed = 0
@@ -529,7 +622,7 @@ class IdeationService:
                 batch.append(tasks.pop(0)); size += count
             self._progress(data, event, "正在由DeepSeek阅读材料并撰写论文概览", operation="summarize",
                            current=completed + 1, total=completed + len(batch) + len(tasks), unit="篇", title="", paper_id="")
-            payload = {"direction": data["direction"], "papers": [{"paper_id": p["paper_id"], "title": p["title"],
+            payload = {"direction": data["direction"], "presentation_only": presentation_only, "papers": [{"paper_id": p["paper_id"], "title": p["title"],
                                    "year": p.get("year"), "venue": p.get("venue"), "venue_type": p.get("venue_type"),
                                    "material": {"source_type": "fulltext", "passages": self._summary_excerpts(p["paper_id"], material)}}
                                    for p, material, _ in batch]}
@@ -543,7 +636,7 @@ class IdeationService:
                     for row in rows:
                         paper, material, _ = by_id[row["paper_id"]]
                         try:
-                            self._apply_summary(copy.deepcopy(paper), row, material)
+                            self._apply_summary(copy.deepcopy(paper), row, material, preserve_selection=presentation_only)
                         except SessionError as exc:
                             errors.append({"paper_id": row["paper_id"], "error": str(exc),
                                            "invalid_evidence": (row.get("selection") or {}).get("evidence", [])})
@@ -555,25 +648,30 @@ class IdeationService:
                     "instruction": "重新返回完整JSON。概览每项不超过160字符，用普通人能懂的短句。selection.evidence_refs只需选择本篇1–2个能支持判断的输入passage_id，不自己抄写引文或编造页码；服务器会展示对应原文。材料未说明的内容写未报告。"}
             for row in rows:
                 paper, material, source_hash = by_id[row["paper_id"]]
-                self._apply_summary(paper, row, material)
+                self._apply_summary(paper, row, material, preserve_selection=presentation_only)
                 paper.update(summary_source_hash=source_hash, summary_prompt_hash=fingerprint(PROMPTS["summarize"]))
             completed += len(batch)
             self._save(data, event)
+        self._archive_index(data)
         self._save(data, event)
 
     @staticmethod
-    def _apply_summary(paper, info, material=None):
+    def _apply_summary(paper, info, material=None, preserve_selection=False):
         basis = material.get("source_type") if material else None
         if not basis:
-            paper.update(overview={}, summary_zh="", summary_basis=None, summary_state="awaiting_source", summary_version=4)
+            paper.update(overview={}, summary_zh="", summary_basis=None, summary_state="awaiting_source", summary_version=SUMMARY_VERSION)
             paper.pop("summary_source_hash", None)
             return
         overview = info.get("overview") or {}
         if not isinstance(info.get("summary_zh"), str) or not info["summary_zh"].strip() or not all(
-                isinstance(overview.get(k), str) and overview[k].strip() for k in ("problem", "method", "strengths", "limitations")):
+                isinstance(overview.get(k), str) and overview[k].strip() for k in OVERVIEW_FIELDS):
             raise WorkflowFailure("AI论文概览返回不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_overview")
-        if any(len(overview[k]) > 160 for k in ("problem", "method", "strengths", "limitations")):
+        if any(len(overview[k]) > 160 for k in OVERVIEW_FIELDS):
             raise SessionError("概览太长：每项用零基础读者能懂的1–2个短句，硬上限160字符；删掉算法清单、参数与长流程，用普通话保留核心意思。")
+        if preserve_selection:
+            paper.update(overview=overview, summary_zh=info["summary_zh"], summary_basis=basis,
+                         summary_state="ready", summary_version=SUMMARY_VERSION)
+            return
         selection = info.get("selection") or {}
         if selection.get("decision") not in ("include", "exclude") or selection.get("fit") not in ("direct", "supporting", "off_topic") or selection.get("rigor") not in ("strong", "adequate", "weak", "unclear") or not selection.get("reason"):
             raise SessionError("缺少基于正文的相关性与方法质量判断。")
@@ -600,7 +698,7 @@ class IdeationService:
             raise SessionError("相关性或方法依据不足的论文不能入选。")
         paper["selection"] = selection
         paper.update(overview=overview, summary_zh=info["summary_zh"], summary_basis=basis,
-                     summary_state="ready", summary_version=4)
+                     summary_state="ready", summary_version=SUMMARY_VERSION)
 
     def revise_scope(self, sid, revision, direction):
         with self.store.lock:
@@ -612,6 +710,9 @@ class IdeationService:
             self.store.invalidate(data, "修改研究范围")
             data.update(direction=direction.strip(), papers=[], search_log=[], completed_queries=[], phase="retrieval", feedback="")
             data.pop("plan", None)
+            data.pop("citation_completed", None)
+            data.pop("citation_seed_ids", None)
+            data.pop("curation_candidate_ids", None)
             self.store.save(data)
             self.launch(sid)
             return self.snapshot(sid)
@@ -758,6 +859,8 @@ class IdeationService:
                 rows, outcome = [], "unavailable"
             data["search_log"].append({"query": query, "period": period, "source": source,
                 "at": now(), "count": len(rows), "outcome": outcome})
+            for row in rows:
+                row.setdefault("discovery_relation", "classic_search" if period == "classic" else "recent_search" if period == "recent" else "topic_search")
             all_rows.extend(rows)
             if source in ("openalex", "semantic_scholar") and rows:
                 general_records = True
@@ -782,6 +885,8 @@ class IdeationService:
             if key in merged:
                 old = merged[key]
                 old["provenance"].extend(paper.get("provenance", []))
+                if paper.get("discovery_relation"):
+                    old["discovery_routes"] = sorted(set(old.get("discovery_routes", []) + [paper["discovery_relation"]]))
                 if not old.get("abstract"):
                     old["abstract"] = paper.get("abstract", "")
             else:
@@ -810,12 +915,67 @@ class IdeationService:
             payload["validation_feedback"] = "请完整返回全部给定ID：" + ", ".join(mapping) + "。" + "；".join(errors)
         raise WorkflowFailure("文献筛选返回格式经修正仍不完整，已保留此前结果，可重试本步。", "technical", "invalid_paper_screen")
 
+    def _expand_citations(self, data, event, rows, candidate_limit):
+        expand = getattr(self.sources, "citation_neighbors", None)
+        if not callable(expand) or len(rows) >= candidate_limit:
+            return rows
+        if "citation_seed_ids" not in data:
+            core = [p for p in rows if p.get("relevance") == "core" and not p.get("user_excluded")]
+            classic = sorted(core, key=lambda p: -int(p.get("citation_count") or 0))
+            recent = sorted(core, key=lambda p: -int(p.get("year") or 0))
+            seed_ids = []
+            for pair in zip(classic, recent):
+                for paper in pair:
+                    if paper["paper_id"] not in seed_ids and len(seed_ids) < 3:
+                        seed_ids.append(paper["paper_id"])
+            data["citation_seed_ids"] = seed_ids
+        by_id = {p["paper_id"]: p for p in rows}
+        seeds = [by_id[pid] for pid in data["citation_seed_ids"] if pid in by_id]
+        completed = data.setdefault("citation_completed", [])
+        for seed in seeds:
+            if seed["paper_id"] in completed:
+                continue
+            self._progress(data, event, "正在追踪关键论文的经典来源与后续研究", operation="citations", title=seed["title"], paper_id=seed["paper_id"])
+            try:
+                found = expand(seed, limit=8)
+                outcome = "records" if found else "empty_or_unavailable"
+            except Exception:
+                found, outcome = [], "unavailable"
+            known = {p["paper_id"] for p in rows}
+            accepted = []
+            for paper in found:
+                if paper["paper_id"] not in known and len(rows) + len(accepted) < candidate_limit and len(accepted) < 4:
+                    known.add(paper["paper_id"]); accepted.append(paper)
+            rows = self._merge(rows + accepted)
+            data["search_log"].append({"query": "引用追踪：" + seed["title"], "period": "citation", "source": "openalex", "seed_id": seed["paper_id"], "at": now(), "count": len(found), "accepted": len(accepted), "outcome": outcome})
+            completed.append(seed["paper_id"])
+            data["papers"] = rows
+            self._save(data, event)
+        return rows
+
+    def _screen_pending(self, data, event, rows):
+        pending = [p for p in rows if p.get("relevance") == "unreviewed"]
+        for start in range(0, len(pending), 8):
+            batch = pending[start:start + 8]
+            done = sum(p.get("relevance") != "unreviewed" for p in rows)
+            self._progress(data, event, "正在筛选文献相关性", operation="screen", unit="篇", current=done, total=len(rows), title="", paper_id="", source="", query="")
+            screened = {p["paper_id"]: p for p in self._screen(data, event, batch, data["direction"] + "\n" + data["plan"]["interpretation"])}
+            for paper in batch:
+                info = screened[paper["paper_id"]]
+                paper.update(relevance=info["relevance"], reason=info["reason"], selected=info["relevance"] == "core")
+            self._progress(data, event, "已完成本组文献筛选", operation="screen", unit="篇", current=done + len(batch), total=len(rows))
+
     def _retrieve(self, data, event):
         if not data.get("plan"):
             plan = self._json(data, event, "plan", {"direction": data["direction"]})
             queries = plan.get("queries") or []
             if not plan.get("interpretation") or not 4 <= len(queries) <= 6 or any(not q.get("query") for q in queries):
                 raise SessionError("检索规划不完整，请重试或补充研究范围。")
+            if not any(q.get("period") == "classic" for q in queries):
+                queries[0]["period"] = "classic"
+            if not any(q.get("period") == "recent" for q in queries):
+                queries[-1]["period"] = "recent"
+            data["retrieval_strategy_version"] = 2
             data["plan"] = plan
             self._save(data, event)
         data.setdefault("paper_limit", DEFAULT_PAPER_LIMIT)
@@ -828,7 +988,9 @@ class IdeationService:
             data["papers"] = rows
         completed = data.setdefault("completed_queries", [])
         queries = data["plan"]["queries"]
-        per_query = max(1, (candidate_limit + len(queries) - 1) // len(queries))
+        reserve = min(12, candidate_limit // 3) if callable(getattr(self.sources, "citation_neighbors", None)) else 0
+        direct_limit = candidate_limit - reserve
+        per_query = max(1, (direct_limit + len(queries) - 1) // len(queries))
         for query_index, query in enumerate(queries, 1):
             if query in completed:
                 continue
@@ -842,7 +1004,7 @@ class IdeationService:
                 pid = paper["paper_id"]
                 if pid in existing or pid in new_ids:
                     accepted.append(paper)
-                elif len(new_ids) < per_query and len(rows) + len(new_ids) < candidate_limit:
+                elif len(new_ids) < per_query and len(rows) + len(new_ids) < direct_limit:
                     new_ids.add(pid)
                     accepted.append(paper)
             rows = self._merge(rows + accepted)
@@ -853,19 +1015,9 @@ class IdeationService:
             self._save(data, event)
         if not rows:
             raise SessionError("检索未取得真实论文：可能限流、网络不可用或检索范围不合适。请重试、改方向或补充DOI/PDF。")
-        pending = [p for p in rows if p.get("relevance") == "unreviewed"]
-        for start in range(0, len(pending), 8):
-            batch = pending[start:start + 8]
-            done = sum(p.get("relevance") != "unreviewed" for p in rows)
-            self._progress(data, event, "正在筛选文献相关性", operation="screen", unit="篇",
-                           current=done, total=len(rows), title="", paper_id="", source="", query="")
-            screened = {p["paper_id"]: p for p in self._screen(data, event, batch,
-                data["direction"] + "\n" + data["plan"]["interpretation"])}
-            for p in batch:
-                info = screened[p["paper_id"]]
-                p.update(relevance=info["relevance"], reason=info["reason"], selected=info["relevance"] == "core")
-            self._progress(data, event, "已完成本组文献筛选", operation="screen", unit="篇",
-                           current=done + len(batch), total=len(rows))
+        self._screen_pending(data, event, rows)
+        rows = self._expand_citations(data, event, rows, candidate_limit)
+        self._screen_pending(data, event, rows)
         if not any(p["relevance"] == "core" for p in rows):
             raise SessionError("未筛选出核心相关论文，请修改范围或补充文献；不会补入无关论文凑数。")
         self._select_shortlist(data)
@@ -896,6 +1048,10 @@ class IdeationService:
     def _read_paper(self, data, event, paper, extra=False):
         key = paper["paper_id"]
         if key in data["reading"]:
+            path = self.store.directory(data["session_id"]) / "fulltext" / (key + ".json")
+            if not path.exists() or not self._valid_document(paper, json.loads(path.read_text())) or fingerprint(json.loads(path.read_text())) != data["reading"][key]["source_hash"]:
+                data["reading"].pop(key)
+                raise WorkflowFailure("原精读记录对应的材料不是可读全文，请先修复正文并重新核对证据。", "evidence", "invalid_cached_fulltext")
             return data["reading"][key]
         if data["phase"] == "reading" and paper.get("fulltext_attempt_id") == f"scope-r{data['revision']}" and paper.get("fulltext_status") in ("abstract_only", "failed"):
             raise SessionError(paper.get("fulltext_error") or "本轮未获取原文，请补充材料或稍后重试。")
@@ -943,8 +1099,7 @@ class IdeationService:
                       source_hash=fingerprint(document), source_url=document.get("source_url"), supplemental=extra)
         data["reading"][key] = result
         paper["fulltext_status"] = "read"
-        paper.update(overview={"problem": result["problem"], "method": result["method"],
-                     "strengths": result["strengths"], "limitations": result["limitations"]}, summary_basis="fulltext", summary_version=4)
+        # Detailed evidence notes must not overwrite the reader-facing, AI-written overview.
         self._save(data, event)
         return result
 
@@ -1181,7 +1336,7 @@ class IdeationService:
                 raise SessionError("该创新点不属于当前已审查的候选。")
             for note in data["reading"].values():
                 path = self.store.directory(sid) / "fulltext" / (note["paper_id"] + ".json")
-                if not path.exists() or fingerprint(json.loads(path.read_text())) != note["source_hash"]:
+                if not path.exists() or not self._valid_document({"title": note["title"], "doi": next((p.get("doi", "") for p in data["papers"] if p["paper_id"] == note["paper_id"]), "")}, json.loads(path.read_text())) or fingerprint(json.loads(path.read_text())) != note["source_hash"]:
                     raise SessionError("原文内容与精读版本不一致，请重新审核文献。")
             return data, card
 
@@ -1218,6 +1373,8 @@ class IdeationService:
             (target / "stage-07/synthesis.md").write_text(data["synthesis"]["landscape_zh"])
             (target / "stage-08/hypotheses.md").write_text(json.dumps(card, ensure_ascii=False, indent=2))
             shutil.copytree(directory / "fulltext", target / "fulltext")
+            if (directory / "related work").exists():
+                shutil.copytree(directory / "related work", target / "related work")
             (target / "manifest.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
             (target / "cost_log.jsonl").write_text("\n".join(json.dumps(x) for x in data["usage"]) + "\n")
             target.rename(final_target)

@@ -58,7 +58,7 @@ class LLM:
                 'queries':[{'query':f'LS factor watershed {i}','purpose':'方法与验证','period':'recent' if i == 3 else 'all'} for i in range(4)]}
         elif stage in ('screen','summarize','neighbors'):
             result = {'papers':[{'paper_id':p['paper_id'],'relevance':'off_topic' if self.off_topic else 'core',
-                'reason':'相关：分析坡长与坡度','relationship':'same_mechanism','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','method':'DEM汇流','strengths':'提供对照','limitations':'摘要未说明'}} for p in data['papers']]}
+                'reason':'相关：分析坡长与坡度','relationship':'same_mechanism','summary_zh':'基于DEM的LS计算。','overview':{'problem':'LS计算','background':'已有方法存在边界，需独立验证','innovation':'比较已有计算方法的适用条件','method':'DEM汇流','data':'DEM与独立观测','results':'原文提供条件性验证结论','strengths':'提供对照','limitations':'原文未说明'}} for p in data['papers']]}
             if stage == 'summarize':
                 for row,paper in zip(result['papers'],data['papers']):
                     page=paper['material']['passages'][0]
@@ -396,7 +396,7 @@ def test_summary_refresh_is_presentation_only(engine):
     assert done['phase']=='literature_review' and done['status']=='waiting'
     assert not done['reading'] and not done['cards'] and not done['run_id']
     assert engine.sources.fulltext_calls==downloads and engine.llm.calls[len(before):]==['summarize']
-    assert all(p['summary_version']==4 and set(p['overview'])=={'problem','method','strengths','limitations'} for p in done['papers'])
+    assert all(p['summary_version']==5 and set(p['overview'])=={'problem','background','innovation','method','data','results','strengths','limitations'} for p in done['papers'])
 
 
 def test_backfill_uses_related_reserve_and_never_exceeds_fifteen(engine):
