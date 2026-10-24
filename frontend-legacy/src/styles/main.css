@@ -898,3 +898,21 @@ button, a { touch-action: manipulation; }
 @keyframes journey-beacon { 50% { box-shadow:0 0 0 7px rgba(0,113,227,.04); } }
 @media (max-width:600px) { .ideation-journey { padding:18px 14px; } .journey-station { padding-left:36px; } .journey-station-heading h4 { font-size:13px; } .journey-station-heading { gap:5px 8px; } .journey-station-status { margin-left:0; } .is-current > .journey-station-body { padding:10px 12px; margin-left:-6px; } .journey-history { margin-left:36px; } }
 @media (prefers-reduced-motion:reduce) { .journey-station.is-running > .journey-marker { animation:none; } }
+
+.ideation-latest-operation { font-size:14px; line-height:1.8; }
+.ideation-review-outcome h3 { margin:14px 0 10px; font-size:18px; line-height:1.6; }
+.ideation-review-outcome p { font-size:14px; line-height:1.85; margin:10px 0; }
+.review-outcome-counts { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; }
+.review-outcome-counts span { border:1px solid var(--border); padding:5px 10px; border-radius:8px; color:var(--text-secondary); font-size:12px; }
+.ideation-review-results > ol { list-style:none; padding:0; margin:14px 0 0; }
+.ideation-review-results > ol > li { border-top:1px solid var(--border); padding:14px 0; }
+.ideation-review-results > ol > li > details > summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; cursor:pointer; font-size:14px; line-height:1.8; }
+.ideation-review-results > ol > li > details > summary > span:first-child { flex:1; min-width:200px; }
+.ideation-review-results > ol > li > details > summary::before { content:'▸'; color:var(--text-muted); }
+.ideation-review-results > ol > li > details[open] > summary::before { content:'▾'; }
+.review-verdict { font-size:11px; padding:3px 8px; border-radius:7px; background:var(--bg-tertiary); color:var(--text-secondary); }
+.review-result-body { margin:16px 0 0 22px; font-size:13px; line-height:1.85; overflow-wrap:anywhere; }
+.review-result-body h4 { margin:16px 0 8px; font-size:13px; }
+.review-result-body ul { margin:8px 0; padding-left:20px; }
+.review-result-body li { margin:9px 0; }
+.review-design-issues { margin-top:18px; }

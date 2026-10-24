@@ -46,6 +46,32 @@ test('automatic revision distinguishes prior work from upcoming repeated work',(
   const steps=view._journeySteps(d),html=view._progressHtml(d,true);
   assert.equal(current(d).id,'synthesis');assert.equal(steps[6].status,'待再次执行');assert.equal(steps[7].status,'待再次执行');
   assert.equal(steps[4].state,'done');assert.match(html,/第 3 轮构思与审查/);assert.match(html,/已完成的构思与审查轮次（2）/);
+  assert.ok(html.indexOf('第 2 轮：')<html.indexOf('第 1 轮：'));
+});
+
+test('latest outputs precede earlier materials and literature remains at the bottom',()=>{
+  const d=state({phase:'audit',status:'blocked',approved_revision:1,refinement_round:2,
+    blocker:{category:'scientific',code:'refinement_exhausted'},missing:['三轮未通过'],
+    rejected_cards:[{title:'需修订的候选',failure:{code:'invalid_design'},audit:{missing:['缺少独立观测'],design_check:{issues:['对照条件未落实']}}}],
+    synthesis:{landscape_zh:'此前生成的领域分析',method_comparison:[],gaps:[]},
+    papers:[{paper_id:'p1',title:'早期相关论文',relevance:'core',fulltext_status:'read',summary_basis:'fulltext',summary_version:6,overview:{problem:'问题',method:'方法'}}]});
+  const html=view._sessionHtml(d),review=html.indexOf('data-material-stage="review"'),synthesis=html.indexOf('ideation-landscape-panel'),route=html.indexOf('data-material-stage="workflow"'),papers=html.indexOf('class="card literature-gallery"');
+  assert.ok(review>0 && review<synthesis && synthesis<route && route<papers);
+  assert.match(html,/达到本次自动修订轮次上限/);assert.match(html,/缺少独立观测/);assert.match(html,/根据审查意见继续优化/);
+  assert.equal(view._journeySteps(d)[8].status,'方案通过审查后解锁');
+  assert.ok(!html.slice(papers).includes('data-material-stage='));
+});
+
+test('finished review counts are explicit and retain model-written reasons',()=>{
+  const d=state({phase:'audit',status:'blocked',approved_revision:1,refinement_round:2,blocker:{code:'refinement_exhausted'},
+    rejected_cards:[{title:'方案甲',failure:{code:'mechanism_overlap'},rejection_reason:'原始审查依据甲'},
+      {title:'方案乙',failure:{code:'mechanism_overlap'},rejection_reason:'原始审查依据乙'},
+      {title:'方案丙',failure:{code:'invalid_design'},audit:{missing:['验证数据尚未落实']}},
+      {title:'方案丁',failure:{code:'invalid_design'},audit:{missing:'legacy malformed field'}}]});
+  const summary=view._blockerHtml(d),details=view._reviewResultsHtml(d);
+  assert.match(summary,/3 轮/);assert.match(summary,/4 个候选，0 个通过/);
+  assert.match(summary,/已有工作覆盖 · 2 个/);assert.match(summary,/实验设计或验证条件待完善 · 2 个/);
+  assert.match(details,/原始审查依据甲/);assert.match(details,/验证数据尚未落实/);
 });
 
 test('paused and stopped runs keep their place without an active beacon',()=>{

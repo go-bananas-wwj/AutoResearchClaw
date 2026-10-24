@@ -62,31 +62,43 @@ const IdeationView = {
     <p class="idea-evidence-note">先找到相关文献，再请你确认研究方向。</p></div>`; },
   _sessionHtml(d) {
     const active=['running','pending','stopping'].includes(d.status), locked=active || this.busy || d.status==='handoff' || !!d.run_id;
-    return `<div class="card ideation-brief">
-      <div class="ideation-progress"><strong>调研进度</strong><span class="proj-badge">${this._esc(d.run_id?'已交接自动科研':this.stateLabel(d))}</span>
+    return `<div class="card ideation-brief" data-material-stage="latest-status">
+      <div class="ideation-progress"><strong>最新进展</strong><span class="proj-badge">${this._esc(d.run_id?'已交接自动科研':this.stateLabel(d))}</span>
       ${active?`<button class="proj-btn" data-action="stop" ${d.status==='stopping'?'disabled':''}>停止调研</button>`:''}
       ${['blocked','stopped','interrupted'].includes(d.status) && d.blocker?.category!=='scientific' && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>
-      ${this._progressHtml(d,active)}
-      <dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
-      <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl>
+      ${active?`<p class="ideation-latest-operation" data-no-i18n>${this._esc(d.progress_message || this.phaseLabel(d.phase))}</p>`:''}
       ${!active && (d.missing || []).length?this._blockerHtml(d):''}
       ${d.run_id?`<p>科研任务已开始：<button class="idea-text-btn" data-action="project">打开科研项目</button></p>`:''}</div>
+      ${d.cards.length?this._cardsHtml(d):''}
+      ${!active && (d.rejected_cards || []).length?this._reviewResultsHtml(d):''}
+      ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<section class="card" data-material-stage="next-action"><h3>继续优化方案</h3><p class="idea-evidence-note">沿用已确认的文献和审查意见，继续构思方案。</p><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="可选：指定要优先解决的问题、验证方式或数据条件。"></textarea><button class="proj-btn" data-action="regenerate">${d.cards.length?'修改方案并重新生成':'根据审查意见继续优化'}</button></section>`:''}
+      ${d.synthesis?this._landscapeHtml(d):''}
+      ${!active?this._warningsHtml(d):''}
+      <div class="card ideation-route-card" data-material-stage="workflow">${this._progressHtml(d,active)}</div>
+      <div class="card" data-material-stage="research-input"><dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
+      <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl></div>
       ${!locked?`<details class="card" id="ideation-scope-editor"><summary>调整方向或补充材料</summary><div class="ideation-supplement">
         <input id="lit-reference" class="gate-input" type="text" placeholder="论文 DOI 或公开 URL" /><button class="proj-btn" data-action="add-paper">补充论文</button>
         <label class="proj-btn">上传 PDF<input id="lit-upload" type="file" accept="application/pdf,.pdf" hidden /></label>
         <textarea id="lit-scope" class="gate-textarea" rows="2">${this._esc(d.direction)}</textarea><button class="proj-btn" data-action="scope">按这个方向重新调研</button>
 </div></details>`:''}
-      ${d.papers.length?this._papersHtml(d):''}
       ${d.phase==='literature_review' && !locked?`<div class="card ideation-direction-confirm"><h3>这些文献的研究方向符合你的想法吗？</h3>
         <div class="ideation-confirm-actions"><button class="proj-btn primary" data-action="confirm-direction" ${d.curation_version!==1?'disabled title="请先整理全文文献"':''}>是这个方向，继续寻找创新点</button><button class="proj-btn" data-action="adjust-direction">调整研究方向</button></div>
         <details class="ideation-optional-feedback"><summary>补充关注点</summary><textarea id="lit-feedback" class="gate-textarea" rows="2" placeholder="例如：重点关注的方法、验证问题或数据条件"></textarea></details></div>`:''}
 
-      ${d.synthesis?this._landscapeHtml(d):''}
-      ${d.cards.length?this._cardsHtml(d):''}
-      ${!active && (d.rejected_cards || []).length?`<details class="card"><summary>未通过审查的候选（${d.rejected_cards.length}）</summary>${d.rejected_cards.map(c=>`<div class="idea-detail-section"><h3>${this._esc(c.title)}</h3><p>${this._esc(c.rejection_reason)}</p></div>`).join('')}</details>`:''}
-      ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<div class="card"><h3>修改意见与重新生成</h3><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="例如：调整核心假设、验证方式或数据要求。"></textarea><button class="proj-btn" data-action="regenerate">基于已批准文献重新生成</button></div>`:''}
-      ${!active?this._warningsHtml(d):''}`;
+      ${d.papers.length?this._papersHtml(d):''}`;
 
+  },
+  _reviewResultsHtml(d) {
+    const e=this._esc.bind(this),labels={mechanism_overlap:'审查认为已有工作覆盖',invalid_design:'实验设计或验证条件待完善',insufficient_evidence:'关键证据待落实',fulltext_unavailable:'关键论文获取未完成'};
+    return `<section class="card ideation-review-results" data-material-stage="review"><h3>最新一轮候选审查</h3><p class="idea-evidence-note">展开候选查看原始审查意见和待落实条件。</p><ol>${d.rejected_cards.map(c=>{
+      const audit=c.audit || {},missing=Array.isArray(audit.missing)?audit.missing:[],issues=Array.isArray(audit.design_check?.issues)?audit.design_check.issues:[],reason=c.rejection_reason || c.failure?.message || '';
+      return `<li><details><summary><span data-no-i18n>${e(c.title)}</span><span class="review-verdict">${e(labels[c.failure?.code] || '尚未通过审查')}</span></summary><div class="review-result-body">
+        <h4>审查依据</h4><p data-no-i18n>${e(reason)}</p>
+        ${missing.length?`<h4>待落实条件</h4><ul>${missing.map(x=>`<li data-no-i18n>${e(x)}</li>`).join('')}</ul>`:''}
+        ${issues.length?`<details class="review-design-issues"><summary>实验逻辑检查（${issues.length} 项）</summary><ul>${issues.map(x=>`<li data-no-i18n>${e(x)}</li>`).join('')}</ul></details>`:''}
+        ${c.failure?.context?.paper_title?this._issueHtml(c.failure.context):''}</div></details></li>`;
+    }).join('')}</ol></section>`;
   },
   _issueHtml(context) {
     const e=this._esc.bind(this),c=context || {};
@@ -98,6 +110,14 @@ const IdeationView = {
   },
   _blockerHtml(d) {
     const c=d.blocker?.context;
+    if(!(d.cards || []).length && ['refinement_exhausted','no_new_information','candidate_evidence_incomplete'].includes(d.blocker?.code)) {
+      const rejected=d.rejected_cards || [],overlap=rejected.filter(c=>c.failure?.code==='mechanism_overlap').length;
+      const design=rejected.filter(c=>c.failure?.code==='invalid_design').length,passed=d.cards?.length || 0;
+      const why=d.blocker.code==='refinement_exhausted'?'已达到本次自动修订轮次上限。':d.blocker.code==='no_new_information'?'新一轮仍重复已有方案，没有获得新的依据。':'目前仍缺少支撑候选方案的关键依据。';
+      return `<div class="ideation-review-outcome" role="status"><h3>本次构思与审查已结束，暂无通过方案</h3><p>已完成 ${Number(d.refinement_round || 0)+1} 轮构思与审查，最后一轮 ${rejected.length+passed} 个候选，${passed} 个通过。</p>
+        <div class="review-outcome-counts">${overlap?`<span>已有工作覆盖 · ${overlap} 个</span>`:''}${design?`<span>实验设计或验证条件待完善 · ${design} 个</span>`:''}</div>
+        <p>${why}目前没有可交给你确认的创新点，后续实验尚未启动。</p></div>`;
+    }
     return `<div class="ideation-alert" role="alert">${c?.paper_title?`<p><strong>有一篇论文的${this._esc(c.operation || '处理')}尚未完成</strong></p>${this._issueHtml(c)}`:(d.missing || []).map(m=>`<p>${this._esc(m)}</p>`).join('')}</div>`;
   },
   _warningsHtml(d) {
@@ -164,6 +184,7 @@ const IdeationView = {
       const again=state==='future' && repeat && i>=5 && i<=7;
       let status=state==='done'?(step.human?'已确认':'已完成'):again?'待再次执行':step.human?'待你确认':'待开始';
       if(state==='current')status=d.run_id?'已交接':d.status==='handoff'?'交接中':d.status==='stopping'?'停止中':step.human && d.status==='waiting'?'等待你确认':active?'正在进行':this.stateLabel(d);
+      if(i===8 && state==='future' && d.status==='blocked' && !(d.cards || []).length)status='方案通过审查后解锁';
       return {...step,state,status,again,index:i,round:i>=5 && i<=7?round:null,
         description:state==='done'?step.done:state==='current'?(d.run_id?'已创建科研项目并交接后续工作':step.next):again?'上一轮已完成，本轮将再次执行':''};
     });
@@ -188,7 +209,7 @@ const IdeationView = {
     const history=(d.reviews || []).filter(r=>r.type==='auto_refine').slice(-(d.refinement_round || 0));
     return `<section class="ideation-journey" aria-label="完整调研流程"><div class="journey-heading"><h3>从研究方向到中文论文</h3><span>${current?`当前：${e(current.title)}`:'调研流程'}</span></div>
       <ol class="journey-stations" aria-label="调研步骤">${rows}</ol>
-      ${d.refinement_round && history.length?`<details class="journey-history"><summary>已完成的构思与审查轮次（${history.length}）</summary><ol>${history.map((r,i)=>`<li>第 ${i+1} 轮：已完成构思与审查，进入下一轮修订${(r.cards || []).length+(r.rejected_cards || []).length?` · ${(r.cards || []).length+(r.rejected_cards || []).length} 个候选`:''}</li>`).join('')}</ol></details>`:''}</section>`;
+      ${d.refinement_round && history.length?`<details class="journey-history"><summary>已完成的构思与审查轮次（${history.length}）</summary><ol>${history.map((r,i)=>({record:r,round:i+1})).reverse().map(({record:r,round})=>`<li>第 ${round} 轮：已完成构思与审查，进入下一轮修订${(r.cards || []).length+(r.rejected_cards || []).length?` · ${(r.cards || []).length+(r.rejected_cards || []).length} 个候选`:''}</li>`).join('')}</ol></details>`:''}</section>`;
   },
   _paperLimit(d) { return d.paper_limit || d.limits?.paper_limit || (d.approved_revision!=null?Math.max(20,d.papers.filter(p=>p.selected).length):20); },
   _landscapeHtml(d) {
