@@ -57,7 +57,7 @@ def test_partition_resume_does_not_repeat_finished_parts(reader, monkeypatch):
     monkeypatch.setattr(service, '_input_limit', lambda stage: 20000)
     source = document(45000)
     service.llm.fail_part = 2
-    with pytest.raises(RuntimeError):
+    with pytest.raises(WorkflowFailure, match='Long methods paper'):
         service._read_document(data, event, paper, source)
     assert [c[1]['part'] for c in service.llm.calls] == [1, 2]
     service.llm.fail_part = None

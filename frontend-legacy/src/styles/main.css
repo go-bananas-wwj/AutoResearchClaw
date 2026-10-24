@@ -847,3 +847,13 @@ button, a { touch-action: manipulation; }
 .landscape-original summary { color:var(--text-secondary); font-size:13px; cursor:pointer; }
 .ideation-landscape p { margin:0 0 16px; }
 @media(max-width:900px) { .landscape-grid { grid-template-columns:1fr; } .landscape-heading h3 { font-size:18px; } }
+
+.ideation-source-issue { padding:16px 0; border-bottom:1px solid var(--border); }
+.ideation-source-issue:last-child { border-bottom:0; }
+.ideation-source-issue h4 { margin:0 0 10px; font-size:14px; line-height:1.7; overflow-wrap:anywhere; }
+.ideation-source-issue p { margin:8px 0; line-height:1.8; font-size:13px; overflow-wrap:anywhere; }
+.ideation-source-issue p strong { margin-right:10px; }
+.ideation-source-issue details { margin-top:14px; font-size:13px; }
+.ideation-source-issue li { margin:10px 0; line-height:1.7; overflow-wrap:anywhere; }
+.ideation-source-issue li span { display:block; color:var(--text-secondary); }
+.ideation-warning-summary > p { color:var(--text-secondary); font-size:13px; margin-top:16px; }

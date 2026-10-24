@@ -13,7 +13,7 @@ from typing import Any
 
 from researchclaw.ideation.prompts import OUTPUT_TOKENS, PROMPTS
 from researchclaw.ideation.reading import input_bytes, pack
-from researchclaw.ideation.sources import Sources, paper_record, readable_document
+from researchclaw.ideation.sources import Sources, paper_record, readable_document, safe_url
 from researchclaw.ideation.store import SessionError, SessionStore, fingerprint, now
 
 
@@ -22,10 +22,12 @@ class Cancelled(Exception):
 
 
 class WorkflowFailure(SessionError):
-    def __init__(self, message, category="technical", code="stage_failed"):
+    def __init__(self, message, category="technical", code="stage_failed", context=None, recoverable=False):
         super().__init__(message)
         self.category = category
         self.code = code
+        self.context = context or {}
+        self.recoverable = recoverable
 
 
 class CandidateRoundFailure(SessionError):
@@ -140,7 +142,46 @@ class IdeationService:
         return self.llm
 
     def snapshot(self, sid: str) -> dict[str, Any]:
-        return self.store.load(sid)
+        data = self.store.load(sid)
+        # Old sessions retain real failed-source receipts, even without typed errors.
+        for item in data.get("rejected_cards", []):
+            failure = item.get("failure") or {}
+            if failure.get("context") or not str(failure.get("message", "")).startswith("未取得方法正文"):
+                continue
+            paper = next((p for p in item.get("closest_papers", []) if p["paper_id"] not in data.get("reading", {}) and p.get("fetch_attempts")), None)
+            if paper:
+                old = failure["message"]
+                exc = self._paper_failure(paper, SessionError(old), "获取全文")
+                exc.context.update(candidate_id=item.get("card_id"), candidate_title=item.get("title"), impact="该候选暂缓，继续处理其他候选")
+                failure.update(message=str(exc), category=exc.category, code=exc.code, context=exc.context, recoverable=True)
+                item["rejection_reason"] = str(exc)
+                if (data.get("blocker") or {}).get("message") == old:
+                    data["blocker"].update(failure)
+                    data["missing"] = [str(exc) if m == old else m for m in data.get("missing", [])]
+        return data
+
+    @staticmethod
+    def _paper_failure(paper, exc, operation):
+        if isinstance(exc, WorkflowFailure) and exc.category == "budget":
+            return exc
+        if isinstance(exc, WorkflowFailure) and exc.context:
+            return exc
+        reason = re.sub(r"^未取得方法正文[:：]\s*", "", str(exc))[:500]
+        context = {"paper_id": paper["paper_id"], "paper_title": paper["title"], "doi": paper.get("doi", ""),
+                   "url": safe_url(paper.get("url") or ""), "operation": operation, "reason": reason,
+                   "attempts": [{"url": safe_url(a.get("url") or ""), "outcome": a.get("outcome", "")}
+                                for a in paper.get("fetch_attempts", [])]}
+        return WorkflowFailure(f"《{paper['title']}》{operation}未完成：{reason}",
+            getattr(exc, "category", "evidence" if operation in ("获取全文", "核对正文") else "technical"),
+            getattr(exc, "code", "fulltext_unavailable" if operation == "获取全文" else "paper_read_failed"), context, recoverable=True)
+
+    def _warning(self, data, event, exc, candidate):
+        context = {**exc.context, "candidate_id": candidate.get("card_id"), "candidate_title": candidate.get("title")}
+        context["impact"] = "该候选暂缓，继续处理其他候选" if context.get("critical") else "跳过本篇补充对照，继续审查"
+        key = fingerprint([data["revision"], context.get("paper_id"), candidate.get("candidate_key"), exc.code])
+        entry = {"warning_id": key, "at": now(), "revision": data["revision"], "message": str(exc), "context": context, "code": exc.code}
+        data["warnings"] = [w for w in data.get("warnings", []) if w["warning_id"] != key] + [entry]
+        self._save(data, event)
 
     def _sync_unlimited_budget(self, data):
         configured = float(getattr(getattr(self.config, "hitl", None), "cost_budget_usd", 0) or 0)
@@ -277,7 +318,7 @@ class IdeationService:
             data = self.snapshot(sid)
             if data.get("run_id") or (data["phase"] in ("literature_review", "idea_review", "handed_off") and not data.get("download_task")):
                 raise SessionError("当前阶段需要审核，不能跳过。")
-            data.update(status="running", missing=[], blocker=None)
+            data.update(status="running", missing=[], blocker=None, unavailable_fulltexts={})
             self.store.save(data)
             event = threading.Event()
             thread = threading.Thread(target=self._work, args=(sid, event), daemon=True)
@@ -311,7 +352,8 @@ class IdeationService:
             actions = {"technical": ["重试当前阶段"], "evidence": ["补充原文", "调整文献范围"],
                        "scientific": ["补充文献", "调整研究方向"], "budget": ["调整成本预算"]}
             data.update(status="blocked", missing=[str(exc)[:1000]],
-                blocker={"category": category, "code": code, "message": str(exc)[:1000], "actions": actions[category]})
+                blocker={"category": category, "code": code, "message": str(exc)[:1000], "actions": actions[category],
+                         "context": getattr(exc, "context", {})})
             data.pop("progress_message", None)
             self.store.save(data)
 
@@ -541,9 +583,21 @@ class IdeationService:
             target.replace(quarantine / (paper["paper_id"] + ".json"))
             document = None
         if document is None:
-            document = self.sources.fulltext(paper, directory)
+            identity = fingerprint([paper.get(k) for k in ("paper_id", "url", "doi", "arxiv_id", "pdf_urls", "uploaded_pdf")])
+            previous = data.get("unavailable_fulltexts", {}).get(identity)
+            if previous:
+                raise WorkflowFailure(previous["message"], previous["category"], previous["code"], copy.deepcopy(previous["context"]), recoverable=True)
+            try:
+                document = self.sources.fulltext(paper, directory)
+            except Cancelled:
+                raise
+            except Exception as exc:
+                failure = self._paper_failure(paper, exc, "获取全文")
+                data.setdefault("unavailable_fulltexts", {})[identity] = {"message": str(failure), "category": failure.category,
+                    "code": failure.code, "context": copy.deepcopy(failure.context)}
+                raise failure from exc
         if sum(len(p["text"]) for p in document.get("pages", [])) < 2000 or not self._valid_document(paper, document):
-            raise SessionError("仅取得摘要或过短正文，未标记为原文已获取。")
+            raise self._paper_failure(paper, SessionError("只取得摘要或不可用正文，未标记为已读。"), "核对正文")
         if not target.exists():
             temp = target.with_suffix(".tmp")
             temp.write_text(json.dumps(document, ensure_ascii=False))
@@ -605,7 +659,7 @@ class IdeationService:
             category = getattr(exc, "category", "technical")
             data.update(status="blocked", missing=[str(exc)[:1000]], blocker={"category": category,
                 "code": getattr(exc, "code", "summary_failed"), "message": str(exc)[:1000],
-                "actions": ["重试全文解读"]})
+                "actions": ["重试全文解读"], "context": getattr(exc, "context", {})})
         data.pop("presentation_task", None)
         data.pop("progress_message", None)
         data.pop("progress", None)
@@ -1091,7 +1145,12 @@ class IdeationService:
         if data["phase"] == "reading" and paper.get("fulltext_attempt_id") == f"scope-r{data['revision']}" and paper.get("fulltext_status") in ("abstract_only", "failed"):
             raise SessionError(paper.get("fulltext_error") or "本轮未获取原文，请补充材料或稍后重试。")
         document = self._obtain_fulltext(data, event, paper)
-        result = self._read_document(data, event, paper, document)
+        try:
+            result = self._read_document(data, event, paper, document)
+        except Cancelled:
+            raise
+        except Exception as exc:
+            raise self._paper_failure(paper, exc, "核对方法证据") from exc
         result["supplemental"] = extra
         data["reading"][key] = result
         paper["fulltext_status"] = "read"
@@ -1146,6 +1205,14 @@ class IdeationService:
         return result
 
     def _read_document(self, data, event, paper, document):
+        try:
+            return self._read_document_contents(data, event, paper, document)
+        except Cancelled:
+            raise
+        except Exception as exc:
+            raise self._paper_failure(paper, exc, "核对方法证据") from exc
+
+    def _read_document_contents(self, data, event, paper, document):
         key = paper["paper_id"]
         chunks = passages(key, document)
         size = sum(len(c["text"]) for c in chunks)
@@ -1203,14 +1270,18 @@ class IdeationService:
                 rejected = data["rejected_cards"]
                 if not rejected:
                     raise WorkflowFailure("现有证据未形成可审查候选，请补充文献或调整方向。", "evidence", "no_supported_candidate")
-                non_scientific = next((c["failure"] for c in rejected if c["failure"]["category"] != "scientific"), None)
+                non_scientific = next((c["failure"] for c in rejected if c["failure"]["category"] != "scientific" and not c["failure"].get("recoverable")), None)
                 if non_scientific:
-                    raise WorkflowFailure(non_scientific["message"], non_scientific["category"], non_scientific["code"])
+                    raise WorkflowFailure(non_scientific["message"], non_scientific["category"], non_scientific["code"], non_scientific.get("context"))
                 previous = {x.get("failure", {}).get("lesson_key") for x in data.get("prior_rejections", []) if x.get("failure")}
                 new_lessons = {c["failure"]["lesson_key"] for c in rejected} - previous
                 if not new_lessons:
+                    if any(c["failure"].get("recoverable") for c in rejected):
+                        raise WorkflowFailure("本轮候选均已处理，暂未得到证据完整的方案；具体缺失论文和受影响候选见处理记录。", "evidence", "candidate_evidence_incomplete")
                     raise WorkflowFailure("新一轮仍重复已被否决的机制，未获得新增依据，已暂停自动修订。", "scientific", "no_new_information")
                 if data.get("refinement_round", 0) >= MAX_AUTO_REFINEMENTS:
+                    if any(c["failure"].get("recoverable") for c in rejected):
+                        raise WorkflowFailure("已完成三轮候选构思与审查，暂未得到证据完整的方案；缺失论文和其他审查结论已汇总在处理记录中。", "evidence", "candidate_evidence_incomplete")
                     raise WorkflowFailure("三轮构思与审查仍未形成可审核候选，已保留全部否决依据，请补充文献或调整方向。", "scientific", "refinement_exhausted")
                 self._prepare_refinement(data, data["feedback"], automatic=True)
                 self._progress(data, event, "正在根据审查依据自动修订方案", operation="refine",
@@ -1357,10 +1428,34 @@ class IdeationService:
                 if not neighbors:
                     raise SessionError("未定位可比较的最近邻方法。")
                 item["closest_papers"] = neighbors
+                unread = []
                 for p in neighbors:
-                    self._read_paper(data, event, p, extra=p["paper_id"] not in approved_ids)
+                    try:
+                        self._read_paper(data, event, p, extra=p["paper_id"] not in approved_ids)
+                    except Cancelled:
+                        raise
+                    except Exception as exc:
+                        failure = self._paper_failure(p, exc, "核对方法证据")
+                        if failure.category == "budget":
+                            raise failure
+                        relationship = matches.get(p["paper_id"], {}).get("relationship")
+                        critical = p["paper_id"] in authors_neighbors or relationship in ("same_claim", "same_mechanism")
+                        failure.context.update(critical=critical, relationship=relationship,
+                            candidate_id=item["card_id"], candidate_title=item["title"])
+                        self._warning(data, event, failure, item)
+                        unread.append({"paper_id": p["paper_id"], "title": p["title"], "relationship": relationship,
+                                       "critical": critical, "failure": failure})
+                critical = [p for p in unread if p["critical"]]
+                if critical:
+                    failure = critical[0]["failure"]
+                    raise WorkflowFailure(str(failure), failure.category, failure.code,
+                        {**failure.context, "papers": [p["failure"].context for p in critical]}, recoverable=True)
+                readable = [p for p in neighbors if p["paper_id"] in data["reading"]]
+                if not readable:
+                    raise WorkflowFailure("本候选没有可核对的最近邻正文，已转向其他方案。", "evidence", "no_readable_neighbors", recoverable=True)
                 audit_payload = {"candidate": candidate,
-                    "neighbors": [{k: v for k, v in data["reading"][p["paper_id"]].items() if k != "passages"} for p in neighbors]}
+                    "neighbors": [{k: v for k, v in data["reading"][p["paper_id"]].items() if k != "passages"} for p in readable],
+                    "unread_neighbors": [{k: v for k, v in p.items() if k != "failure"} for p in unread]}
                 for design_attempt in range(2):
                     review = self._json(data, event, "audit", audit_payload)
                     design = review.get("design_check") or {}
@@ -1399,7 +1494,7 @@ class IdeationService:
                 if {p.get("paper_id") for p in comparisons} != set(ids) or any(
                     not all(p.get(k) for k in ("problem", "mechanism", "data", "experiment", "difference")) for p in comparisons):
                     raise SessionError("最近邻比较未完整覆盖问题、机制、数据和实验差异。")
-                item.update(audit=review, closest_papers=neighbors,
+                item.update(audit=review, closest_papers=readable,
                     evidence=[self._evidence(data)[r] for r in dict.fromkeys(refs + review_refs)])
                 data["cards"].append(item)
             except Cancelled:
@@ -1408,6 +1503,7 @@ class IdeationService:
                 item["rejection_reason"] = str(exc)[:1000]
                 item["failure"] = {"category": getattr(exc, "category", "technical"),
                     "code": getattr(exc, "code", "stage_failed"), "message": str(exc)[:1000],
+                    "context": getattr(exc, "context", {}), "recoverable": getattr(exc, "recoverable", False),
                     "lesson_key": fingerprint([candidate.get("scientific_question"), candidate.get("method"), candidate.get("falsification"),
                                                getattr(exc, "code", "stage_failed"), sorted(authors_neighbors or [])])}
                 data["rejected_cards"].append(item)

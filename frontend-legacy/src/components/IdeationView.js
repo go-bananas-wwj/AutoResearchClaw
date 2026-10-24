@@ -69,7 +69,7 @@ const IdeationView = {
       ${this._progressHtml(d,active)}
       <dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
       <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl>
-      ${!active && (d.missing || []).length?`<div class="ideation-alert" role="alert">${d.missing.map(m=>`<p>${this._esc(m)}</p>`).join('')}</div>`:''}
+      ${!active && (d.missing || []).length?this._blockerHtml(d):''}
       ${d.run_id?`<p>科研任务已开始：<button class="idea-text-btn" data-action="project">打开科研项目</button></p>`:''}</div>
       ${!locked?`<details class="card" id="ideation-scope-editor"><summary>调整方向或补充材料</summary><div class="ideation-supplement">
         <input id="lit-reference" class="gate-input" type="text" placeholder="论文 DOI 或公开 URL" /><button class="proj-btn" data-action="add-paper">补充论文</button>
@@ -83,10 +83,32 @@ const IdeationView = {
 
       ${d.synthesis?this._landscapeHtml(d):''}
       ${d.cards.length?this._cardsHtml(d):''}
-      ${(d.rejected_cards || []).length?`<details class="card"><summary>未通过审查的候选（${d.rejected_cards.length}）</summary>${d.rejected_cards.map(c=>`<div class="idea-detail-section"><h3>${this._esc(c.title)}</h3><p>${this._esc(c.rejection_reason)}</p></div>`).join('')}</details>`:''}
+      ${!active && (d.rejected_cards || []).length?`<details class="card"><summary>未通过审查的候选（${d.rejected_cards.length}）</summary>${d.rejected_cards.map(c=>`<div class="idea-detail-section"><h3>${this._esc(c.title)}</h3><p>${this._esc(c.rejection_reason)}</p></div>`).join('')}</details>`:''}
       ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<div class="card"><h3>修改意见与重新生成</h3><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="例如：调整核心假设、验证方式或数据要求。"></textarea><button class="proj-btn" data-action="regenerate">基于已批准文献重新生成</button></div>`:''}
-      `;
+      ${!active?this._warningsHtml(d):''}`;
 
+  },
+  _issueHtml(context) {
+    const e=this._esc.bind(this),c=context || {};
+    return `<article class="ideation-source-issue">${c.paper_title?`<h4 data-no-i18n>${e(c.paper_title)}</h4><p>${this._link(c.doi?'https://doi.org/'+c.doi:c.url,'论文来源')}${c.doi?` · DOI ${e(c.doi)}`:''}</p>`:''}
+      ${c.candidate_title?`<p data-no-i18n><strong>受影响方案</strong>${e(c.candidate_title)}</p>`:''}
+      ${c.operation || c.reason?`<p data-no-i18n><strong>${e(c.operation || '处理结果')}</strong>${e(c.reason || '')}</p>`:''}
+      ${c.impact?`<p>${e(c.impact)}</p>`:''}
+      ${(c.attempts || []).length?`<details><summary>已尝试的来源（${c.attempts.length}）</summary><ul>${c.attempts.map(a=>`<li>${this._link(a.url,a.url)}<span>${e(a.outcome)}</span></li>`).join('')}</ul></details>`:''}</article>`;
+  },
+  _blockerHtml(d) {
+    const c=d.blocker?.context;
+    return `<div class="ideation-alert" role="alert">${c?.paper_title?`<p><strong>有一篇论文的${this._esc(c.operation || '处理')}尚未完成</strong></p>${this._issueHtml(c)}`:(d.missing || []).map(m=>`<p>${this._esc(m)}</p>`).join('')}</div>`;
+  },
+  _warningsHtml(d) {
+    const warnings=d.warnings || [];
+    if(!warnings.length)return '';
+    const grouped=new Map();
+    warnings.forEach(w=>{const c=w.context || {reason:w.message},key=c.paper_id?c.paper_id+':'+c.operation:w.warning_id;
+      if(!grouped.has(key))grouped.set(key,{...c,candidates:new Set()});
+      if(c.candidate_title)grouped.get(key).candidates.add(c.candidate_title);
+    });
+    return `<details class="card ideation-warning-summary"><summary>调研处理记录 · ${grouped.size} 项</summary><p>以下问题已记录，其余文献和候选的处理结果见上方。</p>${[...grouped.values()].map(c=>this._issueHtml({...c,candidate_title:[...c.candidates].join('；')})).join('')}</details>`;
   },
   _progressHtml(d,active) {
     const p=d.progress || {},e=this._esc.bind(this),op=p.operation;
