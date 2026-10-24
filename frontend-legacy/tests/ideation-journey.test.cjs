@@ -163,3 +163,13 @@ test('paragraph layout preserves every sentence and escapes model-supplied HTML'
   assert.ok((html.match(/<p /g)||[]).length>1);assert.equal((html.match(/这是解释。/g)||[]).length,80);
   assert.match(html,/&lt;script&gt;/);assert.ok(!html.includes('<script>'));
 });
+
+test('parallel status lists each active task and keeps draft counts separate',()=>{
+  const d=state({phase:'audit',idea_pool:Array.from({length:9},()=>({})),ideaspark_batch:{jobs:[],parallel:{workers:3,active:{
+    a:{number:1,message:'IdeaSpark：coherence'},b:{number:4,message:'IdeaSpark：critique'},c:{number:6,message:'IdeaSpark：plain_derive'}
+  }}},progress:{operation:'ideaspark',current:6}});
+  const html=view._statusStripHtml(d),p=view._progressDetails(d);
+  assert.match(html,/正在并行 3 个任务（上限 3）/);assert.match(html,/已生成 9 张候选草稿/);
+  assert.match(html,/任务 1：IdeaSpark：正在核对机制一致性/);assert.match(html,/任务 4：/);assert.match(html,/任务 6：/);
+  assert.match(p.line,/当前并行：1、4、6 号任务/);
+});

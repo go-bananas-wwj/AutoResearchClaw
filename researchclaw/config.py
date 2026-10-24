@@ -210,6 +210,8 @@ class LlmConfig:
     timeout_sec: int = 600
     ideation_backend: str = "ideaspark"
     ideation_card_target: int = 12
+    ideation_workers: int = 3
+    ideation_thinking: str = "disabled"
     # Independent reviewer/judge model: breaks the generator == judge
     # self-preference in peer review and the quality gate.
     # Empty reviewer_model => reviewing/judging reuses the generator model
@@ -1229,6 +1231,8 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
         ideation_backend=str(data.get("ideation_backend", "ideaspark")),
         ideation_card_target=max(1, min(20, _safe_int(data.get("ideation_card_target"), 12))),
+        ideation_workers=max(1, min(4, _safe_int(data.get("ideation_workers"), 3))),
+        ideation_thinking="enabled" if data.get("ideation_thinking") == "enabled" else "disabled",
         reviewer_model=data.get("reviewer_model", ""),
         reviewer_provider=data.get("reviewer_provider", ""),
         reviewer_base_url=data.get("reviewer_base_url", ""),

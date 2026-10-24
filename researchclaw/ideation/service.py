@@ -7,6 +7,7 @@ import re
 import threading
 import unicodedata
 import urllib.parse
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -252,7 +253,7 @@ class IdeationService:
             raise WorkflowFailure("剩余预算不足以预留下一次调用，请调整预算后恢复。", "budget", "budget_exhausted")
         # Reserve before the request so a process restart cannot erase an in-flight charge.
         data["cost_usd"] = round(data["cost_usd"] + reserve, 6)
-        entry = {"stage": stage, "at": now(), "cost_usd": reserve, "status": "pending",
+        entry = {"call_id": uuid.uuid4().hex, "stage": stage, "at": now(), "cost_usd": reserve, "status": "pending",
                  "cost_basis": "conservative_reservation_5_input_25_output_usd_per_million_not_invoice",
                  "prompt_hash": fingerprint(PROMPTS[stage])[:16], "output_budget": output_budget,
                  "paper_ids": sorted(paper_ids) if isolated else [], "input_bytes": len((PROMPTS[stage] + prompt).encode()),
@@ -282,7 +283,7 @@ class IdeationService:
         from researchclaw.ideation.cards import _extract_json
         output_dir = self.store.directory(data["session_id"]) / "model_outputs"
         output_dir.mkdir(exist_ok=True)
-        (output_dir / f"r{data['revision']}-{len(data['usage'])}-{stage}.txt").write_text(response.content)
+        (output_dir / f"r{data['revision']}-{entry['call_id']}-{stage}.txt").write_text(response.content)
         try:
             if stage == "summarize":
                 result, repaired = summary_json(response.content)

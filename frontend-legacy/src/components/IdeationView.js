@@ -154,20 +154,23 @@ const IdeationView = {
   },
   _batchSummary(d) {
     const pool=d.idea_pool || [],jobs=d.ideaspark_batch?.jobs || [];
-    return `已生成 ${pool.length} 张候选草稿 · ${(d.cards || []).length} 张通过审查 · ${jobs.filter(j=>j.status==='needs_work').length} 个任务待完善`;
+    const parallel=d.ideaspark_batch?.parallel,active=Object.keys(parallel?.active || {}).length;
+    return `${active?`正在并行 ${active} 个任务（上限 ${parallel.workers}） · `:''}已生成 ${pool.length} 张候选草稿 · ${(d.cards || []).length} 张通过审查 · ${jobs.filter(j=>j.status==='needs_work').length} 个任务待完善`;
   },
   _statusStripHtml(d) {
     const running=d.status==='running',waiting=d.status==='waiting';
     const label=running?'正在进行':waiting?'等待你确认':this.stateLabel(d);
-    const action=running?this._operationLabel(d):waiting?(d.phase==='idea_review'?'请查看创新点，选择想推进的方案':'请确认文献是否符合研究方向'):d.run_id?'后续进度请在科研项目中查看':`停在「${this.phaseLabel(d.phase)}」`;
-    return `<div class="ideation-current-status" role="status" aria-live="polite"><span class="ideation-status-dot${running?' is-active':''}" aria-hidden="true"></span><div><strong>${this._esc(label)}：${this._esc(action)}</strong>${d.ideaspark_batch?`<p>${this._esc(this._batchSummary(d))}</p>`:''}</div></div>`;
+    const tasks=Object.values(d.ideaspark_batch?.parallel?.active || {}).sort((a,b)=>a.number-b.number);
+    const action=running?(tasks.length>1?'IdeaSpark 正在并行处理候选':this._operationLabel(d)):waiting?(d.phase==='idea_review'?'请查看创新点，选择想推进的方案':'请确认文献是否符合研究方向'):d.run_id?'后续进度请在科研项目中查看':`停在「${this.phaseLabel(d.phase)}」`;
+    return `<div class="ideation-current-status" role="status" aria-live="polite"><span class="ideation-status-dot${running?' is-active':''}" aria-hidden="true"></span><div><strong>${this._esc(label)}：${this._esc(action)}</strong>${d.ideaspark_batch?`<p>${this._esc(this._batchSummary(d))}</p>`:''}${running && tasks.length?`<ul class="ideation-parallel-tasks">${tasks.map(t=>`<li data-no-i18n>任务 ${this._esc(t.number)}：${this._esc(this._operationLabel({progress_message:t.message || 'IdeaSpark：'+t.stage}))}</li>`).join('')}</ul>`:''}</div></div>`;
   },
   _progressDetails(d) {
     const p=d.progress || {},op=p.operation;
     let line='',detail='';
     if(op==='ideaspark') {
       const total=d.ideaspark_batch?.jobs?.length || p.total || d.ideaspark_batch?.target || 12;
-      line=`当前处理：第 ${p.current || 0} 号任务（共 ${total} 个，逐轮复核）`;
+      const tasks=Object.values(d.ideaspark_batch?.parallel?.active || {}).sort((a,b)=>a.number-b.number);
+      line=tasks.length>1?`当前并行：${tasks.map(t=>t.number).join('、')} 号任务（共 ${total} 个）`:`当前处理：第 ${p.current || 0} 号任务（共 ${total} 个，逐轮复核）`;
       detail=this._batchSummary(d);
     }
     else if(d.phase==='retrieval' && ['plan','search','screen'].includes(op)) {
@@ -189,7 +192,7 @@ const IdeationView = {
     }
     if(d.approved_revision!=null && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase))
       detail+=(detail?' · ':'')+`${Object.keys(d.reading || {}).length} 篇已核对原文依据`;
-    return {line,title:p.title || '',detail};
+    return {line,title:Object.keys(d.ideaspark_batch?.parallel?.active || {}).length>1?'各任务独立审查，结果完成后逐张更新。':p.title || '',detail};
   },
   _journeySteps(d) {
     const p=d.progress || {},op=p.operation,approved=d.approved_revision===d.revision;
@@ -454,7 +457,7 @@ const IdeationView = {
   async _showPrompt() {
     const dialog=this._showDialog('各阶段生成方式与实际提示词','<p>正在读取…</p>');
     try{const info=await API.ideaPrompt();if(this._dialog!==dialog)return;
-      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。${info.skill?`实际构思引擎：Microsoft IdeaSpark · ${this._esc(info.skill.commit)}；目标 ${info.card_target} 个独立任务。推理阶段使用独立上下文与推理模式。`:'内置证据驱动提示词，未调用官方IdeaSpark执行器。'}</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',summarize:'问题、现状、创新、方法与优缺点',neighbors:'最近邻召回筛选',read:'单篇全文阅读与证据核对',read_part:'同篇长论文分段阅读',read_merge:'同篇分段记录汇总',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查',spark_card:'官方方案中文卡片呈现'})[key] || (key.startsWith('ideaspark:')?'IdeaSpark官方阶段：'+key.slice(10):key))}${info.output_tokens[key]?' · 输出预算 '+info.output_tokens[key]:''}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
+      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。${info.skill?`实际构思引擎：Microsoft IdeaSpark · ${this._esc(info.skill.commit)}；目标 ${info.card_target} 个独立任务。同时最多 ${this._esc(info.workers || 3)} 个候选；每次使用独立上下文，深度推理${info.thinking==='enabled'?'按配置启用':'默认关闭'}，截断后调整输出重试。`:'内置证据驱动提示词，未调用官方IdeaSpark执行器。'}</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',summarize:'问题、现状、创新、方法与优缺点',neighbors:'最近邻召回筛选',read:'单篇全文阅读与证据核对',read_part:'同篇长论文分段阅读',read_merge:'同篇分段记录汇总',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查',spark_card:'官方方案中文卡片呈现'})[key] || (key.startsWith('ideaspark:')?'IdeaSpark官方阶段：'+key.slice(10):key))}${info.output_tokens[key]?' · 输出预算 '+info.output_tokens[key]:''}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
     }catch(e){if(this._dialog===dialog)dialog.querySelector('.idea-dialog-body').textContent='读取失败：'+e.message;}
   },
 };

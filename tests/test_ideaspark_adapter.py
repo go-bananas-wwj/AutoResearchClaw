@@ -155,6 +155,7 @@ def test_export_keeps_original_native_spec_and_receipts(engine):
 def test_batch_schedules_all_drafts_before_deep_review(engine,monkeypatch):
     h=host(engine);h.data.update(phase='generate',approved_revision=1,synthesis={})
     engine.config.llm.ideation_card_target=12
+    engine.config.llm.ideation_workers=1
     def seed(root):
         (root/'phase0').mkdir(parents=True);write(root/'phase1/phase1_output.json',{'state':'proceed'});return {'state':'proceed'}
     monkeypatch.setattr(h,'seed',seed)
@@ -252,3 +253,61 @@ def test_invalid_formula_gets_model_feedback_and_native_candidate_is_preserved(e
     assert len(requests)==2 and 'LaTeX' in requests[1]['output_feedback']
     assert data['idea_pool'][0]['formulas'][0]['latex']==r'\Delta_{d,\max}'
     assert native=={'title':'native','core_mechanism':'unchanged'}
+
+
+def test_truncated_model_retry_changes_budget_and_keeps_source_material(engine):
+    calls=[]
+    class Client:
+        def chat(self,messages,**kwargs):
+            calls.append((json.loads(messages[0]['content']),kwargs))
+            return SimpleNamespace(content='{"ok":true}',finish_reason='length' if len(calls)==1 else 'stop',
+                model='fixture',prompt_tokens=10,completion_tokens=20)
+    engine.llm=Client();h=host(engine)
+    h.model('coherence','fixture system',{'source_evidence':'unchanged'})
+    assert len(calls)==2 and calls[1][1]['max_tokens']>calls[0][1]['max_tokens']
+    assert calls[0][0]['source_evidence']==calls[1][0]['source_evidence']=='unchanged'
+    assert 'host_format_feedback' in calls[1][0]
+    assert all(u['thinking']=='disabled' for u in h.data['usage'])
+
+
+def test_wrong_outer_request_id_is_retried_without_accepting_old_artifacts(engine):
+    calls=[]
+    class Client:
+        def chat(self,messages,**kwargs):
+            calls.append(json.loads(messages[0]['content']))
+            result={'request_id':'wrong' if len(calls)==1 else 'current','artifacts':{'report.json':{'source':'unchanged'}}}
+            return SimpleNamespace(content=json.dumps(result),finish_reason='stop',model='fixture',prompt_tokens=10,completion_tokens=20)
+    engine.llm=Client();h=host(engine)
+    result=h.model('coherence','system',{'request':{'request_id':'current','outputs':['report.json']}})
+    assert len(calls)==2 and result['request_id']=='current'
+    assert result['artifacts']=={'report.json':{'source':'unchanged'}}
+
+
+def test_status_change_reuses_plain_card_without_model_rewrite(engine,monkeypatch):
+    data=develop(engine);card={**data['cards'][0],**plain_card()};data['idea_pool']=[]
+    h=IdeaSparkBatch(engine,data,threading.Event());native={'title':'unchanged mechanism'}
+    job={'id':'job','number':1,'directory':'fixture','focus':'fixture','status':'running'}
+    data['ideaspark_batch']={'jobs':[job]};monkeypatch.setattr(h,'candidate',lambda job:native)
+    calls=[]
+    def render(*a,**kw):calls.append(a[2]);return {'cards':[dict(card)]}
+    monkeypatch.setattr(engine,'_json',render)
+    h.present(job);job['status']='validated';h.present(job)
+    assert len(calls)==1 and data['cards'][0]['audit']['verdict']=='pass'
+    assert 'synthesis' not in calls[0]
+
+
+def test_presentation_only_loads_existing_notes_for_cited_papers(engine):
+    data=develop(engine);h=IdeaSparkBatch(engine,data,threading.Event())
+    pid=next(iter(data['reading']));notes=h.presentation_reading({'closest_paper_ids':[pid]})
+    assert len(notes)==1 and notes[0]['paper_id']==pid and 'passages' not in notes[0]
+    assert notes[0]['method']==data['reading'][pid]['method']
+    assert notes[0]['evidence']==data['reading'][pid]['evidence']
+
+
+def test_nullable_official_notes_do_not_break_resume(engine):
+    from researchclaw.ideation.service import WorkflowFailure
+    h=host(engine)
+    h.data['ideaspark_batch']={'phase':'review','jobs':[{'id':'job','number':1,'directory':'fixture','focus':'fixture',
+        'status':'needs_work','reason':None,'steps':1}]}
+    with pytest.raises(WorkflowFailure) as error:h.run()
+    assert error.value.code=='ideaspark_no_validated_cards'

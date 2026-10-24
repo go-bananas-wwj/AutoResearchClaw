@@ -33,7 +33,7 @@ def read(path, default=None):
 
 def write(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + '.tmp')
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2)); temp.replace(path)
 
 
@@ -200,50 +200,72 @@ class IdeaSparkBatch:
         signature = fingerprint([system, payload, reasoning, PIN])
         if checkpoint and Path(checkpoint).exists():
             saved = read(checkpoint)
-            if saved.get('input_hash') == signature:return saved['result']
-        if self.client is None:
-            base = self.service._client()
-            self.client = LLMClient(dataclasses.replace(base.config, thinking='enabled')) if isinstance(base, LLMClient) else base
-        text = json.dumps(payload, ensure_ascii=False)
-        budget = 65536 if reasoning else 16384
-        if len((system + text).encode()) + budget + 16384 > self.service._context_capacity():
-            raise WorkflowFailure('IdeaSpark当前输入超过上下文容量，未省略任何请求材料。', 'technical', 'ideaspark_context_capacity')
+            if saved.get('input_hash') == signature:
+                result = saved['result']
+                if isinstance(payload.get('request'), dict):
+                    try:self.bind_envelope(result, payload['request'])
+                    except SessionError:pass
+                    else:return result
+                else:return result
+        base = self.service._client()
+        use_thinking = reasoning and getattr(self.service.config.llm, 'ideation_thinking', 'disabled') == 'enabled'
+        budgets = {'generation':16384, 'coherence':16384, 'critique':12288, 'revision':16384,
+                   'batch_plan':3072, 'pattern_tagging':8192, 'bottleneck':8192}
+        budget = 8192 if stage.endswith(':execution_binding') else budgets.get(stage, 12288)
+        if use_thinking:budget = 32768
+        feedback = None
         for attempt in range(2):
             self.service._check(self.data, self.event)
-            call=self.directory/'ideaspark'/f"r{self.data['revision']}"/'host_calls'/uuid.uuid4().hex
-            write(call/'request.json',{'stage':stage,'system':system,'input':json.loads(text.split('\n上次返回未通过',1)[0]),
-                'input_hash':signature,'thinking':'enabled' if reasoning else 'disabled','skill_commit':PIN})
+            actual = {**payload, 'host_format_feedback':feedback} if feedback else payload
+            text = json.dumps(actual, ensure_ascii=False)
+            thinking = 'enabled' if use_thinking and not attempt else 'disabled'
+            if len((system + text).encode()) + budget + 16384 > self.service._context_capacity():
+                raise WorkflowFailure('IdeaSpark当前输入超过上下文容量，未省略任何请求材料。', 'technical', 'ideaspark_context_capacity')
+            call_id = uuid.uuid4().hex
+            call=self.directory/'ideaspark'/f"r{self.data['revision']}"/'host_calls'/call_id
+            write(call/'request.json',{'stage':stage,'system':system,'input':actual,
+                'input_hash':signature,'thinking':thinking,'output_budget':budget,'skill_commit':PIN})
             reserve = (len((system + text).encode()) * 5 + budget * 25) / 1_000_000
             if self.data['budget_usd'] > 0 and self.data['cost_usd'] + reserve > self.data['budget_usd']:
                 raise WorkflowFailure('调研预算不足以执行下一步IdeaSpark调用。', 'budget', 'budget_exhausted')
             self.data['cost_usd'] += reserve
-            entry = {'stage': 'ideaspark:' + stage, 'at': now(), 'input_hash': signature, 'status': 'pending',
-                'prompt_hash': fingerprint(system), 'cost_usd': reserve, 'output_budget': budget,
-                'input_bytes': len((system + text).encode()), 'thinking': 'enabled' if reasoning else 'disabled',
+            entry = {'call_id':call_id,'stage':'ideaspark:'+stage,'at':now(),'input_hash':signature,'status':'pending',
+                'prompt_hash':fingerprint(system),'cost_usd':reserve,'output_budget':budget,
+                'input_bytes':len((system+text).encode()),'thinking':thinking,'attempt':attempt+1,
                 'request_file':str((call/'request.json').relative_to(self.directory)),
-                'skill_commit': PIN, 'cost_basis': 'conservative_reservation_not_invoice'}
-            self.data['usage'].append(entry); self.service.store.save(self.data)
+                'skill_commit':PIN,'cost_basis':'conservative_reservation_not_invoice'}
+            self.data['usage'].append(entry);self.service.store.save(self.data)
             response = None
             try:
-                client = self.client
-                if not reasoning and isinstance(client, LLMClient):client = LLMClient(dataclasses.replace(client.config, thinking='disabled'))
-                response = client.chat([{'role':'user','content':text}], system=system,
-                    max_tokens=budget, temperature=0.3, json_mode=True)
+                client = LLMClient(dataclasses.replace(base.config, thinking=thinking)) if isinstance(base, LLMClient) else base
+                response=client.chat([{'role':'user','content':text}],system=system,
+                    max_tokens=budget,temperature=0.3,json_mode=True)
                 write(call/'response.json',{'content':response.content,'finish_reason':getattr(response,'finish_reason',''),
                     'model':getattr(response,'model','')})
             finally:
-                entry.update(status='returned' if response else 'failed', model=getattr(response,'model',self.service.config.llm.primary_model),
-                    prompt_tokens=getattr(response,'prompt_tokens',0), completion_tokens=getattr(response,'completion_tokens',0))
+                entry.update(status='returned' if response else 'failed',model=getattr(response,'model',self.service.config.llm.primary_model),
+                    prompt_tokens=getattr(response,'prompt_tokens',0),completion_tokens=getattr(response,'completion_tokens',0),
+                    finish_reason=getattr(response,'finish_reason',''))
                 if self.event.is_set():self.data['status']='stopping'
                 self.service.store.save(self.data)
             try:
-                if getattr(response,'truncated',False) or getattr(response,'finish_reason','')=='length':raise ValueError('输出被截断')
-                result = _extract_json(response.content)
-                if checkpoint:write(checkpoint, {'input_hash':signature,'result':result})
+                if getattr(response,'truncated',False) or getattr(response,'finish_reason','')=='length':
+                    raise ValueError('输出截断')
+                result=_extract_json(response.content)
+                if not isinstance(result,dict):raise ValueError('未返回JSON对象')
+                if isinstance(payload.get('request'),dict):
+                    result=self.bind_envelope(result,payload['request'])
+                    if set(result.get('artifacts',{}))!=set(payload['request']['outputs']):
+                        raise SessionError('输出文件集合不匹配当前请求')
+                if checkpoint:write(checkpoint,{'input_hash':signature,'result':result})
                 return result
-            except ValueError:
-                if attempt:raise WorkflowFailure('IdeaSpark模型两次未返回完整JSON，已保留原始请求。','technical','ideaspark_invalid_json')
-                text += '\n上次返回未通过JSON/截断校验，请完整返回严格JSON，不输出思考过程。'
+            except (ValueError,SessionError) as exc:
+                if attempt:raise WorkflowFailure('IdeaSpark调整推理与输出后仍未返回有效JSON：'+str(exc),
+                    'technical','ideaspark_invalid_json')
+                feedback=('上次结果未通过：'+str(exc)+
+                    '。本次关闭深度推理并扩大输出。返回完整严格JSON和当前request_id；保留必需字段、算例与证据，'
+                    '不重复输入全文或思考过程。只修复本次要求的输出，不改变研究方案。')
+                budget=min(32768,budget*2)
 
     def inputs(self, paths, run):
         contents = {}
@@ -365,7 +387,13 @@ class IdeaSparkBatch:
 You cannot execute code yourself. For arithmetic toy traces provide stdlib Python in execution.script (or rerun.script), mark it unexecuted with empty output; the host executes it in a network-free CPU sandbox and a fresh context binds findings to the actual stdout. Never simulate training or learned components, and never invent an execution result.'''
         system+='\nThe exact outer JSON must be '+json.dumps({'request_id':request['request_id'],'artifacts':{p:{} for p in request['outputs']}})+'. Put contract_version inside each artifact, not instead of request_id.'
         result=self.recover_response(request,payload)
-        if result is None:result=self.model(request['stage'],system,payload,run/'.quality'/request['stage']/'host_response.json')
+        if result is None:
+            # Lossless: the phase prompt is already present verbatim in system.
+            # Keep its path addressable without sending its entire text twice.
+            payload={**payload,'files':{name:(
+                '[The complete content of this file is supplied verbatim at the start of the system message.]'
+                if value and system.startswith(value) else value) for name,value in payload['files'].items()}}
+            result=self.model(request['stage'],system,payload,run/'.quality'/request['stage']/'host_response.json')
         result=self.bind_envelope(result,request)
         result=self.bind_envelope(self.bind_execution(result,request,payload,system,run),request)
         if result.get('request_id')!=request['request_id'] or set(result.get('artifacts',{}))!=set(request['outputs']):
@@ -392,7 +420,8 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
             try:result=_extract_json(response['content'])
             except (ValueError,KeyError):continue
             if set(result.get('artifacts',{}))!=set(request['outputs']):continue
-            self.bind_envelope(result,request)
+            try:self.bind_envelope(result,request)
+            except SessionError:continue
             write(path.parent/'transport_recovery.json',{'request_id':request['request_id'],
                 'reason':'reuse unrecorded response for identical official request and byte-identical inputs; bind missing transport id only',
                 'artifacts_hash':fingerprint(result['artifacts'])})
@@ -405,6 +434,27 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
                     'phase2_coherence/refined_candidate.json','phase2_generate/phase2_generate_output.json']
         return next((read(run/p) for p in candidates if (run/p).exists()),None)
 
+    def presentation_reading(self, native):
+        """Load saved notes for this proposal's cited papers, not the whole survey."""
+        text=json.dumps(native,ensure_ascii=False)
+        ids={pid for pid in self.data['reading'] if pid in text}
+        for paper in self.data['papers']:
+            if paper['paper_id'] in self.data['reading'] and any(str(paper[k]) in text for k in ('doi','arxiv_id','url') if paper.get(k)):
+                ids.add(paper['paper_id'])
+        if not ids:
+            ids={pid for pid,n in self.data['reading'].items() if not n.get('supplemental')}
+        return [{k:v for k,v in self.data['reading'][pid].items() if k in
+            ('paper_id','title','problem','method','data','experiments','findings','strengths','limitations','evidence')}
+            for pid in sorted(ids)]
+
+    def sync_card_status(self, card, job):
+        card.update(skill_status=job['status'],skill_reason=job.get('reason',''),
+            skill_card_available=(self.directory/job['directory']/'phase4/idea.std.zh.md').exists())
+        if job['status']=='validated':
+            card['audit']={'verdict':'pass','reason':'官方IdeaSpark当前版本的质量门、审查和发布记录已通过；研究方案尚未经实验验证。','comparisons':[]}
+        else:card.pop('audit',None)
+        self.data['cards']=[c for c in self.data.get('idea_pool',[]) if c.get('skill_status')=='validated']
+
     def present(self, job):
         native=self.candidate(job)
         if not native:
@@ -413,15 +463,17 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
                     card.update(skill_status='revising' if job['status']=='running' else job['status'],skill_reason=job.get('reason',''))
             return
         from .prompts import PROMPTS
-        signature=fingerprint([native,job['status'],PROMPTS['spark_card']])
-        if job.get('presentation_hash')==signature:
-            for card in self.data.get('idea_pool',[]):
-                if card.get('skill_job_id')==job['id']:card.update(skill_status=job['status'],skill_reason=job.get('reason',''))
+        signature=fingerprint([native,PROMPTS['spark_card']])
+        existing=next((c for c in self.data.get('idea_pool',[]) if c.get('skill_job_id')==job['id']),None)
+        legacy={fingerprint([native,status,PROMPTS['spark_card']]) for status in ('running','needs_work','validated')}
+        if existing and existing.get('native_candidate_hash')==fingerprint(native) and job.get('presentation_hash') in legacy | {signature}:
+            self.sync_card_status(existing,job)
+            job['presentation_hash']=signature;job.pop('presentation_error',None)
             return
         self.service._progress(self.data,self.event,'IdeaSpark：正在撰写候选的白话讲解',operation='ideaspark',
             current=job['number'],total=len(self.data['ideaspark_batch']['jobs']),title=job['focus'])
-        payload={'candidate':native,'direction':self.data['direction'],'synthesis':self.data['synthesis'],
-            'reading':self.service._compact_reading(self.data),'skill_status':job['status']}
+        payload={'candidate':native,'direction':self.data['direction'],
+            'reading':self.presentation_reading(native)}
         for attempt in range(2):
             result=self.service._json(self.data,self.event,'spark_card',payload)
             rows=result.get('cards')
@@ -437,7 +489,9 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
         refs=card.get('evidence_refs') or [];allowed=self.service._evidence(self.data)
         ids=card.get('closest_paper_ids') or []
         method_refs={e['passage_id'] for n in self.data['reading'].values() for e in n['evidence'] if e.get('role')=='method' and e.get('kind')=='source'}
-        if not refs or not set(refs)<=allowed.keys() or not ids or not set(ids)<=self.data['reading'].keys():
+        supplied={n['paper_id'] for n in payload['reading']}
+        supplied_refs={e['passage_id'] for n in payload['reading'] for e in n['evidence']}
+        if not refs or not set(refs)<=allowed.keys() or not set(refs)<=supplied_refs or not ids or not set(ids)<=supplied:
             raise SessionError('IdeaSpark卡片引用了未知论文或不存在的原文片段。')
         if not set(refs)&method_refs:raise SessionError('IdeaSpark卡片缺少方法正文引用，未将其作为可确认方案。')
         intervention=native.get('intervention_object')
@@ -472,11 +526,33 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
             for card in self.data.get('idea_pool', []):
                 if card.get('skill_job_id') == job['id']:
                     card.update(skill_status='revising' if job['status']=='running' else job['status'],
-                        skill_reason=(job.get('reason','')+' 白话讲解待更新。').strip())
+                        skill_reason=((job.get('reason') or '')+' 白话讲解待更新。').strip())
                     card.pop('audit', None)
             self.data['cards'] = [c for c in self.data.get('idea_pool', []) if c.get('skill_status') == 'validated'
                 and (c.get('skill_job_id') != job['id'] or c.get('native_candidate_hash') == native_hash)]
             self.service._save(self.data, self.event)
+
+    def process_job(self, job, phase):
+        from .service import Cancelled
+        try:
+            if phase=='refresh':
+                if self.candidate(job):self.present_safely(job)
+                return
+            while job['status']=='running' and (phase=='review' or not self.candidate(job)):
+                self.service._check(self.data,self.event)
+                job['steps']+=1
+                if job['steps']>MAX_HOST_STEPS:
+                    raise SessionError('IdeaSpark执行步数异常，已保存该任务并继续其他构思。')
+                self.step(job)
+                self.present_safely(job)
+        except Cancelled:raise
+        except Exception as exc:
+            if getattr(exc,'category','')=='budget':raise
+            job.update(status='needs_work',reason=str(exc)[:1000],
+                retryable=getattr(exc,'category','technical')=='technical')
+            self.present_safely(job)
+        finally:
+            self.service.store.save(self.data)
 
     def run(self):
         from .service import Cancelled, WorkflowFailure
@@ -484,10 +560,10 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
         batch=self.data.get('ideaspark_batch')
         if batch:
             for job in batch.get('jobs',[]):
-                if job['status']=='needs_work':
-                    run=self.directory/job['directory'];req=read(run/'.quality/generation/request.json',{})
-                    if req and '结果不匹配当前请求' in job.get('reason',''):
-                        job.update(status='running',reason='')
+                old_transport_error=any(t in (job.get('reason') or '') for t in
+                    ('未返回完整JSON','错误请求编号','结果不匹配当前请求'))
+                if job['status']=='needs_work' and (job.get('retryable') or old_transport_error and not job.get('fast_retry_applied')):
+                    job.update(status='running',reason='',retryable=False,fast_retry_applied=True)
         if not batch or not batch.get('jobs'):
             target=max(1,min(20,int(getattr(self.service.config.llm,'ideation_card_target',12))))
             root=self.directory/'ideaspark'/f"r{self.data['revision']}"
@@ -512,32 +588,18 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
                 jobs.append({'id':uuid.uuid4().hex[:12],'number':i,'focus':focus,'directory':str(run.relative_to(self.directory)),'status':'running','steps':0})
             batch={'profile':profile(),'target':target,'jobs':jobs,'scope_revision':self.data['revision']}
             self.data.update(ideaspark_batch=batch,idea_pool=[],cards=[]);self.service._save(self.data,self.event)
-        # Breadth first: expose every generated draft before spending all reviews on one idea.
-        for job in batch['jobs']:
-            if self.candidate(job):
-                self.present_safely(job)
-        for generation_only in (True,False):
-            batch['phase']='drafts' if generation_only else 'review'
-            while True:
-                pending=[j for j in batch['jobs'] if j['status']=='running' and (not generation_only or not self.candidate(j))]
-                if not pending:break
-                for job in pending:
-                    self.service._check(self.data,self.event)
-                    try:
-                        job['steps']+=1
-                        if job['steps']>MAX_HOST_STEPS:raise SessionError('IdeaSpark执行步数异常，已保存该任务并继续其他构思。')
-                        self.step(job)
-                        while generation_only and job['status']=='running' and not self.candidate(job):
-                            job['steps']+=1
-                            if job['steps']>MAX_HOST_STEPS:raise SessionError('IdeaSpark执行步骤异常，已保存任务。')
-                            self.step(job)
-                        self.present_safely(job)
-                    except Cancelled:raise
-                    except Exception as exc:
-                        if getattr(exc,'category','')=='budget':raise
-                        job.update(status='needs_work',reason=str(exc)[:1000])
-                        self.present_safely(job)
-                    self.service._save(self.data,self.event)
+        # Each worker owns one candidate snapshot. Only short publications serialize.
+        workers=max(1,min(4,int(getattr(self.service.config.llm,'ideation_workers',3))))
+        for phase in ('refresh','drafts','review'):
+            jobs=[j for j in batch['jobs'] if self.candidate(j)] if phase=='refresh' else [
+                j for j in batch['jobs'] if j['status']=='running' and (phase=='review' or not self.candidate(j))]
+            if not jobs:continue
+            if workers==1:
+                batch.update(phase=phase,parallel={'workers':1,'active':{}})
+                for job in jobs:self.process_job(job,phase)
+            else:
+                from .parallel import run_candidates
+                run_candidates(self,jobs,phase,workers)
         self.data.pop('progress',None);self.data.pop('progress_message',None)
         if self.data['cards']:
             self.data.update(phase='idea_review',status='waiting',missing=[],blocker=None)

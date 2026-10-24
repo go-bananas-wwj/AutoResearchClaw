@@ -290,6 +290,8 @@ async def idea_prompt():
         stages.update({'ideaspark:'+p.stem:p.read_text() for p in sorted((ROOT/'references/system-prompts').glob('*.txt'))})
     return {"stages": stages, "output_tokens": OUTPUT_TOKENS, "model": service.config.llm.primary_model,
             "skill":skill,"card_target":getattr(service.config.llm,'ideation_card_target',12),
+            "workers":getattr(service.config.llm,'ideation_workers',3),
+            "thinking":getattr(service.config.llm,'ideation_thinking','disabled'),
             "retrieval": True, "pattern_catalog": PATTERNS,
             "budget_basis": "预算为保守预留：输入$5/百万tokens、输出$25/百万tokens，非供应商账单。"}
 
