@@ -857,3 +857,44 @@ button, a { touch-action: manipulation; }
 .ideation-source-issue li { margin:10px 0; line-height:1.7; overflow-wrap:anywhere; }
 .ideation-source-issue li span { display:block; color:var(--text-secondary); }
 .ideation-warning-summary > p { color:var(--text-secondary); font-size:13px; margin-top:16px; }
+
+/* 纵向站点式调研流程：保留前后步骤，仅展开当前工作。 */
+.ideation-journey { margin:18px 0 28px; padding:22px; border:1px solid var(--border); border-radius:18px; background:rgba(250,251,255,.66); }
+.journey-heading { display:flex; align-items:baseline; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:22px; }
+.journey-heading h3 { font-size:15px; font-weight:600; letter-spacing:-.02em; }
+.journey-heading > span { font-size:12px; color:var(--text-secondary); }
+.journey-stations { list-style:none; margin:0; padding:0; }
+.journey-station { position:relative; padding:0 0 16px 42px; min-width:0; }
+.journey-station::before { content:''; position:absolute; left:11px; top:24px; bottom:0; width:2px; background:#d6d9e0; }
+.journey-station:last-child { padding-bottom:0; }
+.journey-station:last-child::before { display:none; }
+.journey-station.is-done::before { background:rgba(0,113,227,.5); }
+.journey-marker { position:absolute; left:0; top:1px; display:flex; align-items:center; justify-content:center; width:24px; height:24px; border:2px solid #b9bfca; border-radius:50%; background:#fafbff; font-size:10px; font-weight:600; color:var(--text-secondary); z-index:1; }
+.is-done > .journey-marker { color:#fff; border-color:var(--accent); background:var(--accent); font-size:13px; }
+.is-current > .journey-marker { color:var(--accent); border-color:var(--accent); background:#fff; box-shadow:0 0 0 5px var(--accent-soft); }
+.journey-station-body { min-width:0; }
+.journey-station-heading { display:flex; align-items:center; flex-wrap:wrap; gap:7px 10px; min-height:26px; }
+.journey-station-heading h4 { font-size:14px; font-weight:500; line-height:1.7; }
+.journey-station-status { margin-left:auto; font-size:12px; color:var(--text-secondary); }
+.is-done .journey-station-status { color:var(--accent); }
+.is-future .journey-station-heading h4 { color:var(--text-secondary); }
+.journey-human { font-size:10px; color:var(--purple); background:rgba(128,80,186,.07); padding:2px 7px; border-radius:6px; }
+.journey-next { font-size:10px; color:var(--text-secondary); border:1px solid var(--border); padding:1px 6px; border-radius:6px; }
+.journey-description { font-size:12px; line-height:1.75; color:var(--text-secondary); margin:3px 0 0; overflow-wrap:anywhere; }
+.is-current > .journey-station-body { border:1px solid rgba(0,113,227,.18); background:rgba(0,113,227,.045); border-radius:13px; padding:12px 16px; margin:-5px 0 4px -12px; }
+.is-current .journey-station-heading h4 { font-weight:600; }
+.is-current .journey-station-status { color:var(--accent); font-weight:600; }
+.journey-current-detail { margin-top:10px; font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
+.journey-current-detail p + p { margin-top:4px; }
+.journey-current-count { font-weight:600; }
+.journey-current-paper { color:var(--text-primary); }
+.journey-current-evidence { color:var(--text-secondary); font-size:12px; }
+.journey-round { display:inline-block; margin-top:10px; font-size:11px; color:var(--accent); }
+.journey-history { margin:20px 0 0 42px; border-top:1px solid var(--border); padding-top:14px; font-size:12px; color:var(--text-secondary); }
+.journey-history summary { cursor:pointer; }
+.journey-history ol { list-style:none; margin:10px 0 0; padding:0; }
+.journey-history li { padding:5px 0; line-height:1.8; }
+.journey-station.is-running > .journey-marker { animation:journey-beacon 2s ease-in-out infinite; }
+@keyframes journey-beacon { 50% { box-shadow:0 0 0 7px rgba(0,113,227,.04); } }
+@media (max-width:600px) { .ideation-journey { padding:18px 14px; } .journey-station { padding-left:36px; } .journey-station-heading h4 { font-size:13px; } .journey-station-heading { gap:5px 8px; } .journey-station-status { margin-left:0; } .is-current > .journey-station-body { padding:10px 12px; margin-left:-6px; } .journey-history { margin-left:36px; } }
+@media (prefers-reduced-motion:reduce) { .journey-station.is-running > .journey-marker { animation:none; } }

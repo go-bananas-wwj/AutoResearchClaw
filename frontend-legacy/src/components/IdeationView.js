@@ -28,7 +28,7 @@ const IdeationView = {
     try {
       const data=await API.ideationSession(this.sessionId);
       if(token!==this._token || !this.host) return;
-      const signature=JSON.stringify([data.revision,data.phase,data.status,data.blocker,data.refinement_round,data.download_task,data.progress,data.progress_message,data.plan,data.papers,data.cards,data.missing,Object.keys(data.reading || {}),data.usage.length]);
+      const signature=JSON.stringify([data.revision,data.phase,data.status,data.blocker,data.refinement_round,data.download_task,data.presentation_task,data.progress,data.progress_message,data.plan,data.papers,data.cards,data.missing,data.reviews,data.warnings,Object.keys(data.reading || {}),data.usage.length]);
       this.data=data;
       if(force || signature!==this._signature) { this._signature=signature; this._paint(); }
     } catch(e) { if(token===this._token) { this._error=e.message; this._paint(); } }
@@ -63,9 +63,9 @@ const IdeationView = {
   _sessionHtml(d) {
     const active=['running','pending','stopping'].includes(d.status), locked=active || this.busy || d.status==='handoff' || !!d.run_id;
     return `<div class="card ideation-brief">
-      ${active || ['blocked','stopped','interrupted','handoff'].includes(d.status)?`<div class="ideation-progress"><strong>${this._esc(d.progress_message || this.phaseLabel(d.phase))}</strong><span class="proj-badge">${this._esc(this.stateLabel(d))}</span>${active && d.refinement_round?`<span class="proj-badge">自动修订 ${d.refinement_round+1}/3</span>`:''}
+      <div class="ideation-progress"><strong>调研进度</strong><span class="proj-badge">${this._esc(d.run_id?'已交接自动科研':this.stateLabel(d))}</span>
       ${active?`<button class="proj-btn" data-action="stop" ${d.status==='stopping'?'disabled':''}>停止调研</button>`:''}
-      ${['blocked','stopped','interrupted'].includes(d.status) && d.blocker?.category!=='scientific' && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>`:''}
+      ${['blocked','stopped','interrupted'].includes(d.status) && d.blocker?.category!=='scientific' && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>
       ${this._progressHtml(d,active)}
       <dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
       <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl>
@@ -110,9 +110,8 @@ const IdeationView = {
     });
     return `<details class="card ideation-warning-summary"><summary>调研处理记录 · ${grouped.size} 项</summary><p>以下问题已记录，其余文献和候选的处理结果见上方。</p>${[...grouped.values()].map(c=>this._issueHtml({...c,candidate_title:[...c.candidates].join('；')})).join('')}</details>`;
   },
-  _progressHtml(d,active) {
-    const p=d.progress || {},e=this._esc.bind(this),op=p.operation;
-    if(!active && d.status!=='blocked')return '';
+  _progressDetails(d) {
+    const p=d.progress || {},op=p.operation;
     let line='',detail='';
     if(d.phase==='retrieval' && ['plan','search','screen'].includes(op)) {
       if(op==='plan')line='正在理解研究方向与规划检索';
@@ -133,8 +132,63 @@ const IdeationView = {
     }
     if(d.approved_revision!=null && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase))
       detail+=(detail?' · ':'')+`${Object.keys(d.reading || {}).length} 篇已核对原文依据`;
-    if(!line && !detail && !p.title)return '';
-    return `<div class="literature-live" role="status" aria-live="polite">${active?'<span class="literature-spinner" aria-hidden="true"></span>':''}<div>${line?`<strong>${e(line)}</strong>`:''}${p.title?`<p data-no-i18n>${e(p.title)}</p>`:''}${detail?`<p>${e(detail)}</p>`:''}</div></div>`;
+    return {line,title:p.title || '',detail};
+  },
+  _journeySteps(d) {
+    const p=d.progress || {},op=p.operation,approved=d.approved_revision===d.revision;
+    const phaseIndex={retrieval:0,literature_review:3,reading:4,synthesis:5,generate:6,audit:7,idea_review:8,handed_off:9};
+    let base=phaseIndex[d.phase]??0;
+    if(d.phase==='retrieval')base=['download','summarize','read'].includes(op)?2:op==='plan' || !d.plan?0:1;
+    if(d.status==='handoff' || d.run_id)base=9;
+    const current=(d.presentation_task==='summaries' || d.download_task) && !d.run_id?2:base;
+    const papers=(d.papers || []).filter(p=>!p.user_excluded && p.in_shortlist!==false && ['core','adjacent'].includes(p.relevance) && p.summary_basis==='fulltext' && p.fulltext_verified!==false && ['downloaded','read'].includes(p.fulltext_status));
+    const notes=Object.values(d.reading || {}),primary=notes.filter(n=>!n.supplemental).length;
+    const round=(d.refinement_round || 0)+1,repeat=round>1 && approved;
+    const active=d.status==='running';
+    const steps=[
+      {id:'direction',title:'理解研究方向',done:'已明确研究对象与检索范围',next:'根据你的描述明确研究对象'},
+      {id:'search',title:'检索与筛选文献',done:'已完成相关文献检索与初步筛选',next:'检索经典与近期工作，筛选相关文献'},
+      {id:'overview',title:'阅读全文并整理文献',done:papers.length?`${papers.length} 篇全文解读已整理`:'已整理相关文献的全文解读',next:'获取可读全文，逐篇整理科学问题与方法'},
+      {id:'literature_review',title:'确认文献方向',human:true,done:'你已确认文献符合研究方向',next:'请核对下方文献是否符合你的方向'},
+      {id:'reading',title:'比较论文、核对原文证据',done:primary?`已完成 ${primary} 篇主要文献的证据核对`:'已完成主要文献的证据核对',next:'核对方法、数据和结论的原文依据'},
+      {id:'synthesis',title:'梳理现状与研究缺口',done:'已整理研究现状、方法差异与待验证问题',next:'比较已有方法，定位有依据的研究问题'},
+      {id:'generate',title:'构思创新点',done:'已形成候选研究方案',next:'基于文献证据构思可验证的创新点'},
+      {id:'audit',title:'查重与审查创新点',done:d.cards?.length?`${d.cards.length} 个方案通过本轮审查`:'已完成候选方案的近邻比较与审查',next:'检索近邻工作，核对方法差异与实验逻辑'},
+      {id:'idea_review',title:'确认创新点',human:true,done:'你已选择并提交研究方案',next:'查看创新点卡片，选择要推进的方案'},
+      {id:'research',title:'自动实验与中文论文',next:'确认方案后，自动推进实验与中文论文'}
+    ];
+    return steps.map((step,i)=>{
+      let state=i===current?'current':i<base?'done':'future';
+      // A direction approval is server-owned; viewing this route never approves it.
+      if(i===3 && !approved && base<9 && i!==current)state='future';
+      const again=state==='future' && repeat && i>=5 && i<=7;
+      let status=state==='done'?(step.human?'已确认':'已完成'):again?'待再次执行':step.human?'待你确认':'待开始';
+      if(state==='current')status=d.run_id?'已交接':d.status==='handoff'?'交接中':d.status==='stopping'?'停止中':step.human && d.status==='waiting'?'等待你确认':active?'正在进行':this.stateLabel(d);
+      return {...step,state,status,again,index:i,round:i>=5 && i<=7?round:null,
+        description:state==='done'?step.done:state==='current'?(d.run_id?'已创建科研项目并交接后续工作':step.next):again?'上一轮已完成，本轮将再次执行':''};
+    });
+  },
+  _progressHtml(d,active) {
+    const e=this._esc.bind(this),steps=this._journeySteps(d),live=this._progressDetails(d);
+    const current=steps.find(s=>s.state==='current');
+    const next=steps.find(s=>s.index>(current?.index??-1) && s.state==='future');
+    const rows=steps.map(s=>{
+      const here=s.state==='current',human=s.human;
+      const icon=s.state==='done'?'✓':human?'你':s.index+1;
+      const showLive=here && !human && d.status!=='handoff' && !d.run_id;
+      const message=showLive?(d.progress_message || d.progress?.message || ''):'';
+      return `<li class="journey-station is-${s.state}${s.again?' is-repeat':''}${here && d.status==='running'?' is-running':''}" data-step="${s.id}"${here?' aria-current="step"':''}>
+        <span class="journey-marker" aria-hidden="true">${icon}</span><div class="journey-station-body">
+          <div class="journey-station-heading"><h4>${e(s.title)}</h4>${human?'<span class="journey-human">由你确认</span>':''}${s===next?'<span class="journey-next">下一步</span>':''}<span class="journey-station-status">${e(s.status)}</span></div>
+          ${s.description?`<p class="journey-description">${e(s.description)}</p>`:''}
+          ${here && s.round>1?`<span class="journey-round">第 ${s.round} 轮构思与审查</span>`:''}
+          ${here?`<div class="journey-current-detail" role="status" aria-live="polite" aria-atomic="true">${message?`<p>${e(active?message:'上次进度：'+message)}</p>`:''}${showLive && live.line?`<p class="journey-current-count">${e(live.line)}</p>`:''}${showLive && live.title?`<p class="journey-current-paper" data-no-i18n>${e(live.title)}</p>`:''}${showLive && live.detail?`<p class="journey-current-evidence">${e(live.detail)}</p>`:''}${d.run_id?'<p>后续实验与论文进度请在科研项目中查看。</p>':''}</div>`:''}
+        </div></li>`;
+    }).join('');
+    const history=(d.reviews || []).filter(r=>r.type==='auto_refine').slice(-(d.refinement_round || 0));
+    return `<section class="ideation-journey" aria-label="完整调研流程"><div class="journey-heading"><h3>从研究方向到中文论文</h3><span>${current?`当前：${e(current.title)}`:'调研流程'}</span></div>
+      <ol class="journey-stations" aria-label="调研步骤">${rows}</ol>
+      ${d.refinement_round && history.length?`<details class="journey-history"><summary>已完成的构思与审查轮次（${history.length}）</summary><ol>${history.map((r,i)=>`<li>第 ${i+1} 轮：已完成构思与审查，进入下一轮修订${(r.cards || []).length+(r.rejected_cards || []).length?` · ${(r.cards || []).length+(r.rejected_cards || []).length} 个候选`:''}</li>`).join('')}</ol></details>`:''}</section>`;
   },
   _paperLimit(d) { return d.paper_limit || d.limits?.paper_limit || (d.approved_revision!=null?Math.max(20,d.papers.filter(p=>p.selected).length):20); },
   _landscapeHtml(d) {
