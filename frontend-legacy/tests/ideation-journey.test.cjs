@@ -131,3 +131,35 @@ test('IdeaSpark pool can show many drafts without exposing experiment confirmati
   assert.match(html,/12 张/);assert.equal((html.match(/data-action="pool-card"/g)||[]).length,12);
   assert.ok(!html.includes('id="idea-confirm-card"'));assert.match(html,/待审查/);assert.match(html,/待完善/);
 });
+
+test('status distinguishes generated drafts, accepted cards and cycling task number',()=>{
+  const d=state({phase:'audit',idea_pool:Array.from({length:9},()=>({})),cards:[],
+    ideaspark_batch:{target:12,jobs:Array.from({length:10},(_,i)=>({status:i===6?'needs_work':'running'}))},
+    progress:{operation:'ideaspark',current:3,total:12},progress_message:'IdeaSpark：coherence'});
+  const progress=view._progressDetails(d),strip=view._statusStripHtml(d);
+  assert.match(progress.line,/第 3 号任务（共 10 个，逐轮复核）/);
+  assert.match(strip,/已生成 9 张候选草稿/);assert.match(strip,/0 张通过审查/);
+  assert.match(strip,/1 个任务待完善/);assert.match(strip,/核对机制一致性/);
+  assert.ok(!strip.includes('正在进行：IdeaSpark：coherence'));
+  assert.ok(!progress.line.includes('3 / 10'));
+});
+
+test('plain explanation comes first, with ordered steps and collapsed technical sources',()=>{
+  const card={title:'标题',one_liner:'能不能用卫星更早发现危险？',method:'a_b = <unsafe> & x',scientific_question:'技术问题',
+    plain_language:{problem:'为什么难',steps:[{title:'先观察',text:'重复拍照。'},{title:'再比较',text:'检查变化。'}],
+      test:[{title:'设对照',text:'比较已有方法。'},{title:'判断',text:'没有改善就不支持假设。'}],difference:'待验证差异',data:'真实数据',risks:'尚未验证',terms:[{name:'<img>',meaning:'&解释'}]},
+    formulas:[{title:'位移',latex:'d_k = d_{k-1} + v_k',explanation:'位置如何变化',symbols:[{symbol:'d_k',meaning:'位置'}]}]};
+  const html=view._cardBodyHtml(card);
+  assert.ok(html.indexOf('一句话看懂这个想法')<html.indexOf('准备怎么做'));
+  assert.equal((html.match(/class="idea-explainer-steps"/g)||[]).length,2);
+  assert.match(html,/<details class="idea-technical-details"><summary>/);
+  assert.ok(!html.includes('idea-technical-details" open'));assert.match(html,/data-math="d_k = d_\{k-1\} \+ v_k"/);
+  assert.match(html,/a_b = &lt;unsafe&gt; &amp; x/);assert.ok(!html.includes('<img>'));
+});
+
+test('paragraph layout preserves every sentence and escapes model-supplied HTML',()=>{
+  const text='这是解释。'.repeat(80)+'<script>bad()</script>';
+  const html=view._textHtml(text);
+  assert.ok((html.match(/<p /g)||[]).length>1);assert.equal((html.match(/这是解释。/g)||[]).length,80);
+  assert.match(html,/&lt;script&gt;/);assert.ok(!html.includes('<script>'));
+});

@@ -173,3 +173,82 @@ def test_batch_schedules_all_drafts_before_deep_review(engine,monkeypatch):
     assert order[:12]==['draft']*12 and order[12:]==['review']*12
     assert len(h.data['cards'])==12 and h.data['phase']=='idea_review'
     assert len({j['directory'] for j in h.data['ideaspark_batch']['jobs']})==12
+
+
+def plain_card():
+    return {'one_liner':'能不能更早发现危险，并检验预测是否可信？',
+        'plain_language':{'problem':'已有观测仍有盲区。','difference':'改进是假设，需对照验证。',
+            'data':'使用原候选声明的数据。','risks':'局限不变。',
+            'steps':[{'title':'观察','text':'读入原候选数据。'},{'title':'比较','text':'计算原候选输出。'}],
+            'test':[{'title':'对照','text':'保持原对照。'},{'title':'否定','text':'保留原失败条件。'}],
+            'terms':[]},'formulas':[]}
+
+
+def test_plain_card_requires_model_authored_question_and_steps():
+    from researchclaw.ideation.ideaspark import validate_card_explanation
+    card=plain_card();validate_card_explanation(card)
+    extra=plain_card();extra['plain_language']['steps']*=3;validate_card_explanation(extra)
+    for patch in ({'one_liner':'一段技术摘要'}, {'plain_language':{}}, {'formulas':[{'latex':'incomplete'}]}):
+        with pytest.raises(SessionError):validate_card_explanation({**card,**patch})
+    card['plain_language']['steps']='a big blob'
+    with pytest.raises(SessionError):validate_card_explanation(card)
+
+
+def test_failed_display_does_not_fail_native_job_or_expose_stale_approval(engine,monkeypatch):
+    h=host(engine);job={'id':'job','status':'running'}
+    card={'skill_job_id':'job','skill_status':'validated','audit':{'verdict':'pass'},'native_candidate_hash':'old'}
+    h.data.update(idea_pool=[card],cards=[card])
+    monkeypatch.setattr(h,'candidate',lambda job:{'mechanism':'new'})
+    monkeypatch.setattr(h,'present',lambda job:(_ for _ in ()).throw(SessionError('display JSON invalid')))
+    h.present_safely(job)
+    assert job['status']=='running' and job['presentation_error']=='display JSON invalid'
+    assert not h.data['cards'] and 'audit' not in card
+    assert card['skill_status']=='revising'
+
+
+def test_new_presentation_prompt_refreshes_cache_without_touching_native_candidate(engine,monkeypatch):
+    from researchclaw.ideation.prompts import PROMPTS
+    data=develop(engine);card={**data['cards'][0],**plain_card()};data['idea_pool']=[]
+    h=IdeaSparkBatch(engine,data,threading.Event())
+    job={'id':'fixture-job','number':1,'directory':'fixture','status':'running','focus':'fixture'}
+    data['ideaspark_batch']={'jobs':[job]}
+    native={'title':'Original native candidate','core_mechanism':'unchanged'}
+    monkeypatch.setattr(h,'candidate',lambda job:native)
+    calls=[]
+    def render(*args,**kwargs):calls.append(args[2]);return {'cards':[dict(card)]}
+    monkeypatch.setattr(engine,'_json',render)
+    h.present(job);h.present(job)
+    assert len(calls)==1
+    monkeypatch.setitem(PROMPTS,'spark_card',PROMPTS['spark_card']+'\nUpdated presentation instruction')
+    h.present(job)
+    assert len(calls)==2 and native=={'title':'Original native candidate','core_mechanism':'unchanged'}
+    assert data['idea_pool'][0]['plain_language']==plain_card()['plain_language']
+
+
+def test_formula_guard_requests_model_correction_instead_of_guessing_math():
+    from researchclaw.ideation.ideaspark import validate_card_explanation
+    card=plain_card()
+    for latex in ('Delta_d_max', 'S = {a: 存在 a}'):
+        card['formulas']=[{'title':'关系','latex':latex,'explanation':'原关系的含义','symbols':[]}]
+        with pytest.raises(SessionError,match='LaTeX'):validate_card_explanation(card)
+    card['formulas'][0]['latex']=r'\Delta_{d,\max} = \text{允许的变化}'
+    validate_card_explanation(card)
+
+
+def test_invalid_formula_gets_model_feedback_and_native_candidate_is_preserved(engine,monkeypatch):
+    data=develop(engine);original={**data['cards'][0],**plain_card()}
+    h=IdeaSparkBatch(engine,data,threading.Event());native={'title':'native','core_mechanism':'unchanged'}
+    job={'id':'job','number':1,'directory':'fixture','focus':'fixture','status':'running'}
+    data['ideaspark_batch']={'jobs':[job]};monkeypatch.setattr(h,'candidate',lambda job:native)
+    requests=[]
+    def model(data,event,stage,payload):
+        requests.append(payload)
+        card=dict(original)
+        card['formulas']=[{'title':'关系','latex':'Delta_d_max' if len(requests)==1 else r'\Delta_{d,\max}',
+            'explanation':'原始关系','symbols':[]}]
+        return {'cards':[card]}
+    monkeypatch.setattr(engine,'_json',model)
+    h.present(job)
+    assert len(requests)==2 and 'LaTeX' in requests[1]['output_feedback']
+    assert data['idea_pool'][0]['formulas'][0]['latex']==r'\Delta_{d,\max}'
+    assert native=={'title':'native','core_mechanism':'unchanged'}

@@ -738,6 +738,29 @@ button, a { touch-action: manipulation; }
 .ideation-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; font-size: 12px; color: var(--text-muted); }
 .ideation-steps span { border-radius: 9px; padding: 7px 12px; background: var(--bg-tertiary); }
 .ideation-steps .active { color: var(--accent); background: var(--accent-soft); }
+.ideation-current-status { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; margin: -8px 0 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-secondary); font-size: 13px; line-height: 1.7; }
+.ideation-current-status strong { font-weight: 500; }
+.ideation-current-status p { margin: 3px 0 0; color: var(--text-secondary); }
+.ideation-status-dot { width: 8px; height: 8px; flex-shrink: 0; margin-top: 7px; border-radius: 50%; background: var(--text-muted); }
+.ideation-status-dot.is-active { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.idea-question { padding: 18px 20px; border-radius: 12px; background: var(--accent-soft); }
+.idea-question > span { font-size: 12px; color: var(--accent); }
+.idea-question p { margin: 8px 0 0; font-size: 17px; line-height: 1.8; font-weight: 500; overflow-wrap: anywhere; }
+.idea-detail-section p + p { margin-top: 10px; }
+.idea-explainer-steps { list-style: decimal; padding-left: 24px; }
+.idea-explainer-steps li { margin: 14px 0; padding-left: 6px; }
+.idea-explainer-steps li::marker { color: var(--accent); font-weight: 600; }
+.idea-explainer-steps h4 { font-size: 14px; margin: 0 0 5px; }
+.idea-term-list > div { display: grid; grid-template-columns: minmax(60px, 1fr) minmax(0, 4fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.8; }
+.idea-term-list dd { margin: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.idea-technical-details { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
+.idea-technical-details > summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+.idea-technical-source { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.9; padding: 16px; background: var(--bg-tertiary); border-radius: 10px; }
+.idea-formula { margin: 20px 0; }
+.idea-formula p { font-size: 14px; line-height: 1.85; color: var(--text-secondary); }
+.idea-math { max-width: 100%; overflow-x: auto; padding: 12px; font-size: 16px; background: var(--bg-tertiary); border-radius: 10px; }
+.idea-math .katex-display { margin: 8px 0; }
+.idea-math-fallback { white-space: pre-wrap; overflow-wrap: anywhere; font-family: monospace; }
 .ideation-intake label { display: block; font-size: 14px; font-weight: 500; }
 .ideation-intake textarea { margin: 12px 0; min-height: 110px; }
 .ideation-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }

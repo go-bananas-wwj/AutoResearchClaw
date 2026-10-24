@@ -45,6 +45,7 @@ const IdeationView = {
       <div class="ideation-heading"><div><span class="idea-step">研究准备</span><h2>文献调研与方向确认</h2></div><button class="idea-text-btn" data-action="prompt">生成方式与提示词</button></div>
       <p class="proj-welcome-sub">智能体先调研相关文献，你确认方向后，它会比较论文、核对依据并寻找创新点。</p>
       <div class="ideation-steps"><span class="${!d || ['retrieval','literature_review'].includes(d.phase)?'active':''}">1 · 确认文献方向</span><span class="${d && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase)?'active':''}">${d?.phase==='idea_review'?'2 · 确认创新点':'2 · 创新点准备与审查'}</span><span class="${d && d.run_id?'active':''}">3 · 自动科研与论文</span></div>
+      ${d?this._statusStripHtml(d):''}
       ${this._pending?`<div class="card literature-live" role="status" aria-live="polite"><span class="literature-spinner" aria-hidden="true"></span>${this._esc(this._pending)}</div>`:''}
       ${this._error?`<p class="ideation-alert" role="alert">${this._esc(this._error)}</p>`:''}
       ${!this.sessionId?this._newHtml():!d?'<p role="status">正在读取调研会话…</p>':this._sessionHtml(d)}
@@ -110,7 +111,7 @@ const IdeationView = {
     return `<section class="card ideation-pool" data-material-stage="idea-pool"><div class="literature-gallery-head"><h3>IdeaSpark 候选卡片池 · ${pool.length} 张</h3><span class="proj-badge">官方执行器 · ${finished} / ${jobs.length || batch?.target || 12} 个任务已完成</span></div>
       <p class="idea-evidence-note">${jobs.length?`本批已分配 ${jobs.length} 个独立构思任务${jobs.length!==(batch?.target || 12)?`（目标 ${batch?.target || 12} 个）`:''}。`:`正在规划独立任务，目标 ${batch?.target || 12} 个。`}候选逐张展示，审查通过后可确认启动科研。</p>
       <div class="idea-cards">${cards.map(({c,i})=>`<button class="proj-big-card idea-card" data-action="pool-card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>${this._esc(labels[c.skill_status] || '待审查')}</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">查看方法、依据与待完善事项</span></button>`).join('') || (pool.length?'已通过的方案显示在上方。':'正在进行官方瓶颈诊断与独立构思，生成后逐张显示。')}</div>
-      ${jobs.some(j=>j.reason)?`<details class="idea-prompt-block"><summary>任务处理记录</summary>${jobs.filter(j=>j.reason).map(j=>`<p data-no-i18n>${this._esc(j.focus)}：${this._esc(j.reason)}</p>`).join('')}</details>`:''}</section>`;
+      ${jobs.some(j=>j.reason || j.presentation_error)?`<details class="idea-prompt-block"><summary>任务处理记录</summary>${jobs.filter(j=>j.reason || j.presentation_error).map(j=>`<p data-no-i18n>${this._esc(j.focus)}：${this._esc(j.reason || j.presentation_error)}</p>`).join('')}</details>`:''}</section>`;
   },
   _issueHtml(context) {
     const e=this._esc.bind(this),c=context || {};
@@ -151,10 +152,24 @@ const IdeationView = {
     const labels={generation:'独立构思方案',coherence:'核对机制一致性',critique:'审查最近邻与新颖性',formula_repair:'修正机制中的公式',revision:'根据审查意见修订',post_revision:'独立复核修订结果',post_novelty:'复核近邻差异',technical_fill:'完善具体方法',implementability:'检查可实施性与资源',technical_repair:'补全来源信息',technical_review:'复核技术细节',plain_derive:'撰写通俗中文方案',fidelity:'核对方案讲解与原始机制'};
     return labels[stage]?'IdeaSpark：'+prefix+labels[stage]:raw;
   },
+  _batchSummary(d) {
+    const pool=d.idea_pool || [],jobs=d.ideaspark_batch?.jobs || [];
+    return `已生成 ${pool.length} 张候选草稿 · ${(d.cards || []).length} 张通过审查 · ${jobs.filter(j=>j.status==='needs_work').length} 个任务待完善`;
+  },
+  _statusStripHtml(d) {
+    const running=d.status==='running',waiting=d.status==='waiting';
+    const label=running?'正在进行':waiting?'等待你确认':this.stateLabel(d);
+    const action=running?this._operationLabel(d):waiting?(d.phase==='idea_review'?'请查看创新点，选择想推进的方案':'请确认文献是否符合研究方向'):d.run_id?'后续进度请在科研项目中查看':`停在「${this.phaseLabel(d.phase)}」`;
+    return `<div class="ideation-current-status" role="status" aria-live="polite"><span class="ideation-status-dot${running?' is-active':''}" aria-hidden="true"></span><div><strong>${this._esc(label)}：${this._esc(action)}</strong>${d.ideaspark_batch?`<p>${this._esc(this._batchSummary(d))}</p>`:''}</div></div>`;
+  },
   _progressDetails(d) {
     const p=d.progress || {},op=p.operation;
     let line='',detail='';
-    if(op==='ideaspark')line=`独立构思任务 ${p.current || 0} / ${d.ideaspark_batch?.jobs?.length || p.total || d.ideaspark_batch?.target || 12}`;
+    if(op==='ideaspark') {
+      const total=d.ideaspark_batch?.jobs?.length || p.total || d.ideaspark_batch?.target || 12;
+      line=`当前处理：第 ${p.current || 0} 号任务（共 ${total} 个，逐轮复核）`;
+      detail=this._batchSummary(d);
+    }
     else if(d.phase==='retrieval' && ['plan','search','screen'].includes(op)) {
       if(op==='plan')line='正在理解研究方向与规划检索';
       if(op==='search')line=p.unit==='检索式' && p.total?`检索式 ${p.current} / ${p.total}`:'正在检索候选文献';
@@ -347,7 +362,39 @@ const IdeationView = {
     try{await API.uploadIdeationPaper(this.sessionId,this.data.revision,file);}catch(e){if(token===this._token)this._error=e.message;}
     finally{if(token===this._token){this.busy=false;await this.refresh(true);}}
   },
-  _section(title,value) { return `<section class="idea-detail-section"><h3>${this._esc(title)}</h3><p data-no-i18n>${this._esc(value || '未提供')}</p></section>`; },
+  _textHtml(value) {
+    const text=String(value || '未提供');
+    return text.split(/\n+/).flatMap(line=>{
+      if(line.length<=180)return [line];
+      const parts=[];let paragraph='';
+      line.split(/(?<=[。！？])/u).forEach(sentence=>{if(paragraph && paragraph.length+sentence.length>180){parts.push(paragraph);paragraph='';}paragraph+=sentence;});
+      if(paragraph)parts.push(paragraph);return parts;
+    }).filter(x=>x.trim()).map(x=>`<p data-no-i18n>${this._esc(x)}</p>`).join('');
+  },
+  _section(title,value) { return `<section class="idea-detail-section"><h3>${this._esc(title)}</h3>${this._textHtml(value)}</section>`; },
+  _plainStepsHtml(title,rows) {
+    return `<section class="idea-detail-section"><h3>${this._esc(title)}</h3><ol class="idea-explainer-steps">${rows.map(r=>`<li><h4 data-no-i18n>${this._esc(r.title)}</h4>${this._textHtml(r.text)}</li>`).join('')}</ol></section>`;
+  },
+  _cardBodyHtml(card) {
+    const plain=card.plain_language,e=this._esc.bind(this);
+    let body=`<section class="idea-question"><span>一句话看懂这个想法</span><p data-no-i18n>${e(card.one_liner)}</p></section>`;
+    if(plain && Array.isArray(plain.steps) && Array.isArray(plain.test)) {
+      body+=this._section('为什么值得研究',plain.problem)+this._plainStepsHtml('准备怎么做',plain.steps)
+        +this._section('与已有做法相比，改变了什么',plain.difference)+this._plainStepsHtml('怎么判断这个想法有没有用',plain.test)
+        +this._section('需要什么数据',plain.data)+this._section('哪些地方可能行不通',plain.risks);
+      if(plain.terms?.length)body+=`<details class="idea-prompt-block"><summary>看懂这里的术语</summary><dl class="idea-term-list">${plain.terms.map(t=>`<div><dt data-no-i18n>${e(t.name)}</dt><dd data-no-i18n>${e(t.meaning)}</dd></div>`).join('')}</dl></details>`;
+    } else body+=this._section('科学问题',card.scientific_question);
+    body+=`<details class="idea-technical-details"><summary>展开技术细节与公式</summary>`;
+    if(card.formulas?.length)body+=card.formulas.map(f=>`<section class="idea-formula"><h4 data-no-i18n>${e(f.title)}</h4><div class="idea-math" data-math="${e(f.latex)}" aria-label="${e(f.title)}"></div>${this._textHtml(f.explanation)}<dl class="idea-term-list">${(f.symbols || []).map(s=>`<div><dt data-no-i18n>${e(s.symbol)}</dt><dd data-no-i18n>${e(s.meaning)}</dd></div>`).join('')}</dl></section>`).join('');
+    body+=this._section('科学问题（技术说明）',card.scientific_question);
+    for(const [title,value] of [['方法与机制',card.method],['差异与新颖性边界',card.novelty],['可证伪实验',card.falsification]])
+      body+=`<section class="idea-detail-section"><h3>${e(title)}</h3><pre class="idea-technical-source" data-no-i18n>${e(value || '未提供')}</pre></section>`;
+    body+=this._section('数据可得性',card.data_availability);
+    if(Array.isArray(card.data_sources) && card.data_sources.length)body+=`<section class="idea-detail-section"><h3>数据来源</h3><ul>${card.data_sources.map(s=>`<li data-no-i18n>${e(s.name)}${s.url?' · '+this._link(s.url,'来源入口'):''}</li>`).join('')}</ul></section>`;
+    const list=value=>Array.isArray(value)?value.map(x=>typeof x==='string'?x:JSON.stringify(x)).join('\n'):value;
+    body+=this._section('基线与指标',[list(card.baselines),list(card.metrics)].filter(Boolean).join('\n'))+this._section('风险与资源',[card.risks,card.compute].filter(Boolean).join('\n'))+'</details>';
+    return body;
+  },
   _openPaper(index) {
     const p=this.data.papers[index];if(!p)return;
     const r=this.data.reading[p.paper_id],o=p.overview || {};
@@ -375,9 +422,9 @@ const IdeationView = {
   _openCard(index,pool=false) {
     const card=(pool?this.data.idea_pool:this.data.cards)?.[index];if(!card)return;
     const confirmable=!pool && card.audit?.verdict==='pass' && this.data.phase==='idea_review' && this.data.status==='waiting';
-    let body=this._section('研究摘要',card.one_liner)+this._section('科学问题',card.scientific_question)+this._section('方法与机制',card.method)+this._section('差异与新颖性边界',card.novelty)+this._section('可证伪实验',card.falsification)+this._section('数据可得性',card.data_availability)+this._section('数据来源',JSON.stringify(card.data_sources,null,2))+this._section('风险与资源',[card.risks,card.compute].filter(Boolean).join('\n'))+this._section('基线与指标',JSON.stringify({baselines:card.baselines,metrics:card.metrics},null,2));
+    let body=this._cardBodyHtml(card);
     body+=this._section('独立审查结果',card.audit?.reason || card.skill_reason || '候选尚未完成全部审查。');
-    if(card.skill)body+=this._section('生成来源',`Microsoft IdeaSpark · ${card.skill.commit} · ${card.skill_status==='validated'?'提案审查通过，尚未经实验验证':'未通过全部审查，不能启动科研'}`);
+    if(card.skill)body+=this._section('生成来源',`Microsoft IdeaSpark 官方技能 · ${card.skill.commit}\n模型：DeepSeek API${card.presentation_model?' · '+card.presentation_model:''}\n${card.skill_status==='validated'?'提案审查通过，尚未经实验验证':'未通过全部审查，不能启动科研'}`);
     if(card.skill_job_id && card.skill_card_available)body+=this._link(window.location.origin+'/api/ideation/sessions/'+encodeURIComponent(this.sessionId)+'/ideaspark/jobs/'+encodeURIComponent(card.skill_job_id)+'/card','查看官方IdeaSpark完整中文方案');
     else if(card.skill_job_id)body+='<p class="idea-evidence-note">官方完整方案正在整理，当前可查看候选草稿。</p>';
     (card.audit?.comparisons || []).forEach(c=>{const p=(card.closest_papers || []).find(p=>p.paper_id===c.paper_id);body+=this._section('最近邻：'+(p?p.title:c.paper_id),`问题：${c.problem}\n机制：${c.mechanism}\n数据：${c.data}\n实验：${c.experiment}\n差异：${c.difference}`)+(p?this._link(p.url):'');});
@@ -395,6 +442,11 @@ const IdeationView = {
     const dialog=document.createElement('dialog');dialog.className='idea-dialog';dialog.setAttribute('aria-labelledby','idea-dialog-title');
     dialog.innerHTML=`<div class="idea-dialog-head"><h2 id="idea-dialog-title" data-no-i18n>${this._esc(title)}</h2><button class="idea-text-btn" data-dialog-close>关闭</button></div><div class="idea-dialog-body">${body}</div><div class="idea-dialog-foot">${footer || '<button class="proj-btn" data-dialog-close>返回</button>'}</div>`;
     document.body.appendChild(dialog);this._dialog=dialog;
+    dialog.querySelectorAll('[data-math]').forEach(el=>{
+      const formula=el.dataset.math;
+      try { if(!window.katex)throw new Error('Formula renderer unavailable');window.katex.render(formula,el,{displayMode:true,throwOnError:true,trust:false,strict:'error',maxExpand:1000,maxSize:10}); }
+      catch(error){el.textContent=formula;el.classList.add('idea-math-fallback');el.setAttribute('aria-label','公式源码：'+formula);}
+    });
     dialog.querySelectorAll('[data-dialog-close]').forEach(b=>b.addEventListener('click',()=>this._closeDialog()));
     dialog.addEventListener('cancel',e=>{e.preventDefault();this._closeDialog();});dialog.addEventListener('close',()=>{if(this._dialog===dialog)this._closeDialog();});dialog.addEventListener('click',e=>{if(e.target===dialog)this._closeDialog();});dialog.showModal();return dialog;
   },

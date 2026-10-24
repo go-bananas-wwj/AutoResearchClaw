@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import signal
@@ -50,6 +51,43 @@ def profile():
     return {'name': 'Microsoft IdeaSpark', 'backend': 'ideaspark', 'commit': PIN,
             'source': 'https://github.com/microsoft/ResearchStudio/tree/' + PIN + '/ResearchStudio-Idea/skills/idea_spark',
             'retrieval': 'imported_approved_corpus', 'depth': 'idea', 'one_proposal_per_run': True}
+
+
+def validate_card_explanation(card):
+    """Validate model-authored presentation without rewriting scientific content."""
+    plain = card.get('plain_language')
+    hook = card.get('one_liner')
+    if not isinstance(plain, dict) or not isinstance(hook, str) or not hook.startswith('能不能') or len(hook) > 120:
+        raise SessionError('中文讲解缺少白话问题与分步说明。')
+    for key in ('problem', 'difference', 'data', 'risks'):
+        if not isinstance(plain.get(key), str) or not plain[key].strip() or len(plain[key]) > 350:
+            raise SessionError('中文讲解段落缺失或过长：' + key)
+    for key in ('steps', 'test'):
+        rows = plain.get(key)
+        # A few extra short steps are still readable; don't reject valid content
+        # merely for exceeding the prompt's preferred count by one.
+        if not isinstance(rows, list) or not 2 <= len(rows) <= 8 or any(
+            not isinstance(r, dict) or not isinstance(r.get('title'), str) or not r['title'].strip()
+            or not isinstance(r.get('text'), str) or not r['text'].strip() or len(r['text']) > 350 for r in rows
+        ):
+            raise SessionError('中文讲解未返回可读的分步说明：' + key)
+    terms = plain.get('terms', [])
+    if not isinstance(terms, list) or len(terms) > 6 or any(
+        not isinstance(t, dict) or not isinstance(t.get('name'), str) or not isinstance(t.get('meaning'), str) for t in terms
+    ):
+        raise SessionError('中文讲解术语表格式无效。')
+    formulas = card.get('formulas', [])
+    if not isinstance(formulas, list) or len(formulas) > 3 or any(
+        not isinstance(f, dict) or not all(isinstance(f.get(k), str) and f[k].strip() for k in ('title', 'latex', 'explanation'))
+        or len(f['latex']) > 3000 or not isinstance(f.get('symbols'), list)
+        or any(not isinstance(s, dict) or not all(isinstance(s.get(k), str) for k in ('symbol', 'meaning')) for s in f['symbols'])
+        for f in formulas
+    ):
+        raise SessionError('中文讲解公式格式无效。')
+    for formula in formulas:
+        math = re.sub(r'\\text(?:rm|normal)?\{[^{}]*\}', '', formula['latex'])
+        if re.search(r'[\u3400-\u9fff]', math) or re.search(r'(?:_[A-Za-z0-9]){2}', math):
+            raise SessionError('公式不是规范LaTeX：中文须置于\\text{}，多字符下标须加花括号。')
 
 
 def missing_method_references(data, candidate, run):
@@ -276,7 +314,7 @@ class IdeaSparkBatch:
         job.update(stage=action['step'],state=action['state'])
         self.data['phase']='generate' if self.data['ideaspark_batch'].get('phase','drafts')=='drafts' else 'audit'
         self.service._progress(self.data,self.event,'IdeaSpark：'+action['step'], operation='ideaspark',
-            current=job['number'],total=self.data['ideaspark_batch']['target'],unit='构思任务',title=job['focus'])
+            current=job['number'],total=len(self.data['ideaspark_batch']['jobs']),unit='构思任务',title=job['focus'])
         write(run/'host_next.json',action)
         if action['kind']=='terminal':
             failed=(run/'phase4/work/failed_card.json').exists() or (run/'needs_work.json').exists() or (run/'phase_3_failed.md').exists()
@@ -374,18 +412,28 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
                 if card.get('skill_job_id')==job['id']:
                     card.update(skill_status='revising' if job['status']=='running' else job['status'],skill_reason=job.get('reason',''))
             return
-        signature=fingerprint([native,job['status']])
+        from .prompts import PROMPTS
+        signature=fingerprint([native,job['status'],PROMPTS['spark_card']])
         if job.get('presentation_hash')==signature:
             for card in self.data.get('idea_pool',[]):
                 if card.get('skill_job_id')==job['id']:card.update(skill_status=job['status'],skill_reason=job.get('reason',''))
             return
-        from .prompts import PROMPTS
+        self.service._progress(self.data,self.event,'IdeaSpark：正在撰写候选的白话讲解',operation='ideaspark',
+            current=job['number'],total=len(self.data['ideaspark_batch']['jobs']),title=job['focus'])
         payload={'candidate':native,'direction':self.data['direction'],'synthesis':self.data['synthesis'],
             'reading':self.service._compact_reading(self.data),'skill_status':job['status']}
-        result=self.service._json(self.data,self.event,'spark_card',payload)
-        card=result.get('cards',[None])[0]
-        if not isinstance(card,dict) or not all(card.get(k) for k in ('title','one_liner','method','scientific_question','falsification')):
-            raise SessionError('IdeaSpark中文卡片未返回完整字段。')
+        for attempt in range(2):
+            result=self.service._json(self.data,self.event,'spark_card',payload)
+            rows=result.get('cards')
+            card=rows[0] if isinstance(rows,list) and rows else None
+            try:
+                if not isinstance(card,dict) or not all(card.get(k) for k in ('title','one_liner','method','scientific_question','falsification')):
+                    raise SessionError('IdeaSpark中文卡片未返回完整字段。')
+                validate_card_explanation(card)
+                break
+            except SessionError as exc:
+                if attempt:raise
+                payload={**payload,'output_feedback':str(exc)+' 请修复展示格式，保持原候选科学内容不变。'}
         refs=card.get('evidence_refs') or [];allowed=self.service._evidence(self.data)
         ids=card.get('closest_paper_ids') or []
         method_refs={e['passage_id'] for n in self.data['reading'].values() for e in n['evidence'] if e.get('role')=='method' and e.get('kind')=='source'}
@@ -398,6 +446,7 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
             raise SessionError('该独立任务与本批已有候选的机制对象完全相同，未重复充数。')
         card.update(card_id=f"r{self.data['revision']}-spark-{job['number']}",candidate_key=fingerprint(native),
             evidence=[allowed[r] for r in refs],skill=profile(),skill_job_id=job['id'],
+            presentation_model=next((u.get('model', '') for u in reversed(self.data['usage']) if u.get('stage') == 'spark_card'), ''),
             skill_status=job['status'],skill_reason=job.get('reason',''),native_candidate_hash=fingerprint(native),
             native_intervention_hash=intervention_hash,
             skill_card_available=(self.directory/job['directory']/'phase4/idea.std.zh.md').exists(),
@@ -406,7 +455,28 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
         if job['status']=='validated':card['audit']={'verdict':'pass','reason':'官方IdeaSpark当前版本的质量门、审查和发布记录已通过；研究方案尚未经实验验证。','comparisons':[]}
         self.data['idea_pool']=[c for c in self.data.get('idea_pool',[]) if c.get('skill_job_id')!=job['id']]+[card]
         self.data['cards']=[c for c in self.data['idea_pool'] if c.get('skill_status')=='validated']
-        job['presentation_hash']=signature;self.service._save(self.data,self.event)
+        job['presentation_hash']=signature;job.pop('presentation_error',None);self.service._save(self.data,self.event)
+
+    def present_safely(self, job):
+        """A display failure cannot terminate the independent scientific review."""
+        from .service import Cancelled
+        try:
+            self.present(job)
+        except Cancelled:
+            raise
+        except Exception as exc:
+            if getattr(exc, 'category', '') == 'budget':
+                raise
+            job['presentation_error'] = str(exc)[:1000]
+            native_hash = fingerprint(self.candidate(job))
+            for card in self.data.get('idea_pool', []):
+                if card.get('skill_job_id') == job['id']:
+                    card.update(skill_status='revising' if job['status']=='running' else job['status'],
+                        skill_reason=(job.get('reason','')+' 白话讲解待更新。').strip())
+                    card.pop('audit', None)
+            self.data['cards'] = [c for c in self.data.get('idea_pool', []) if c.get('skill_status') == 'validated'
+                and (c.get('skill_job_id') != job['id'] or c.get('native_candidate_hash') == native_hash)]
+            self.service._save(self.data, self.event)
 
     def run(self):
         from .service import Cancelled, WorkflowFailure
@@ -444,10 +514,8 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
             self.data.update(ideaspark_batch=batch,idea_pool=[],cards=[]);self.service._save(self.data,self.event)
         # Breadth first: expose every generated draft before spending all reviews on one idea.
         for job in batch['jobs']:
-            if self.candidate(job) and not job.get('presentation_hash'):
-                try:self.present(job)
-                except Cancelled:raise
-                except Exception as exc:job.update(status='needs_work',reason=str(exc)[:1000])
+            if self.candidate(job):
+                self.present_safely(job)
         for generation_only in (True,False):
             batch['phase']='drafts' if generation_only else 'review'
             while True:
@@ -463,14 +531,12 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
                             job['steps']+=1
                             if job['steps']>MAX_HOST_STEPS:raise SessionError('IdeaSpark执行步骤异常，已保存任务。')
                             self.step(job)
-                        self.present(job)
+                        self.present_safely(job)
                     except Cancelled:raise
                     except Exception as exc:
                         if getattr(exc,'category','')=='budget':raise
                         job.update(status='needs_work',reason=str(exc)[:1000])
-                        try:self.present(job)
-                        except Cancelled:raise
-                        except Exception:pass
+                        self.present_safely(job)
                     self.service._save(self.data,self.event)
         self.data.pop('progress',None);self.data.pop('progress_message',None)
         if self.data['cards']:
