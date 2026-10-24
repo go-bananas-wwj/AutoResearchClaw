@@ -92,7 +92,7 @@ class SessionStore:
         for paper in data["papers"]:
             if paper.get("fulltext_status") == "read":
                 paper["fulltext_status"] = "downloaded"
-        for key in ("progress", "progress_message", "presentation_task", "download_task", "refresh_evidence", "prior_rejections", "refinement_round", "blocker", "candidates", "shortlist_ready", "selection_stats", "warnings", "unavailable_fulltexts"):
+        for key in ("progress", "progress_message", "presentation_task", "download_task", "refresh_evidence", "prior_rejections", "refinement_round", "blocker", "candidates", "shortlist_ready", "selection_stats", "warnings", "unavailable_fulltexts", "ideaspark_batch", "idea_pool"):
             data.pop(key, None)
         data["revision"] += 1
         data.update(approved_revision=None, reading={}, synthesis=None, cards=[], rejected_cards=[],

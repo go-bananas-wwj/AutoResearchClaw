@@ -109,3 +109,11 @@ test('a new session has a full route without implying work has already happened'
   assert.equal(current(d).status,'待执行');assert.ok(!view._progressHtml(d,true).includes('is-running'));
   assert.equal(steps.filter(s=>s.state==='future').length,9);
 });
+
+test('IdeaSpark pool can show many drafts without exposing experiment confirmation',()=>{
+  const pool=Array.from({length:12},(_,i)=>({card_id:'draft-'+i,title:'独立候选 '+i,one_liner:'依据已确认文献提出的待验证假设',skill_status:i===0?'needs_work':'running'}));
+  const d=state({phase:'generate',idea_pool:pool,ideaspark_batch:{target:12,jobs:pool.map((c,i)=>({id:String(i),status:c.skill_status}))}});
+  const html=view._ideaPoolHtml(d);
+  assert.match(html,/12 张/);assert.equal((html.match(/data-action="pool-card"/g)||[]).length,12);
+  assert.ok(!html.includes('id="idea-confirm-card"'));assert.match(html,/待审查/);assert.match(html,/待完善/);
+});

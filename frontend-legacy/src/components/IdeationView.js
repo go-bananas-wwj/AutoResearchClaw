@@ -28,7 +28,7 @@ const IdeationView = {
     try {
       const data=await API.ideationSession(this.sessionId);
       if(token!==this._token || !this.host) return;
-      const signature=JSON.stringify([data.revision,data.phase,data.status,data.blocker,data.refinement_round,data.download_task,data.presentation_task,data.progress,data.progress_message,data.plan,data.papers,data.cards,data.missing,data.reviews,data.warnings,Object.keys(data.reading || {}),data.usage.length]);
+      const signature=JSON.stringify([data.revision,data.phase,data.status,data.blocker,data.refinement_round,data.download_task,data.presentation_task,data.progress,data.progress_message,data.plan,data.papers,data.cards,data.idea_pool,data.ideaspark_batch,data.missing,data.reviews,data.warnings,Object.keys(data.reading || {}),data.usage.length]);
       this.data=data;
       if(force || signature!==this._signature) { this._signature=signature; this._paint(); }
     } catch(e) { if(token===this._token) { this._error=e.message; this._paint(); } }
@@ -66,10 +66,11 @@ const IdeationView = {
       <div class="ideation-progress"><strong>最新进展</strong><span class="proj-badge">${this._esc(d.run_id?'已交接自动科研':this.stateLabel(d))}</span>
       ${active?`<button class="proj-btn" data-action="stop" ${d.status==='stopping'?'disabled':''}>停止调研</button>`:''}
       ${['blocked','stopped','interrupted'].includes(d.status) && d.blocker?.category!=='scientific' && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>
-      ${active?`<p class="ideation-latest-operation" data-no-i18n>${this._esc(d.progress_message || this.phaseLabel(d.phase))}</p>`:''}
+      ${active?`<p class="ideation-latest-operation" data-no-i18n>${this._esc(this._operationLabel(d))}</p>`:''}
       ${!active && (d.missing || []).length?this._blockerHtml(d):''}
       ${d.run_id?`<p>科研任务已开始：<button class="idea-text-btn" data-action="project">打开科研项目</button></p>`:''}</div>
       ${d.cards.length?this._cardsHtml(d):''}
+      ${this._ideaPoolHtml(d)}
       ${!active && (d.rejected_cards || []).length?this._reviewResultsHtml(d):''}
       ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<section class="card" data-material-stage="next-action"><h3>继续优化方案</h3><p class="idea-evidence-note">沿用已确认的文献和审查意见，继续构思方案。</p><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="可选：指定要优先解决的问题、验证方式或数据条件。"></textarea><button class="proj-btn" data-action="regenerate">${d.cards.length?'修改方案并重新生成':'根据审查意见继续优化'}</button></section>`:''}
       ${d.synthesis?this._landscapeHtml(d):''}
@@ -99,6 +100,17 @@ const IdeationView = {
         ${issues.length?`<details class="review-design-issues"><summary>实验逻辑检查（${issues.length} 项）</summary><ul>${issues.map(x=>`<li data-no-i18n>${e(x)}</li>`).join('')}</ul></details>`:''}
         ${c.failure?.context?.paper_title?this._issueHtml(c.failure.context):''}</div></details></li>`;
     }).join('')}</ol></section>`;
+  },
+  _ideaPoolHtml(d) {
+    const batch=d.ideaspark_batch,pool=d.idea_pool || [];
+    if(!batch && !pool.length)return '';
+    const labels={running:'待审查',revising:'修订中',validated:'提案审查通过',needs_work:'待完善'};
+    const jobs=batch?.jobs || [],finished=jobs.filter(j=>j.status!=='running').length;
+    const cards=pool.map((c,i)=>({c,i})).filter(x=>x.c.skill_status!=='validated').reverse();
+    return `<section class="card ideation-pool" data-material-stage="idea-pool"><div class="literature-gallery-head"><h3>IdeaSpark 候选卡片池 · ${pool.length} 张</h3><span class="proj-badge">官方执行器 · ${finished} / ${jobs.length || batch?.target || 12} 个任务已完成</span></div>
+      <p class="idea-evidence-note">${jobs.length?`本批已分配 ${jobs.length} 个独立构思任务${jobs.length!==(batch?.target || 12)?`（目标 ${batch?.target || 12} 个）`:''}。`:`正在规划独立任务，目标 ${batch?.target || 12} 个。`}候选逐张展示，审查通过后可确认启动科研。</p>
+      <div class="idea-cards">${cards.map(({c,i})=>`<button class="proj-big-card idea-card" data-action="pool-card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>${this._esc(labels[c.skill_status] || '待审查')}</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">查看方法、依据与待完善事项</span></button>`).join('') || (pool.length?'已通过的方案显示在上方。':'正在进行官方瓶颈诊断与独立构思，生成后逐张显示。')}</div>
+      ${jobs.some(j=>j.reason)?`<details class="idea-prompt-block"><summary>任务处理记录</summary>${jobs.filter(j=>j.reason).map(j=>`<p data-no-i18n>${this._esc(j.focus)}：${this._esc(j.reason)}</p>`).join('')}</details>`:''}</section>`;
   },
   _issueHtml(context) {
     const e=this._esc.bind(this),c=context || {};
@@ -130,10 +142,20 @@ const IdeationView = {
     });
     return `<details class="card ideation-warning-summary"><summary>调研处理记录 · ${grouped.size} 项</summary><p>以下问题已记录，其余文献和候选的处理结果见上方。</p>${[...grouped.values()].map(c=>this._issueHtml({...c,candidate_title:[...c.candidates].join('；')})).join('')}</details>`;
   },
+  _operationLabel(d) {
+    const raw=d.progress_message || d.progress?.message || this.phaseLabel(d.phase);
+    if(!raw.startsWith('IdeaSpark：'))return raw;
+    let stage=raw.slice(10),prefix='正在';
+    if(stage.startsWith('Prepare version-bound ')){stage=stage.slice(22);prefix='准备';}
+    if(stage.startsWith('Commit version-bound ')){stage=stage.slice(21);prefix='校验并保存';}
+    const labels={generation:'独立构思方案',coherence:'核对机制一致性',critique:'审查最近邻与新颖性',formula_repair:'修正机制中的公式',revision:'根据审查意见修订',post_revision:'独立复核修订结果',post_novelty:'复核近邻差异',technical_fill:'完善具体方法',implementability:'检查可实施性与资源',technical_repair:'补全来源信息',technical_review:'复核技术细节',plain_derive:'撰写通俗中文方案',fidelity:'核对方案讲解与原始机制'};
+    return labels[stage]?'IdeaSpark：'+prefix+labels[stage]:raw;
+  },
   _progressDetails(d) {
     const p=d.progress || {},op=p.operation;
     let line='',detail='';
-    if(d.phase==='retrieval' && ['plan','search','screen'].includes(op)) {
+    if(op==='ideaspark')line=`独立构思任务 ${p.current || 0} / ${d.ideaspark_batch?.jobs?.length || p.total || d.ideaspark_batch?.target || 12}`;
+    else if(d.phase==='retrieval' && ['plan','search','screen'].includes(op)) {
       if(op==='plan')line='正在理解研究方向与规划检索';
       if(op==='search')line=p.unit==='检索式' && p.total?`检索式 ${p.current} / ${p.total}`:'正在检索候选文献';
       if(op==='screen') {
@@ -197,7 +219,7 @@ const IdeationView = {
       const here=s.state==='current',human=s.human;
       const icon=s.state==='done'?'✓':human?'你':s.index+1;
       const showLive=here && !human && d.status!=='handoff' && !d.run_id;
-      const message=showLive?(d.progress_message || d.progress?.message || ''):'';
+      const message=showLive?this._operationLabel(d):'';
       return `<li class="journey-station is-${s.state}${s.again?' is-repeat':''}${here && d.status==='running'?' is-running':''}" data-step="${s.id}"${here?' aria-current="step"':''}>
         <span class="journey-marker" aria-hidden="true">${icon}</span><div class="journey-station-body">
           <div class="journey-station-heading"><h4>${e(s.title)}</h4>${human?'<span class="journey-human">由你确认</span>':''}${s===next?'<span class="journey-next">下一步</span>':''}<span class="journey-station-status">${e(s.status)}</span></div>
@@ -281,7 +303,7 @@ const IdeationView = {
     if(p.fulltext_status==='downloaded')return p.summary_basis==='fulltext' && p.summary_state==='ready'?'已读全文 · 概览完成':'全文已获取';
     return '未入选：未取得全文';
   },
-  _cardsHtml(d) { return `<div class="card"><h3>第二轮：确认创新点</h3><p class="idea-evidence-note">查看方案的方法、文献依据与验证实验，选择你想推进的创新点。</p></div><div class="idea-cards">${d.cards.map((c,i)=>`<button class="proj-big-card idea-card" data-action="card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>查看详情</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">方法 · 最近邻差异 · 原文依据 · 实验设计</span></button>`).join('')}</div>`; },
+  _cardsHtml(d) { return `<div class="card"><h3>${d.phase==='idea_review'?'第二轮：确认创新点':'已通过提案审查的候选'}</h3><p class="idea-evidence-note">查看方案的方法、文献依据与验证实验，批次完成后选择你想推进的创新点。</p></div><div class="idea-cards">${d.cards.map((c,i)=>`<button class="proj-big-card idea-card" data-action="card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>查看详情</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">方法 · 最近邻差异 · 原文依据 · 实验设计</span></button>`).join('')}</div>`; },
 
   async _action(name,body) {
     if(this.busy) return; this.busy=true; this._error='';
@@ -296,6 +318,7 @@ const IdeationView = {
   async _act(action,index) {
     if(action==='prompt')return this._showPrompt();
     if(action==='card')return this._openCard(Number(index));
+    if(action==='pool-card')return this._openCard(Number(index),true);
     if(action==='paper')return this._openPaper(Number(index));
     if(action==='papers-prev' || action==='papers-next'){this._paperPage+=(action==='papers-next'?1:-1);this._paint();this.host.querySelector('.literature-gallery')?.scrollIntoView?.({block:'start',behavior:'smooth'});return;}
     if(action==='summaries' || action==='fulltexts')return this._action(action,{});
@@ -349,14 +372,18 @@ const IdeationView = {
     const dialog=this._showDialog(p.title,body,`<button class="proj-btn" data-dialog-close>返回文献卡片</button>${!this.data.run_id?`<button class="proj-btn literature-remove" id="paper-remove" ${editable?'':'disabled title="停止调研后可删除"'}>从相关文献中删除</button>`:''}`);
     dialog.querySelector('#paper-remove')?.addEventListener('click',()=>{if(!editable)return;this._closeDialog(false);this._action('papers/'+encodeURIComponent(p.paper_id)+'/remove',{});});
   },
-  _openCard(index) {
-    const card=this.data.cards[index];if(!card)return;
-    let body=this._section('研究摘要',card.one_liner)+this._section('科学问题',card.scientific_question)+this._section('方法与机制',card.method)+this._section('差异与新颖性边界',card.novelty)+this._section('可证伪实验',card.falsification)+this._section('数据可得性',card.data_availability)+this._section('数据来源',JSON.stringify(card.data_sources,null,2))+this._section('风险与资源',card.risks+'\n'+card.compute)+this._section('基线与指标',JSON.stringify({baselines:card.baselines,metrics:card.metrics},null,2));
-    body+=this._section('独立审查结果',card.audit.reason);
-    (card.audit.comparisons || []).forEach(c=>{const p=card.closest_papers.find(p=>p.paper_id===c.paper_id);body+=this._section('最近邻：'+(p?p.title:c.paper_id),`问题：${c.problem}\n机制：${c.mechanism}\n数据：${c.data}\n实验：${c.experiment}\n差异：${c.difference}`)+(p?this._link(p.url):'');});
+  _openCard(index,pool=false) {
+    const card=(pool?this.data.idea_pool:this.data.cards)?.[index];if(!card)return;
+    const confirmable=!pool && card.audit?.verdict==='pass' && this.data.phase==='idea_review' && this.data.status==='waiting';
+    let body=this._section('研究摘要',card.one_liner)+this._section('科学问题',card.scientific_question)+this._section('方法与机制',card.method)+this._section('差异与新颖性边界',card.novelty)+this._section('可证伪实验',card.falsification)+this._section('数据可得性',card.data_availability)+this._section('数据来源',JSON.stringify(card.data_sources,null,2))+this._section('风险与资源',[card.risks,card.compute].filter(Boolean).join('\n'))+this._section('基线与指标',JSON.stringify({baselines:card.baselines,metrics:card.metrics},null,2));
+    body+=this._section('独立审查结果',card.audit?.reason || card.skill_reason || '候选尚未完成全部审查。');
+    if(card.skill)body+=this._section('生成来源',`Microsoft IdeaSpark · ${card.skill.commit} · ${card.skill_status==='validated'?'提案审查通过，尚未经实验验证':'未通过全部审查，不能启动科研'}`);
+    if(card.skill_job_id && card.skill_card_available)body+=this._link(window.location.origin+'/api/ideation/sessions/'+encodeURIComponent(this.sessionId)+'/ideaspark/jobs/'+encodeURIComponent(card.skill_job_id)+'/card','查看官方IdeaSpark完整中文方案');
+    else if(card.skill_job_id)body+='<p class="idea-evidence-note">官方完整方案正在整理，当前可查看候选草稿。</p>';
+    (card.audit?.comparisons || []).forEach(c=>{const p=(card.closest_papers || []).find(p=>p.paper_id===c.paper_id);body+=this._section('最近邻：'+(p?p.title:c.paper_id),`问题：${c.problem}\n机制：${c.mechanism}\n数据：${c.data}\n实验：${c.experiment}\n差异：${c.difference}`)+(p?this._link(p.url):'');});
     body+='<h3 class="idea-detail-section">原文依据</h3>'+(card.evidence || []).map(e=>`<blockquote class="ideation-evidence" data-no-i18n><small>${this._esc(e.paper_id)} · ${this._esc(e.location)} · ${this._esc(e.passage_id)}</small><p>${this._esc(e.text)}</p></blockquote>`).join('');
-    const dialog=this._showDialog(card.title,body,'<button class="proj-btn" data-dialog-close>返回继续审核</button><button class="proj-btn primary" id="idea-confirm-card">确认创新点，自动完成科研</button>');
-    dialog.querySelector('#idea-confirm-card').addEventListener('click',async e=>{
+    const dialog=this._showDialog(card.title,body,'<button class="proj-btn" data-dialog-close>返回继续审核</button>'+ (confirmable?'<button class="proj-btn primary" id="idea-confirm-card">确认创新点，自动完成科研</button>':'<button class="proj-btn" disabled>'+ (card.audit?.verdict==='pass'?'当前批次完成后可确认':'审查通过后可确认')+'</button>'));
+    dialog.querySelector('#idea-confirm-card')?.addEventListener('click',async e=>{
       if(this.busy)return;this.busy=true;e.target.disabled=true;e.target.textContent='正在核验数据并交接…';const token=this._token;
       try{const response=await API.ideationAction(this.sessionId,'confirm',{revision:this.data.revision,card_id:card.card_id});if(token===this._token){this._closeDialog(false);App.openProject(response.run_id);}}
       catch(error){if(token===this._token){this._error=error.message;this._closeDialog();}}
@@ -375,7 +402,7 @@ const IdeationView = {
   async _showPrompt() {
     const dialog=this._showDialog('各阶段生成方式与实际提示词','<p>正在读取…</p>');
     try{const info=await API.ideaPrompt();if(this._dialog!==dialog)return;
-      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。先读全文并确认方向，再比较论文、核对依据和审创新点。</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',summarize:'问题、现状、创新、方法与优缺点',neighbors:'最近邻召回筛选',read:'单篇全文阅读与证据核对',read_part:'同篇长论文分段阅读',read_merge:'同篇分段记录汇总',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查'})[key])} · 输出预算 ${info.output_tokens[key]}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
+      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。${info.skill?`实际构思引擎：Microsoft IdeaSpark · ${this._esc(info.skill.commit)}；目标 ${info.card_target} 个独立任务。推理阶段使用独立上下文与推理模式。`:'内置证据驱动提示词，未调用官方IdeaSpark执行器。'}</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',summarize:'问题、现状、创新、方法与优缺点',neighbors:'最近邻召回筛选',read:'单篇全文阅读与证据核对',read_part:'同篇长论文分段阅读',read_merge:'同篇分段记录汇总',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查',spark_card:'官方方案中文卡片呈现'})[key] || (key.startsWith('ideaspark:')?'IdeaSpark官方阶段：'+key.slice(10):key))}${info.output_tokens[key]?' · 输出预算 '+info.output_tokens[key]:''}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
     }catch(e){if(this._dialog===dialog)dialog.querySelector('.idea-dialog-body').textContent='读取失败：'+e.message;}
   },
 };

@@ -145,3 +145,11 @@ PROMPTS["read_merge"] = _READ_BASE + """整合同一篇论文的已完成分段�
 
 OUTPUT_TOKENS = {"plan": 3072, "screen": 12288, "summarize": 12288, "neighbors": 4096, "read": 6144, "read_part": 6144, "read_merge": 8192,
                  "synthesis": 8192, "generate": 12288, "audit": 6144}
+
+PROMPTS['spark_card'] = COMMON + '''把官方IdeaSpark候选忠实整理成中文展示卡片，不添加机制、保证、数据来源或实验结果。它仍是研究提案，不是已证明的结论。
+title与one_liner给零基础读者看，one_liner不超过100字；详细方法和验证保持原候选的条件与变量，不强迫把待验证假设写成已证实事实。
+引用只能来自给定reading的paper_id及evidence中的passage_id。每张至少引用一个方法原文证据，closest_paper_ids使用输入reading中的真实论文ID。数据未知时明确待落实，不能编造下载链接。
+输出JSON {"cards":[{"title":"中文标题","one_liner":"短摘要","scientific_question":"科学问题","method":"具体方法","falsification":"原候选的最小验证与失败判据","novelty":"相对已有工作的具体差异及条件","risks":"风险和待落实项","compute":"沿用原候选资源判断","datasets":[],"data_sources":[{"name":"实际数据或待落实数据","url":"有依据的入口或空串","availability":"public/local/unknown"}],"data_availability":"数据是否已落实","metrics":[],"patterns":[],"baselines":[],"evidence_refs":["输入的原文片段ID"],"closest_paper_ids":["输入论文ID"]}]}。
+只整理当前一个候选，必须明确区分原文事实、待验证假设和资料缺失；未知事实不得用常识补齐。
+'''
+OUTPUT_TOKENS['spark_card'] = 8192

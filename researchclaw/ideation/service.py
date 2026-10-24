@@ -907,7 +907,9 @@ class IdeationService:
         data["reviews"].append({"type": "auto_refine" if automatic else "regenerate", "at": now(), "feedback": feedback,
             "revision": revision, "cards": copy.deepcopy(data["cards"]),
             "rejected_cards": copy.deepcopy(data["rejected_cards"]),
-            "synthesis": copy.deepcopy(data["synthesis"]), "inherited_literature_approval": revision})
+            "synthesis": copy.deepcopy(data["synthesis"]), "inherited_literature_approval": revision,
+            "ideaspark_batch": copy.deepcopy(data.get("ideaspark_batch")), "idea_pool":copy.deepcopy(data.get("idea_pool",[]))})
+        data.pop('ideaspark_batch',None);data.pop('idea_pool',None)
         data["revision"] += 1
         data.update(approved_revision=data["revision"], cards=[], rejected_cards=[], synthesis=None,
                     phase="synthesis" if automatic else "reading", refresh_evidence=not automatic,
@@ -1290,6 +1292,10 @@ class IdeationService:
     def _develop_round(self, data, event):
         if data.get("approved_revision") != data["revision"]:
             raise SessionError("文献版本尚未批准。")
+        if data.get('ideaspark_batch') and data['phase'] in ('generate','audit'):
+            from .ideaspark import IdeaSparkBatch
+            IdeaSparkBatch(self,data,event).run()
+            return
         if data["phase"] == "reading":
             if not data.get("refresh_evidence"):
                 self._acquire_fulltexts(data, event)
@@ -1364,6 +1370,10 @@ class IdeationService:
             data.update(synthesis=synthesis, phase="generate")
             self._save(data, event)
         if data["phase"] == "generate":
+            if getattr(self.config.llm,'ideation_backend','builtin')=='ideaspark':
+                from .ideaspark import IdeaSparkBatch
+                IdeaSparkBatch(self,data,event).run()
+                return
             result = self._json(data, event, "generate", {"direction": data["direction"], "synthesis": data["synthesis"],
                 "reading": self._compact_reading(data), "feedback": data["feedback"],
                 "prior_rejections": data.get("prior_rejections", [])})
@@ -1524,6 +1534,9 @@ class IdeationService:
             card = next((c for c in data["cards"] if c["card_id"] == card_id), None)
             if not card or card.get("audit", {}).get("verdict") != "pass":
                 raise SessionError("该创新点不属于当前已审查的候选。")
+            if card.get('skill_job_id'):
+                from .ideaspark import verify_card
+                verify_card(self,data,card)
             for note in data["reading"].values():
                 path = self.store.directory(sid) / "fulltext" / (note["paper_id"] + ".json")
                 if not path.exists() or not self._valid_document({"title": note["title"], "doi": next((p.get("doi", "") for p in data["papers"] if p["paper_id"] == note["paper_id"]), "")}, json.loads(path.read_text())) or fingerprint(json.loads(path.read_text())) != note["source_hash"]:
@@ -1532,11 +1545,22 @@ class IdeationService:
 
     def export(self, data, card):
         """Stage-compatible records plus a complete immutable evidence manifest."""
+        import os
         import shutil
         from researchclaw.ideation.brief import ResearchBrief
         from researchclaw.literature.models import Paper, Author
 
         directory = self.store.directory(data["session_id"])
+        native_source = None
+        native_job = None
+        if card.get('skill_job_id'):
+            from .ideaspark import IdeaSparkBatch
+            native_job=next((j for j in data.get('ideaspark_batch',{}).get('jobs',[]) if j['id']==card['skill_job_id']),None)
+            if not native_job:raise SessionError('未找到选定IdeaSpark方案的执行记录。')
+            import threading
+            native_source=IdeaSparkBatch(self,data,threading.Event()).candidate(native_job)
+            if not native_source or fingerprint(native_source)!=card.get('native_candidate_hash'):
+                raise SessionError('IdeaSpark原始方案与已审查版本不一致。')
         target = directory / "exports" / f"r{data['revision']}-{card['card_id']}"
         final_target = target
         if not target.exists():
@@ -1565,6 +1589,16 @@ class IdeationService:
             shutil.copytree(directory / "fulltext", target / "fulltext")
             if (directory / "related work").exists():
                 shutil.copytree(directory / "related work", target / "related work")
+            if native_job:
+                job_dir=(directory/native_job['directory']).resolve()
+                if not job_dir.is_relative_to(directory.resolve()):raise SessionError('无效IdeaSpark执行目录。')
+                shutil.copytree(job_dir,target/'ideaspark',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+                calls=job_dir.parent/'host_calls'
+                for request in calls.glob('*/request.json'):
+                    saved=json.loads(request.read_text());inputs=saved.get('input',{}).get('request',{}).get('inputs',[])
+                    shared=saved.get('stage') in ('pattern_tagging','bottleneck','batch_plan')
+                    if shared or any(str(name).startswith(str(job_dir)+os.sep) for name in inputs):
+                        shutil.copytree(request.parent,target/'ideaspark'/'host_calls'/request.parent.name)
             (target / "manifest.json").write_text(json.dumps(data, ensure_ascii=False, indent=2))
             (target / "cost_log.jsonl").write_text("\n".join(json.dumps(x) for x in data["usage"]) + "\n")
             target.rename(final_target)
@@ -1572,6 +1606,8 @@ class IdeationService:
         scope = card["method"] + "\n\n可证伪实验：" + card["falsification"]
         scope += "\n\n真实基线：" + json.dumps(card.get("baselines", []), ensure_ascii=False)
         scope += "\n\n数据访问：" + json.dumps(card.get("data_sources", []), ensure_ascii=False)
+        if native_source:
+            scope += '\n\nIdeaSpark原始方案规范（方法、变量、假设、可证伪判据与资源以原始版本为准；预期不等于实验结果）：\n'+json.dumps(native_source,ensure_ascii=False)
         brief = ResearchBrief.from_dict({"topic": card["title"], "scientific_question": card["scientific_question"],
             "survey_summary": data["synthesis"]["landscape_zh"], "hypotheses": [card["scientific_question"]],
             "experiment_scope": scope, "datasets": card.get("datasets") or [],

@@ -7,7 +7,8 @@
 .venv
 artifacts
 experiments
-external
+external/*
+!external/ideaspark
 node_modules
 **/node_modules
 **/__pycache__

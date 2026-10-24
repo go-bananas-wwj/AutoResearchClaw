@@ -9,11 +9,14 @@ ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
 # docker CLI（容器内调度实验沙箱用）+ git/curl（literature & ACP 后端）
 # 注：刻意不装 texlive —— 导出的 paper.tex 建议直接在 Overleaf 编译（用户工作流）。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
+ARG DOCKER_APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/debian
+RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g; s|http://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates gnupg \
     && install -m 0755 -d /etc/apt/keyrings \
-    && curl --retry 4 --retry-all-errors -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && curl --retry 4 --retry-all-errors -fsSL "${DOCKER_APT_MIRROR}/gpg" -o /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] ${DOCKER_APT_MIRROR} bookworm stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -22,8 +25,10 @@ COPY pyproject.toml README.md LICENSE ./
 COPY researchclaw/ ./researchclaw/
 COPY frontend-legacy/ ./frontend/
 COPY prompts.default.yaml ./
+COPY external/ideaspark/ ./external/ideaspark/
 # 本地适配：调研阶段精读/用户上传论文需要真正提取 PDF 正文。
-RUN pip install -e '.[pdf]' fastapi "uvicorn[standard]" wsproto
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --index-url "${PIP_INDEX_URL}" -e '.[pdf]' fastapi "uvicorn[standard]" wsproto feedparser openreview-py beautifulsoup4
 
 # 非 root；uid/gid 对齐宿主用户（bind mount 写 artifacts 不踩权限）
 RUN groupadd -r -g 1000 claw && useradd -r -u 1000 -g 1000 -m -s /bin/bash claw && chown -R claw /app

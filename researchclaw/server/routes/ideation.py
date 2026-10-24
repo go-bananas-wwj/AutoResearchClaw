@@ -41,7 +41,8 @@ def public(data):
     result["papers"] = [{**p, "fulltext_verified": service._summary_material(data, p) is not None}
                         for p in data.get("papers", [])]
     result["limits"] = {"paper_limit": IdeationService.paper_limit(data), "candidate_limit": min(60, IdeationService.paper_limit(data) * 3),
-                        "reading_default": 10, "reading_max": 15}
+                        "reading_default": 10, "reading_max": 15,
+                        "idea_card_target":getattr(service.config.llm,'ideation_card_target',12)}
     result["reading"] = {pid: {k: v for k, v in note.items() if k != "passages"}
                          for pid, note in data.get("reading", {}).items()}
     return result
@@ -280,9 +281,31 @@ async def idea_prompt():
     from researchclaw.ideation.prompts import PROMPTS, OUTPUT_TOKENS
     from researchclaw.ideation.cards import PATTERNS
     service = get_service()
-    return {"stages": PROMPTS, "output_tokens": OUTPUT_TOKENS, "model": service.config.llm.primary_model,
+    stages=dict(PROMPTS)
+    skill=None
+    if getattr(service.config.llm,'ideation_backend','builtin')=='ideaspark':
+        from researchclaw.ideation.ideaspark import ROOT, profile
+        skill=profile()
+        stages.pop('generate',None);stages.pop('audit',None)
+        stages.update({'ideaspark:'+p.stem:p.read_text() for p in sorted((ROOT/'references/system-prompts').glob('*.txt'))})
+    return {"stages": stages, "output_tokens": OUTPUT_TOKENS, "model": service.config.llm.primary_model,
+            "skill":skill,"card_target":getattr(service.config.llm,'ideation_card_target',12),
             "retrieval": True, "pattern_catalog": PATTERNS,
             "budget_basis": "预算为保守预留：输入$5/百万tokens、输出$25/百万tokens，非供应商账单。"}
+
+
+@router.get('/ideation/sessions/{sid}/ideaspark/jobs/{job_id}/card')
+async def ideaspark_original_card(sid: str, job_id: str, language: str='zh'):
+    data=invoke(get_service().snapshot,sid)
+    job=next((j for j in (data.get('ideaspark_batch') or {}).get('jobs',[]) if j['id']==job_id),None)
+    names={'zh':'idea.std.zh.md','en':'idea.std.en.md','detail':'idea.detail.en.md'}
+    if not job or language not in names:raise HTTPException(404,'未找到IdeaSpark方案')
+    root=get_service().store.directory(sid).resolve()
+    directory=(root/job['directory']).resolve()
+    if not directory.is_relative_to(root):raise HTTPException(403,'无效执行目录')
+    target=directory/'phase4'/names[language]
+    if not target.exists():raise HTTPException(404,'IdeaSpark尚未生成完整方案，当前可查看候选卡片')
+    return PlainTextResponse(target.read_text(),media_type='text/markdown')
 
 
 @router.post("/ideation/start", response_model=IdeationStartResponse)
