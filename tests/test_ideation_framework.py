@@ -234,7 +234,7 @@ def test_related_overview_missing_field_is_corrected_before_batch_is_accepted(en
         return response
     engine.llm.chat=incomplete_once
     data=first(engine)
-    assert data['phase']=='literature_review' and len(calls)==2
+    assert data['phase']=='literature_review' and len(calls)==4
     assert calls[1]['validation_feedback']['errors'] and calls[1]['validation_feedback']['errors'][0]['paper_id']
     assert len(engine.sources.fulltext_calls)==3 and not data['reading']
 
@@ -465,7 +465,7 @@ def test_long_technical_overview_is_sent_back_to_ai_instead_of_program_shortenin
                 response.content=json.dumps(result)
         return response
     engine.llm.chat=verbose;data=first(engine)
-    assert data['status']=='waiting' and len(attempts)==2
+    assert data['status']=='waiting' and len(attempts)==4
     assert '160' in attempts[1]['validation_feedback']['errors'][0]['error']
     assert all(p['overview']['method']=='DEM汇流' for p in engine._related(data))
 
@@ -497,7 +497,7 @@ def test_summary_missing_selection_comma_preserves_model_text_and_avoids_repeat_
             response.content=json.dumps(result).replace(', "selection":',' "selection":',1)
         return response
     engine.llm.chat=missing_comma;data=first(engine)
-    assert data['status']=='waiting' and engine.llm.calls.count('summarize')==1
+    assert data['status']=='waiting' and engine.llm.calls.count('summarize')==3
     assert all(p['summary_zh']=='基于DEM的LS计算。' for p in engine._related(data))
     assert next(u for u in data['usage'] if u['stage']=='summarize')['json_syntax_repair']=='bounded_structural_punctuation'
 
@@ -509,7 +509,7 @@ def test_presentation_refresh_updates_all_sections_without_changing_approved_evi
     engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
     assert done['reading']==notes and done['cards']==cards and done['approved_revision']==approved
     assert done['revision']==data['revision'] and not done['run_id']
-    assert all(p['summary_version']==5 and set(p['overview'])=={'problem','background','innovation','method','data','results','strengths','limitations'} for p in done['papers'])
+    assert all(p['summary_version']==6 and set(p['overview'])=={'problem','background','innovation','method','data','results','strengths','limitations'} for p in done['papers'])
     assert {p['paper_id']:p['selection'] for p in done['papers']}==selections
 
 

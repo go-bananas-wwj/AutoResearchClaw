@@ -6,11 +6,13 @@ import json
 import re
 import threading
 import unicodedata
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 from researchclaw.ideation.prompts import OUTPUT_TOKENS, PROMPTS
+from researchclaw.ideation.reading import input_bytes, pack
 from researchclaw.ideation.sources import Sources, paper_record, readable_document
 from researchclaw.ideation.store import SessionError, SessionStore, fingerprint, now
 
@@ -31,7 +33,7 @@ class CandidateRoundFailure(SessionError):
 
 
 OVERVIEW_FIELDS = ("problem", "background", "innovation", "method", "data", "results", "strengths", "limitations")
-SUMMARY_VERSION = 5
+SUMMARY_VERSION = 6
 DEFAULT_PAPER_LIMIT = 20
 MAX_CANDIDATES = 60
 MAX_AUTO_REFINEMENTS = 2  # Initial generation plus at most two evidence-driven revisions.
@@ -101,7 +103,7 @@ def reference_aliases(payload):
             return {k: convert(v, reverse, k) for k, v in value.items()}
         if isinstance(value, list):
             return [convert(v, reverse, field) for v in value]
-        mapping = papers if field in ("paper_id", "closest_paper_ids") else excerpts if field in ("passage_id", "evidence_refs") else {}
+        mapping = papers if field in ("paper_id", "paper_ids", "closest_paper_ids") else excerpts if field in ("passage_id", "evidence_refs") else {}
         if reverse:
             mapping = {v: k for k, v in mapping.items()}
         return mapping.get(value, value) if isinstance(value, str) else value
@@ -111,11 +113,11 @@ def reference_aliases(payload):
 def passages(paper_id: str, document: dict[str, Any]) -> list[dict[str, str]]:
     output = []
     for page in document["pages"]:
-        text = page["text"].strip()
+        text = page["text"]
         # Bounded chunks retain source location and a content-bound stable identity.
         for start in range(0, len(text), 1800):
             chunk = text[start:start + 1800]
-            if len(chunk.strip()) < 40:
+            if not chunk.strip():
                 continue
             output.append({"passage_id": paper_id + ":" + fingerprint([page["location"], start, chunk])[:16],
                            "paper_id": paper_id, "location": page["location"], "text": chunk})
@@ -162,6 +164,17 @@ class IdeationService:
         data["progress_message"] = message
         self._save(data, event)
 
+    def _context_capacity(self):
+        llm = self.config.llm
+        model = str(llm.primary_model)
+        if urllib.parse.urlsplit(getattr(llm, "base_url", "")).hostname == "api.deepseek.com" and (model == "deepseek-flash" or model.startswith("deepseek-v4")):
+            return 1_000_000
+        return int(getattr(llm, "context_window_tokens", 128_000) or 128_000)
+
+    def _input_limit(self, stage):
+        # UTF-8 bytes conservatively upper-bound tokens, including aliases/JSON overhead.
+        return self._context_capacity() - OUTPUT_TOKENS[stage] * 2 - len(PROMPTS[stage].encode()) - 16384
+
     def _json(self, data, event, stage, payload, _format_attempt=0, _output_scale=1):
         self._check(data, event)
         labels = {"plan": "正在理解研究方向并规划检索", "screen": "正在核对文献相关性与科学问题",
@@ -170,9 +183,26 @@ class IdeationService:
         if stage in labels:
             self._progress(data, event, labels[stage], operation=stage,
                            **({"title": "", "paper_id": "", "current": 0, "total": 0} if stage in ("synthesis", "generate", "audit") else {}))
+        isolated = stage in ("read", "read_part", "read_merge", "summarize")
+        paper_ids = set()
+        def collect_papers(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("paper_id"), str):
+                    paper_ids.add(value["paper_id"])
+                for item in value.values():
+                    collect_papers(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect_papers(item)
+        if isolated:
+            collect_papers(payload)
+        if isolated and len(paper_ids) != 1:
+            raise WorkflowFailure("单篇阅读请求必须且只能包含一篇论文。", "technical", "mixed_paper_context")
         original_payload = payload
         payload, restore = reference_aliases(payload)
         prompt = json.dumps(payload, ensure_ascii=False)
+        if isolated and len((PROMPTS[stage] + prompt).encode()) + OUTPUT_TOKENS[stage] * _output_scale + 2048 > self._context_capacity():
+            raise WorkflowFailure("阅读请求超过配置的上下文容量，自动分段参数需要修正。", "technical", "read_partition_capacity")
         # Explicit conservative reservation, NOT a claim about vendor prices.
         # UTF-8 bytes upper-bound input tokens. Reserve $5/M input, $25/M output.
         output_budget = OUTPUT_TOKENS[stage] * _output_scale
@@ -183,7 +213,9 @@ class IdeationService:
         data["cost_usd"] = round(data["cost_usd"] + reserve, 6)
         entry = {"stage": stage, "at": now(), "cost_usd": reserve, "status": "pending",
                  "cost_basis": "conservative_reservation_5_input_25_output_usd_per_million_not_invoice",
-                 "prompt_hash": fingerprint(PROMPTS[stage])[:16], "output_budget": output_budget}
+                 "prompt_hash": fingerprint(PROMPTS[stage])[:16], "output_budget": output_budget,
+                 "paper_ids": sorted(paper_ids) if isolated else [], "input_bytes": len((PROMPTS[stage] + prompt).encode()),
+                 "context_limit_tokens": self._context_capacity()}
         data["usage"].append(entry)
         self.store.save(data)
         response = None
@@ -585,7 +617,7 @@ class IdeationService:
             document = json.loads(path.read_text())
             pages = document.get("pages") or []
             size = sum(len(p.get("text", "")) for p in pages)
-            if 2000 <= size <= 180_000 and self._valid_document(paper, document):
+            if size >= 2000 and self._valid_document(paper, document):
                 return {"source_type": "fulltext", "pages": pages}
         return None
 
@@ -613,19 +645,22 @@ class IdeationService:
             tasks.append((paper, material, source_hash))
         completed = 0
         while tasks:
-            batch, size = [], 0
-            while tasks and len(batch) < 4:
-                item = tasks[0]
-                count = len(json.dumps(item[1], ensure_ascii=False))
-                if batch and size + count > 120_000:
-                    break
-                batch.append(tasks.pop(0)); size += count
+            batch = [tasks.pop(0)]
             self._progress(data, event, "正在由DeepSeek阅读材料并撰写论文概览", operation="summarize",
-                           current=completed + 1, total=completed + len(batch) + len(tasks), unit="篇", title="", paper_id="")
+                           current=completed + 1, total=completed + len(batch) + len(tasks), unit="篇",
+                           title=batch[0][0]["title"], paper_id=batch[0][0]["paper_id"])
             payload = {"direction": data["direction"], "presentation_only": presentation_only, "papers": [{"paper_id": p["paper_id"], "title": p["title"],
                                    "year": p.get("year"), "venue": p.get("venue"), "venue_type": p.get("venue_type"),
                                    "material": {"source_type": "fulltext", "passages": self._summary_excerpts(p["paper_id"], material)}}
                                    for p, material, _ in batch]}
+            if input_bytes(payload) > self._input_limit("summarize"):
+                paper, material, _ = batch[0]
+                document = json.loads((self.store.directory(data["session_id"]) / "fulltext" / (paper["paper_id"] + ".json")).read_text())
+                note = self._read_document(data, event, paper, document)
+                payload["papers"][0]["material"] = {"source_type": "fulltext", "coverage": note["coverage"],
+                    "reading_notes": {k: v for k, v in note.items() if k not in ("passages",)},
+                    "passages": [c for c in self._summary_excerpts(paper["paper_id"], material) if any(
+                        c["location"] == e["location"] and (c["text"] in e["quote"] or e["quote"] in c["text"]) for e in note["evidence"])]}
             for attempt in range(2):
                 result = self._json(data, event, "summarize", payload)
                 rows = result.get("papers") or []
@@ -1056,51 +1091,104 @@ class IdeationService:
         if data["phase"] == "reading" and paper.get("fulltext_attempt_id") == f"scope-r{data['revision']}" and paper.get("fulltext_status") in ("abstract_only", "failed"):
             raise SessionError(paper.get("fulltext_error") or "本轮未获取原文，请补充材料或稍后重试。")
         document = self._obtain_fulltext(data, event, paper)
-        chunks = passages(key, document)
-        if sum(len(c["text"]) for c in chunks) < 2000:
-            raise SessionError("正文不足以精读，不能使用摘要代替全文。")
-        # Read all source text; reject oversize rather than silently claiming to read omitted pages.
-        if sum(len(c["text"]) for c in chunks) > 180_000:
-            raise WorkflowFailure("论文超过精读窗口，请补充聚焦方法正文的版本；未将未读内容视为已读。", "evidence", "read_window_exceeded")
-        by_id = {c["passage_id"]: c for c in chunks}
-        payload = {"paper": paper["title"], "passages": chunks}
-        for attempt in range(2):
-            self._progress(data, event, "正在核对论文方法与原文依据" + ("（校正引文）" if attempt else ""),
-                           paper_id=key, title=paper["title"], operation="read")
-            result = self._json(data, event, "read", payload)
-            evidence = result.get("evidence") or []
-            if result.get("has_methods") is not True or not all(result.get(k) for k in
-                ("problem", "method", "data", "experiments", "findings", "strengths", "limitations")) or not evidence:
-                raise SessionError("未取得可靠方法正文或精读证据。")
-            invalid = []
-            for item in evidence:
-                source = by_id.get(item.get("passage_id"))
-                quote = item.get("quote", "")
-                if len(quote) >= 12 and (not source or quoted(quote) not in quoted(source["text"])):
-                    matches = [c for c in chunks if quoted(quote) in quoted(c["text"])]
-                    if len(matches) == 1:
-                        # Correct a copied id only when the exact text uniquely identifies its location.
-                        source = matches[0]
-                        item.update(model_passage_id=item.get("passage_id"), passage_id=source["passage_id"],
-                                    citation_resolution="unique_exact_quote")
-                if not source or len(item.get("quote", "")) < 12 or quoted(item["quote"]) not in quoted(source["text"]) or item.get("kind") not in ("source", "inference") or item.get("role") not in ("method", "result", "limitation", "context"):
-                    invalid.append(item)
-                else:
-                    item.update(location=source["location"], paper_id=key)
-            if not invalid:
-                break
-            if attempt:
-                raise SessionError("精读引用未匹配原文，拒绝保存虚构证据。")
-            payload["validation_feedback"] = {"invalid_evidence": invalid,
-                "instruction": "上次引文未通过逐字匹配。重新返回完整精读JSON；quote必须保持原文语言，从对应片段连续复制12–120字符，不能翻译、拼接或省略。"}
-        if not any(e["kind"] == "source" and e.get("role") == "method" for e in evidence):
-            raise SessionError("精读缺少来自方法正文的原文证据，未接受只含摘要或模型推断的记录。")
-        result.update(paper_id=key, title=paper["title"], passages=chunks,
-                      source_hash=fingerprint(document), source_url=document.get("source_url"), supplemental=extra)
+        result = self._read_document(data, event, paper, document)
+        result["supplemental"] = extra
         data["reading"][key] = result
         paper["fulltext_status"] = "read"
         # Detailed evidence notes must not overwrite the reader-facing, AI-written overview.
         self._save(data, event)
+        return result
+
+    def _read_request(self, data, event, paper, stage, payload, chunks, required_methods, checkpoint):
+        signature = fingerprint([payload, PROMPTS[stage]])
+        if checkpoint.exists():
+            saved = json.loads(checkpoint.read_text())
+            if saved.get("input_hash") == signature:
+                return saved["result"]
+        by_id = {p["passage_id"]: p for p in chunks}
+        for attempt in range(2):
+            result = self._json(data, event, stage, payload)
+            evidence = result.get("evidence") or []
+            fields = ("problem", "method", "data", "experiments", "findings", "strengths", "limitations")
+            invalid = []
+            for item in evidence:
+                if not isinstance(item, dict):
+                    invalid.append(item); continue
+                source = by_id.get(item.get("passage_id"))
+                quote = item.get("quote")
+                if quote and isinstance(quote, str) and len(quote) >= 12 and (not source or quoted(quote) not in quoted(source["text"])):
+                    matches = [c for c in chunks if quoted(quote) in quoted(c["text"])]
+                    if len(matches) == 1:
+                        source = matches[0]
+                        item.update(model_passage_id=item.get("passage_id"), passage_id=source["passage_id"], citation_resolution="unique_exact_quote")
+                if not source or item.get("kind") not in ("source", "inference") or item.get("role") not in ("method", "result", "limitation", "context") or not item.get("claim"):
+                    invalid.append(item); continue
+                if quote is None or quote == "":
+                    item.update(quote=source["text"], citation_resolution="source_passage")
+                elif not isinstance(quote, str) or len(quote) < 12 or quoted(quote) not in quoted(source["text"]):
+                    invalid.append(item); continue
+                item.update(location=source["location"], paper_id=paper["paper_id"])
+            valid = all(isinstance(result.get(k), str) and result[k].strip() for k in fields) and isinstance(result.get("has_methods"), bool)
+            method = any(isinstance(e, dict) and e.get("kind") == "source" and e.get("role") == "method" for e in evidence)
+            if valid and not invalid and (not required_methods or (result["has_methods"] and method)):
+                break
+            if attempt:
+                if valid and not invalid and required_methods and (not result["has_methods"] or not method):
+                    raise WorkflowFailure("已处理全文，但未取得方法正文证据。", "evidence", "no_method_evidence")
+                raise WorkflowFailure("论文证据标注校正后仍未通过，请重试本篇的自动核对。", "technical", "invalid_read_evidence")
+            payload["validation_feedback"] = {"invalid_evidence": invalid,
+                "instruction": "完整返回规定字段。只使用本次输入的passage_id，标明claim/kind/role；不要抄写quote，服务器会按ID取原文。完整论文须有方法正文证据；分段未涉及的信息明确写该分段未说明，不能借用其他论文。"}
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        temporary = checkpoint.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"input_hash": signature, "paper_id": paper["paper_id"], "result": result}, ensure_ascii=False))
+        temporary.replace(checkpoint)
+        self._save(data, event)
+        return result
+
+    def _read_document(self, data, event, paper, document):
+        key = paper["paper_id"]
+        chunks = passages(key, document)
+        size = sum(len(c["text"]) for c in chunks)
+        if size < 2000:
+            raise SessionError("正文不足以核对方法证据，系统将继续寻找可用全文。")
+        version = fingerprint([fingerprint(document), PROMPTS["read"], PROMPTS["read_part"], PROMPTS["read_merge"]])[:20]
+        directory = self.store.directory(data["session_id"]) / "reading_parts" / key / version
+        groups = pack(chunks, self._input_limit("read_part"))
+        if input_bytes({"paper": paper["title"], "paper_id": key, "passages": chunks}) <= self._input_limit("read"):
+            groups = [chunks]
+        notes = []
+        for index, group in enumerate(groups, 1):
+            self._check(data, event)
+            self._progress(data, event, "正在逐篇核对原文依据" if len(groups) == 1 else "正在自动分段阅读长论文",
+                           operation="read", paper_id=key, title=paper["title"], part_current=index, part_total=len(groups), source_characters=size)
+            stage = "read" if len(groups) == 1 else "read_part"
+            payload = {"paper": paper["title"], "paper_id": key, "part": index, "parts": len(groups), "passages": group}
+            note = self._read_request(data, event, paper, stage, payload, group, len(groups) == 1, directory / f"part-{index:04}.json")
+            notes.append(note)
+        # Merge notes from this paper only. Recursive groups also support exceptionally long books.
+        all_sources = {c["passage_id"]: c for c in chunks}
+        while len(notes) > 1:
+            records = []
+            for note in notes:
+                refs = dict.fromkeys(e["passage_id"] for e in note["evidence"])
+                records.append({"note": note, "passages": [all_sources[pid] for pid in refs]})
+            grouped = pack(records, self._input_limit("read_merge"))
+            if len(grouped) == len(notes):
+                raise WorkflowFailure("分段汇总配置过小，无法合并阅读记录。", "technical", "read_merge_capacity")
+            merged = []
+            for group in grouped:
+                sources = {c["passage_id"]: c for r in group for c in r["passages"]}
+                payload = {"paper": paper["title"], "paper_id": key, "notes": [r["note"] for r in group], "passages": list(sources.values())}
+                self._progress(data, event, "正在汇总同一篇论文的分段阅读记录", operation="read", paper_id=key, title=paper["title"], part_current=len(groups), part_total=len(groups))
+                merged.append(self._read_request(data, event, paper, "read_merge", payload, list(sources.values()),
+                    any(r["note"].get("has_methods") for r in group), directory / ("merge-" + fingerprint(payload)[:20] + ".json")))
+            notes = merged
+        result = notes[0]
+        if not result.get("has_methods") or not any(e.get("role") == "method" and e.get("kind") == "source" for e in result["evidence"]):
+            raise WorkflowFailure("已处理全文，但未取得方法正文依据。", "evidence", "no_method_evidence")
+        result.update(paper_id=key, title=paper["title"], passages=chunks, source_hash=fingerprint(document), source_url=document.get("source_url"),
+            coverage={"complete": True, "paper_id": key, "source_characters": size, "processed_characters": size,
+                      "parts": len(groups), "context_limit_tokens": self._context_capacity()})
         return result
 
     def _evidence(self, data):
@@ -1192,6 +1280,12 @@ class IdeationService:
             comparison = synthesis.get("method_comparison") or []
             if not comparison or any(p.get("paper_id") not in data["reading"] or not p.get("method") or not p.get("boundary") for p in comparison):
                 raise SessionError("领域图景缺少基于已读论文的方法与适用边界对照。")
+            sections = synthesis.get("sections", [])
+            if not isinstance(sections, list) or any(not isinstance(s, dict) or not s.get("title") or not s.get("summary")
+                    or not isinstance(s.get("paper_ids"), list) or not s["paper_ids"] or not set(s["paper_ids"]) <= data["reading"].keys() for s in sections):
+                raise SessionError("研究路线必须关联本轮已读论文，不能引用未知论文。")
+            if "takeaways" in synthesis and (not isinstance(synthesis["takeaways"], list) or any(not isinstance(x, str) for x in synthesis["takeaways"])):
+                raise SessionError("关键认识必须是逐条的文字记录。")
             for gap in gaps:
                 refs = gap.get("evidence_refs") or []
                 if not refs or not set(refs) <= allowed.keys():
@@ -1266,7 +1360,7 @@ class IdeationService:
                 for p in neighbors:
                     self._read_paper(data, event, p, extra=p["paper_id"] not in approved_ids)
                 audit_payload = {"candidate": candidate,
-                    "neighbors": [data["reading"][p["paper_id"]] for p in neighbors]}
+                    "neighbors": [{k: v for k, v in data["reading"][p["paper_id"]].items() if k != "passages"} for p in neighbors]}
                 for design_attempt in range(2):
                     review = self._json(data, event, "audit", audit_payload)
                     design = review.get("design_check") or {}

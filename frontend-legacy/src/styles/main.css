@@ -817,3 +817,33 @@ button, a { touch-action: manipulation; }
 
 .ideation-limit { display:flex; align-items:center; gap:14px; margin:0 0 18px; }
 .ideation-limit select { width:auto; min-width:100px; }
+
+/* 文献综合：概览、路线、对照与待验证问题分层展示。 */
+.landscape-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:22px; }
+.landscape-heading h3 { margin:5px 0 0; font-size:20px; letter-spacing:-.02em; }
+.landscape-eyebrow { color:var(--accent); font-size:12px; font-weight:600; }
+.landscape-overview { font-size:16px; line-height:1.85; max-width:76ch; margin:0 0 28px; }
+.landscape-block { margin-top:28px; }
+.landscape-block > h3 { font-size:15px; margin:0 0 14px; }
+.landscape-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.landscape-route,.landscape-gap { border:1px solid var(--border); border-radius:16px; padding:20px; background:rgba(0,113,227,.025); min-width:0; }
+.landscape-route h4,.landscape-gap h4 { font-size:15px; line-height:1.6; margin:8px 0 12px; }
+.landscape-route p,.landscape-gap p { font-size:14px; line-height:1.85; margin:0; overflow-wrap:anywhere; }
+.landscape-number { display:inline-flex; justify-content:center; align-items:center; min-width:26px; height:26px; border-radius:8px; background:rgba(0,113,227,.09); color:var(--accent); font-size:12px; font-weight:600; margin-right:8px; }
+.landscape-sources { display:flex; flex-direction:column; align-items:flex-start; gap:8px; margin-top:16px; }
+.landscape-paper { display:inline; padding:0; border:0; background:none; text-align:left; color:var(--accent); cursor:pointer; font:inherit; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.landscape-paper:hover { text-decoration:underline; }
+.landscape-table-wrap { overflow:auto; border:1px solid var(--border); border-radius:14px; }
+.landscape-table { width:100%; border-collapse:collapse; text-align:left; font-size:14px; line-height:1.8; }
+.landscape-table th,.landscape-table td { padding:16px; border-bottom:1px solid var(--border); vertical-align:top; min-width:170px; overflow-wrap:anywhere; }
+.landscape-table thead { background:rgba(0,0,0,.025); color:var(--text-secondary); font-size:12px; }
+.landscape-table tbody th { font-weight:500; width:25%; }
+.landscape-table tr:last-child > * { border-bottom:0; }
+.landscape-inference { margin-top:14px !important; padding-top:14px; border-top:1px solid var(--border); color:var(--text-secondary); }
+.landscape-inference strong { display:block; margin-bottom:5px; font-size:12px; }
+.landscape-takeaways ul { padding-left:21px; margin:0; }
+.landscape-takeaways li { margin:10px 0; line-height:1.8; }
+.landscape-original { margin-top:26px; padding-top:18px; border-top:1px solid var(--border); }
+.landscape-original summary { color:var(--text-secondary); font-size:13px; cursor:pointer; }
+.ideation-landscape p { margin:0 0 16px; }
+@media(max-width:900px) { .landscape-grid { grid-template-columns:1fr; } .landscape-heading h3 { font-size:18px; } }

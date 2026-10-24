@@ -44,7 +44,7 @@ const IdeationView = {
     this.host.innerHTML=`<div class="ideation-workspace">
       <div class="ideation-heading"><div><span class="idea-step">研究准备</span><h2>文献调研与方向确认</h2></div><button class="idea-text-btn" data-action="prompt">生成方式与提示词</button></div>
       <p class="proj-welcome-sub">智能体先调研相关文献，你确认方向后，它会比较论文、核对依据并寻找创新点。</p>
-      <div class="ideation-steps"><span class="${!d || ['retrieval','literature_review'].includes(d.phase)?'active':''}">1 · 确认文献方向</span><span class="${d && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase)?'active':''}">2 · 确认创新点</span><span class="${d && d.run_id?'active':''}">3 · 自动科研与论文</span></div>
+      <div class="ideation-steps"><span class="${!d || ['retrieval','literature_review'].includes(d.phase)?'active':''}">1 · 确认文献方向</span><span class="${d && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase)?'active':''}">${d?.phase==='idea_review'?'2 · 确认创新点':'2 · 创新点准备与审查'}</span><span class="${d && d.run_id?'active':''}">3 · 自动科研与论文</span></div>
       ${this._pending?`<div class="card literature-live" role="status" aria-live="polite"><span class="literature-spinner" aria-hidden="true"></span>${this._esc(this._pending)}</div>`:''}
       ${this._error?`<p class="ideation-alert" role="alert">${this._esc(this._error)}</p>`:''}
       ${!this.sessionId?this._newHtml():!d?'<p role="status">正在读取调研会话…</p>':this._sessionHtml(d)}
@@ -81,7 +81,7 @@ const IdeationView = {
         <div class="ideation-confirm-actions"><button class="proj-btn primary" data-action="confirm-direction" ${d.curation_version!==1?'disabled title="请先整理全文文献"':''}>是这个方向，继续寻找创新点</button><button class="proj-btn" data-action="adjust-direction">调整研究方向</button></div>
         <details class="ideation-optional-feedback"><summary>补充关注点</summary><textarea id="lit-feedback" class="gate-textarea" rows="2" placeholder="例如：重点关注的方法、验证问题或数据条件"></textarea></details></div>`:''}
 
-      ${d.synthesis?`<details class="card" open><summary>领域现状与问题定位</summary><div class="ideation-landscape" data-no-i18n>${this._esc(d.synthesis.landscape_zh)}</div></details>`:''}
+      ${d.synthesis?this._landscapeHtml(d):''}
       ${d.cards.length?this._cardsHtml(d):''}
       ${(d.rejected_cards || []).length?`<details class="card"><summary>未通过审查的候选（${d.rejected_cards.length}）</summary>${d.rejected_cards.map(c=>`<div class="idea-detail-section"><h3>${this._esc(c.title)}</h3><p>${this._esc(c.rejection_reason)}</p></div>`).join('')}</details>`:''}
       ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<div class="card"><h3>修改意见与重新生成</h3><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="例如：调整核心假设、验证方式或数据要求。"></textarea><button class="proj-btn" data-action="regenerate">基于已批准文献重新生成</button></div>`:''}
@@ -102,6 +102,7 @@ const IdeationView = {
       }
     } else if(p.unit==='候选' && p.total)line=`候选 ${p.current} / ${p.total}`;
     else if(op==='download' && p.total)line=`正在获取第 ${p.current} / ${p.total} 篇原文`;
+    else if(op==='read' && p.part_total>1)line=`正在自动阅读本篇第 ${p.part_current} / ${p.part_total} 段`;
     else if(op==='read' && p.total)line=`正在核对第 ${p.current} / ${p.total} 篇的原文依据`;
     else if(op==='summarize')line=p.total?`DeepSeek 正在总结第 ${p.current} / ${p.total} 篇论文`:'DeepSeek 正在撰写论文概览';
     if(op==='download' || d.phase==='literature_review') {
@@ -114,6 +115,27 @@ const IdeationView = {
     return `<div class="literature-live" role="status" aria-live="polite">${active?'<span class="literature-spinner" aria-hidden="true"></span>':''}<div>${line?`<strong>${e(line)}</strong>`:''}${p.title?`<p data-no-i18n>${e(p.title)}</p>`:''}${detail?`<p>${e(detail)}</p>`:''}</div></div>`;
   },
   _paperLimit(d) { return d.paper_limit || d.limits?.paper_limit || (d.approved_revision!=null?Math.max(20,d.papers.filter(p=>p.selected).length):20); },
+  _landscapeHtml(d) {
+    const s=d.synthesis,reading=d.reading || {},e=this._esc.bind(this);
+    const paperLink=id=>{
+      const index=d.papers.findIndex(p=>p.paper_id===id),note=reading[id];
+      if(index>=0)return `<button class="landscape-paper" data-action="paper" data-index="${index}">${e(d.papers[index].title)}</button>`;
+      return this._link(note?.source_url,note?.title || '补充文献');
+    };
+    const sections=Array.isArray(s.sections)?s.sections:[];
+    const comparison=s.method_comparison || [],gaps=s.gaps || [];
+    const cards=sections.map((section,i)=>`<article class="landscape-route"><span class="landscape-number">${i+1}</span><h4>${e(section.title)}</h4><p data-no-i18n>${e(section.summary)}</p><div class="landscape-sources">${(section.paper_ids || []).map(paperLink).join('')}</div></article>`).join('');
+    const rows=comparison.map(item=>`<tr><th scope="row">${paperLink(item.paper_id)}</th><td data-no-i18n>${e(item.method)}</td><td data-no-i18n>${e(item.boundary)}</td></tr>`).join('');
+    const evidence={};Object.values(reading).forEach(note=>(note.evidence || []).forEach(item=>{evidence[item.passage_id]=note.paper_id;}));
+    const gapCards=gaps.map((gap,i)=>{const ids=[...new Set((gap.evidence_refs || []).map(ref=>evidence[ref]).filter(Boolean))];return `<article class="landscape-gap"><h4><span class="landscape-number">${i+1}</span>待验证的问题</h4><p data-no-i18n>${e(gap.description)}</p>${gap.inference?`<p class="landscape-inference" data-no-i18n><strong>推断与边界</strong>${e(gap.inference)}</p>`:''}<div class="landscape-sources">${ids.map(paperLink).join('')}</div></article>`;}).join('');
+    return `<section class="card ideation-landscape-panel"><div class="landscape-heading"><div><span class="landscape-eyebrow">文献综合</span><h3>领域现状与问题定位</h3></div><span class="proj-badge">${comparison.length} 篇方法对照 · ${gaps.length} 个待验证问题</span></div>
+      ${s.overview_zh?`<p class="landscape-overview" data-no-i18n>${e(s.overview_zh)}</p>`:''}
+      ${cards?`<div class="landscape-block"><h3>研究路线</h3><div class="landscape-grid">${cards}</div></div>`:''}
+      ${rows?`<div class="landscape-block"><h3>方法对照</h3><div class="landscape-table-wrap"><table class="landscape-table"><thead><tr><th scope="col">论文</th><th scope="col">主要做法</th><th scope="col">适用范围与不足</th></tr></thead><tbody>${rows}</tbody></table></div></div>`:''}
+      ${(s.takeaways || []).length?`<div class="landscape-block landscape-takeaways"><h3>关键认识</h3><ul>${s.takeaways.map(x=>`<li data-no-i18n>${e(x)}</li>`).join('')}</ul></div>`:''}
+      ${gapCards?`<div class="landscape-block"><h3>还需要验证什么</h3><div class="landscape-grid">${gapCards}</div></div>`:''}
+      <details class="landscape-original"><summary>完整分析记录</summary><div class="ideation-landscape" data-no-i18n>${String(s.landscape_zh || '').split(/\n\s*\n|(?=第[一二三四五六七八九十]+条|总体)/).filter(x=>x.trim()).map(x=>`<p>${e(x.trim())}</p>`).join('')}</div></details></section>`;
+  },
   _researchObject(d) {
     const plan=d.plan || {};
     let text=String(plan.research_object || plan.interpretation || d.direction || '').replace(/\s+/g,' ').trim();
@@ -148,7 +170,7 @@ const IdeationView = {
         <span class="literature-tile-bottom"><span>${this._esc(state)}</span><span>查看详情 ↗</span></span></button>`;
     }).join('');
     const updatable=!this.busy && !['running','pending','stopping','handoff'].includes(d.status) && !d.run_id;
-    return `<section class="card literature-gallery"><div class="literature-gallery-head"><h3>相关文献 · ${relevant.length} 篇（上限 ${this._paperLimit(d)} 篇）</h3>${updatable && d.phase!=='retrieval'?'<button class="idea-text-btn" data-action="fulltexts">整理全文文献</button>':''}${updatable && d.phase!=='retrieval' && relevant.some(x=>x.paper.summary_version!==5)?'<button class="idea-text-btn" data-action="summaries">更新论文概览</button>':''}</div>${this._retrievalInfoHtml(d,relevant)}<div class="literature-grid">${cards || (['running','pending','stopping'].includes(d.status)?'<p>正在阅读和筛选全文，完成后展示文献卡片。</p>':'<p>暂无通过全文筛选的论文，可整理全文文献、调整方向或补充 PDF。</p>')}</div><nav class="literature-pagination" aria-label="文献翻页"><button class="proj-btn" data-action="papers-prev" ${this._paperPage===0?'disabled':''}>← 上一页</button><span aria-live="polite">${this._paperPage+1} / ${pages}</span><button class="proj-btn" data-action="papers-next" ${this._paperPage===pages-1?'disabled':''}>下一页 →</button></nav></section>`;
+    return `<section class="card literature-gallery"><div class="literature-gallery-head"><h3>相关文献 · ${relevant.length} 篇（上限 ${this._paperLimit(d)} 篇）</h3>${updatable && d.phase!=='retrieval'?'<button class="idea-text-btn" data-action="fulltexts">整理全文文献</button>':''}${updatable && d.phase!=='retrieval' && relevant.some(x=>x.paper.summary_version!==6)?'<button class="idea-text-btn" data-action="summaries">更新论文概览</button>':''}</div>${this._retrievalInfoHtml(d,relevant)}<div class="literature-grid">${cards || (['running','pending','stopping'].includes(d.status)?'<p>正在阅读和筛选全文，完成后展示文献卡片。</p>':'<p>暂无通过全文筛选的论文，可整理全文文献、调整方向或补充 PDF。</p>')}</div><nav class="literature-pagination" aria-label="文献翻页"><button class="proj-btn" data-action="papers-prev" ${this._paperPage===0?'disabled':''}>← 上一页</button><span aria-live="polite">${this._paperPage+1} / ${pages}</span><button class="proj-btn" data-action="papers-next" ${this._paperPage===pages-1?'disabled':''}>下一页 →</button></nav></section>`;
   },
   _retrievalInfoHtml(d,relevant) {
     const logs=d.search_log || [],queries=d.plan?.queries || [],years=relevant.map(x=>Number(x.paper.year)).filter(y=>y>0);
@@ -256,7 +278,7 @@ const IdeationView = {
   async _showPrompt() {
     const dialog=this._showDialog('各阶段生成方式与实际提示词','<p>正在读取…</p>');
     try{const info=await API.ideaPrompt();if(this._dialog!==dialog)return;
-      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。先读全文并确认方向，再比较论文、核对依据和审创新点。</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',summarize:'问题、现状、创新、方法与优缺点',neighbors:'最近邻召回筛选',read:'比较论文与核对原文依据',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查'})[key])} · 输出预算 ${info.output_tokens[key]}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
+      dialog.querySelector('.idea-dialog-body').innerHTML=`<p class="idea-evidence-note">配置模型：${this._esc(info.model)}。先读全文并确认方向，再比较论文、核对依据和审创新点。</p>`+Object.entries(info.stages).map(([key,text])=>`<details class="idea-prompt-block"><summary>${this._esc(({plan:'方向理解与检索规划',screen:'文献相关性筛选',summarize:'问题、现状、创新、方法与优缺点',neighbors:'最近邻召回筛选',read:'单篇全文阅读与证据核对',read_part:'同篇长论文分段阅读',read_merge:'同篇分段记录汇总',synthesis:'领域现状与缺口',generate:'候选机制生成',audit:'独立最近邻审查'})[key])} · 输出预算 ${info.output_tokens[key]}</summary><pre class="proj-pre" data-no-i18n>${this._esc(text)}</pre></details>`).join('');
     }catch(e){if(this._dialog===dialog)dialog.querySelector('.idea-dialog-body').textContent='读取失败：'+e.message;}
   },
 };

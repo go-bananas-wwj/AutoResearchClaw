@@ -64,7 +64,7 @@ class LLM:
                     page=paper['material']['passages'][0]
                     row['selection']={'decision':'include','fit':'direct','rigor':'adequate','reason':'方法和验证直接回答用户的问题',
                         'evidence':[{'location':page['location'],'quote':page['text'][:80]}]}
-        elif stage == 'read':
+        elif stage in ('read','read_part','read_merge'):
             p = data['passages'][0]
             result = {'has_methods':True,'problem':'LS','method':'汇流计算','data':'DEM','experiments':'对照',
                 'findings':'条件性结论','strengths':'有依据的对照贡献','limitations':'特定地形','evidence':[{'passage_id':p['passage_id'],
@@ -109,6 +109,25 @@ def first(engine):
     return wait(engine,data['session_id'])
 
 
+def test_summary_contexts_are_independent_and_long_overview_auto_reads(engine, monkeypatch):
+    original = engine.llm.chat
+    payloads = []
+    def capture(messages, *, system, **kwargs):
+        if system == PROMPTS['summarize']:
+            payloads.append(json.loads(messages[0]['content']))
+        return original(messages, system=system, **kwargs)
+    engine.llm.chat = capture
+    limit = engine._input_limit
+    monkeypatch.setattr(engine, '_input_limit', lambda stage: 1000 if stage == 'summarize' else limit(stage))
+    data = first(engine)
+    assert data['phase'] == 'literature_review' and data['status'] == 'waiting'
+    assert len(payloads) == 3 and all(len(p['papers']) == 1 for p in payloads)
+    assert all(p['papers'][0]['material']['coverage']['complete'] for p in payloads)
+    assert all(p['papers'][0]['material']['reading_notes']['paper_id'] == p['papers'][0]['paper_id'] for p in payloads)
+    assert data['reading'] == {} and data['approved_revision'] is None and not data['run_id']
+    assert all(len(u['paper_ids']) == 1 for u in data['usage'] if u['stage'] in ('read', 'summarize'))
+
+
 def develop(engine):
     data = first(engine)
     assert data['phase'] == 'literature_review'
@@ -120,7 +139,7 @@ def test_two_reviews_and_provenance(engine):
     data = first(engine); sid=data['session_id']
     assert data['status']=='waiting' and len(engine.sources.fulltext_calls)==3
     assert not data['reading'] and all(p['fulltext_status']=='downloaded' for p in data['papers'])
-    assert engine.llm.calls==['plan','screen','summarize']
+    assert engine.llm.calls==['plan','screen']+['summarize']*3
     assert not list(engine.store.root.parent.glob('rc-*'))
     with pytest.raises(SessionError): engine.regenerate(sid,data['revision'],'skip')
     with pytest.raises(SessionError): engine.confirmation(sid,data['revision'],'fake')
@@ -138,6 +157,19 @@ def test_two_reviews_and_provenance(engine):
     assert (path/'stage-04/references.bib').exists()
     assert (path/'manifest.json').exists()
     assert not list(engine.store.root.parent.glob('rc-*'))
+
+
+def test_nearest_neighbor_audit_compares_notes_and_quotes_not_combined_fulltexts(engine):
+    original = engine.llm.chat
+    audits = []
+    def capture(messages, *, system, **kwargs):
+        if system == PROMPTS['audit']:
+            audits.append(json.loads(messages[0]['content']))
+        return original(messages, system=system, **kwargs)
+    engine.llm.chat = capture
+    data = develop(engine)
+    assert data['phase'] == 'idea_review' and audits
+    assert all('passages' not in n and n.get('method') and n.get('evidence') for a in audits for n in a['neighbors'])
 
 
 @pytest.mark.parametrize('failure',['empty','off_topic','abstract','fabricate','truncated','bad_gap','collision_empty','overlap'])
@@ -395,8 +427,8 @@ def test_summary_refresh_is_presentation_only(engine):
     assert done['revision']==data['revision'] and done['approved_revision'] is None
     assert done['phase']=='literature_review' and done['status']=='waiting'
     assert not done['reading'] and not done['cards'] and not done['run_id']
-    assert engine.sources.fulltext_calls==downloads and engine.llm.calls[len(before):]==['summarize']
-    assert all(p['summary_version']==5 and set(p['overview'])=={'problem','background','innovation','method','data','results','strengths','limitations'} for p in done['papers'])
+    assert engine.sources.fulltext_calls==downloads and engine.llm.calls[len(before):]==['summarize']*3
+    assert all(p['summary_version']==6 and set(p['overview'])=={'problem','background','innovation','method','data','results','strengths','limitations'} for p in done['papers'])
 
 
 def test_backfill_uses_related_reserve_and_never_exceeds_fifteen(engine):
@@ -446,7 +478,7 @@ def test_invalid_json_is_retried_once_and_accounted(engine):
     engine.refresh_summaries(sid,data['revision']);done=wait(engine,sid)
     assert done['status']=='blocked' and '两次' in done['missing'][0]
     assert len(done['usage'])==before+2 and not done['approved_revision'] and not done['cards']
-    assert len(list((engine.store.directory(sid)/'model_outputs').glob('*summarize.txt')))==3
+    assert len(list((engine.store.directory(sid)/'model_outputs').glob('*summarize.txt')))==5
 
 
 def test_empty_abstract_label_does_not_create_a_long_invented_summary(engine):
