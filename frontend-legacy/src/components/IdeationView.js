@@ -62,7 +62,8 @@ const IdeationView = {
     <p class="idea-evidence-note">先找到相关文献，再请你确认研究方向。</p></div>`; },
   _sessionHtml(d) {
     const active=['running','pending','stopping'].includes(d.status), locked=active || this.busy || d.status==='handoff' || !!d.run_id;
-    return `<div class="card ideation-brief" data-material-stage="latest-status">
+    return `<div class="card ideation-route-card" data-material-stage="workflow">${this._progressHtml(d,active)}</div>
+      <div class="card ideation-brief" data-material-stage="latest-status">
       <div class="ideation-progress"><strong>最新进展</strong><span class="proj-badge">${this._esc(d.run_id?'已交接自动科研':this.stateLabel(d))}</span>
       ${active?`<button class="proj-btn" data-action="stop" ${d.status==='stopping'?'disabled':''}>停止调研</button>`:''}
       ${['blocked','stopped','interrupted'].includes(d.status) && d.blocker?.category!=='scientific' && (!['literature_review','idea_review'].includes(d.phase) || d.download_task)?'<button class="proj-btn" data-action="resume">继续调研</button>':''}</div>
@@ -75,7 +76,6 @@ const IdeationView = {
       ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<section class="card" data-material-stage="next-action"><h3>继续优化方案</h3><p class="idea-evidence-note">沿用已确认的文献和审查意见，继续构思方案。</p><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="可选：指定要优先解决的问题、验证方式或数据条件。"></textarea><button class="proj-btn" data-action="regenerate">${d.cards.length?'修改方案并重新生成':'根据审查意见继续优化'}</button></section>`:''}
       ${d.synthesis?this._landscapeHtml(d):''}
       ${!active?this._warningsHtml(d):''}
-      <div class="card ideation-route-card" data-material-stage="workflow">${this._progressHtml(d,active)}</div>
       <div class="card" data-material-stage="research-input"><dl class="ideation-brief-fields"><div><dt>用户输入</dt><dd data-no-i18n>${this._esc(d.direction)}</dd></div>
       <div><dt>研究对象</dt><dd data-no-i18n>${this._esc(this._researchObject(d))}</dd></div></dl></div>
       ${!locked?`<details class="card" id="ideation-scope-editor"><summary>调整方向或补充材料</summary><div class="ideation-supplement">

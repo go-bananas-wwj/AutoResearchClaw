@@ -49,17 +49,31 @@ test('automatic revision distinguishes prior work from upcoming repeated work',(
   assert.ok(html.indexOf('第 2 轮：')<html.indexOf('第 1 轮：'));
 });
 
-test('latest outputs precede earlier materials and literature remains at the bottom',()=>{
+test('workflow comes first, followed by newest outputs and finally literature',()=>{
   const d=state({phase:'audit',status:'blocked',approved_revision:1,refinement_round:2,
     blocker:{category:'scientific',code:'refinement_exhausted'},missing:['三轮未通过'],
     rejected_cards:[{title:'需修订的候选',failure:{code:'invalid_design'},audit:{missing:['缺少独立观测'],design_check:{issues:['对照条件未落实']}}}],
     synthesis:{landscape_zh:'此前生成的领域分析',method_comparison:[],gaps:[]},
     papers:[{paper_id:'p1',title:'早期相关论文',relevance:'core',fulltext_status:'read',summary_basis:'fulltext',summary_version:6,overview:{problem:'问题',method:'方法'}}]});
   const html=view._sessionHtml(d),review=html.indexOf('data-material-stage="review"'),synthesis=html.indexOf('ideation-landscape-panel'),route=html.indexOf('data-material-stage="workflow"'),papers=html.indexOf('class="card literature-gallery"');
-  assert.ok(review>0 && review<synthesis && synthesis<route && route<papers);
+  const latest=html.indexOf('data-material-stage="latest-status"');
+  assert.ok(route>=0 && route<latest && latest<review && review<synthesis && synthesis<papers);
   assert.match(html,/达到本次自动修订轮次上限/);assert.match(html,/缺少独立观测/);assert.match(html,/根据审查意见继续优化/);
   assert.equal(view._journeySteps(d)[8].status,'方案通过审查后解锁');
   assert.ok(!html.slice(papers).includes('data-material-stage='));
+});
+
+test('workflow stays the first panel through running, review, paused and handoff states',()=>{
+  for(const extra of [
+    {},{status:'waiting',phase:'literature_review'},
+    {status:'waiting',phase:'idea_review',approved_revision:1},
+    {status:'blocked',phase:'audit',approved_revision:1},
+    {status:'completed',phase:'handed_off',approved_revision:1,run_id:'rc-example'}
+  ]) {
+    const html=view._sessionHtml(state(extra));
+    assert.match(html,/^<div class="card ideation-route-card" data-material-stage="workflow">/);
+    assert.equal((html.match(/data-material-stage="workflow"/g)||[]).length,1);
+  }
 });
 
 test('finished review counts are explicit and retain model-written reasons',()=>{
