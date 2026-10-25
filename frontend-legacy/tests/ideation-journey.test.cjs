@@ -9,6 +9,25 @@ const view=sandbox.view;
 function state(extra={}) { return {status:'running',phase:'retrieval',revision:1,approved_revision:null,plan:{research_object:'坡长坡度因子'},papers:[],reading:{},cards:[],reviews:[],progress:{operation:'plan'},...extra}; }
 function current(d) { return view._journeySteps(d).find(s=>s.state==='current'); }
 
+test('idea-first cards remain selectable with explicit partial neighbor checks and deferred design',()=>{
+  const card={title:'待验证的想法',one_liner:'能不能更早发现变化？',skill_job_id:'job',skill_status:'idea_ready',selection_ready:true,
+    neighbor_check:{status:'partial',summary:'摘要层面比较，尚有缺失',issues:['一个检索来源不可用'],comparisons:[],papers:[]},audit:{verdict:'checked'}};
+  const d=state({phase:'idea_review',status:'waiting',approved_revision:1,idea_pool:[card],cards:[card],
+    ideaspark_batch:{workflow:'ideas_then_neighbors_v1',jobs:[{id:'job',status:'idea_ready'}]}});
+  assert.match(view._batchSummary(d),/1 张可选择/);
+  assert.equal(view._reviewState(card,d).technical,false);
+  assert.match(view._reviewState(card,d).label,/检索有缺失/);
+  assert.equal(view._journeySteps(d)[7].title,'检查相近研究');
+  let footer='',body='';view.data=d;
+  const original=view._showDialog;
+  view._showDialog=(title,b,f)=>{body=b;footer=f;return {querySelector:()=>null};};
+  try{view._openCard(0);}finally{view._showDialog=original;}
+  assert.match(footer,/选择这个创新点，继续设计实验/);
+  assert.match(body,/一个检索来源不可用/);
+  assert.match(body,/新颖性或效果/);
+  assert.doesNotMatch(body,/审查通过|当前不能确认启动实验/);
+});
+
 test('route retains completed and future stations with two human confirmation points',()=>{
   const d=state({phase:'audit',approved_revision:1,progress:{operation:'read',title:'Supplemental method',current:2,total:4,unit:'候选'}});
   const steps=view._journeySteps(d),html=view._progressHtml(d,true);

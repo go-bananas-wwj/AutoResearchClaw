@@ -59,6 +59,16 @@ def test_stale_worker_cannot_overspend_shared_budget(engine):
     assert h.data['cost_usd']==0.1 and len(h.data['usage'])==1
 
 
+def test_parallel_success_removes_stale_error_instead_of_resurrecting_it(engine):
+    h=host(engine);jobs=jobs_for(h,1)
+    jobs[0]['presentation_error']='old failed display'
+    h.data['ideaspark_batch']['parallel']={'workers':1,'active':{}}
+    store=CandidateStore(h,jobs[0]['id'])
+    store.data['ideaspark_batch']['jobs'][0].pop('presentation_error')
+    store.save(store.data)
+    assert 'presentation_error' not in h.data['ideaspark_batch']['jobs'][0]
+
+
 def test_parallel_cancellation_keeps_returned_calls_and_clears_active_workers(engine,monkeypatch):
     h=host(engine);jobs=jobs_for(h);barrier=threading.Barrier(3,timeout=10)
     def process(worker,job,phase):

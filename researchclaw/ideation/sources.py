@@ -201,6 +201,21 @@ class Sources:
     def validate_document(paper, document):
         return readable_document(document) and document_matches_paper(paper, document)
 
+    def search_neighbors(self, query: str, period: str = 'all', source: str = 'openalex'):
+        """One bounded request per source; no download, retries or citation expansion."""
+        if source == 'openalex':
+            params = {'search': query, 'per_page': '8'}
+            raw, _, _ = fetch('https://api.openalex.org/works?' + urllib.parse.urlencode(params), timeout=15)
+            return [openalex_record(p, query, 'idea_neighbors') for p in json.loads(raw).get('results', []) if p.get('title')]
+        if source != 'crossref':
+            raise ValueError('Unsupported idea neighbor source')
+        raw, _, _ = fetch('https://api.crossref.org/works?' + urllib.parse.urlencode({'query.bibliographic': query, 'rows': '8'}), timeout=15)
+        return [paper_record({'title': p['title'][0], 'doi': p['DOI'], 'url': 'https://doi.org/' + p['DOI'],
+            'year': p.get('published', {}).get('date-parts', [[0]])[0][0],
+            'abstract': html.unescape(re.sub('<[^>]+>', ' ', p.get('abstract', ''))),
+            **crossref_metadata(p), 'source': 'crossref'}, query, 'crossref')
+            for p in json.loads(raw).get('message', {}).get('items', []) if p.get('title') and p.get('DOI')]
+
     def search(self, query: str, period: str = "all", source: str = "openalex") -> list[dict[str, Any]]:
         from researchclaw.literature.search import search_papers
 

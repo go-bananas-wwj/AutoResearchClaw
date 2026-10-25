@@ -307,7 +307,10 @@ async def confirm_session(sid: str, req: ConfirmRequest):
             data["reviews"].append({"type": "idea", "revision": req.revision, "card_id": req.card_id, "at": now()})
         service.store.save(data)
         try:
-            await asyncio.to_thread(_check_data_access, card)
+            # Idea selection precedes concrete data/implementation decisions.
+            # Stage 9 receives the unresolved access checks explicitly in the brief.
+            if not card.get('selection_ready'):
+                await asyncio.to_thread(_check_data_access, card)
             brief, snapshot = await asyncio.to_thread(service.export, data, card)
             key = f"{sid}:{req.revision}:{req.card_id}"
             response = await start_pipeline(PipelineStartRequest(topic=card["title"], brief=brief,
@@ -335,10 +338,13 @@ async def idea_prompt():
     stages=dict(PROMPTS)
     skill=None
     if getattr(service.config.llm,'ideation_backend','builtin')=='ideaspark':
-        from researchclaw.ideation.ideaspark import ROOT, profile
-        skill=profile()
+        from researchclaw.ideation.ideaspark import ROOT
+        from researchclaw.ideation.idea_first import idea_profile, GENERATION, NEIGHBORS
+        skill=idea_profile()
         stages.pop('generate',None);stages.pop('audit',None)
-        stages.update({'ideaspark:'+p.stem:p.read_text() for p in sorted((ROOT/'references/system-prompts').glob('*.txt'))})
+        stages.update({'ideaspark:'+name:(ROOT/'references/system-prompts'/filename).read_text()
+                       for name,filename in [('bottleneck','bottleneck_identify.txt'),('select','ideate_select.txt'),('generate','ideate_generate.txt')]})
+        stages.update({'idea_generation':GENERATION,'neighbor_check':NEIGHBORS})
     return {"stages": stages, "output_tokens": OUTPUT_TOKENS, "model": service.config.llm.primary_model,
             "skill":skill,"card_target":getattr(service.config.llm,'ideation_card_target',12),
             "workers":getattr(service.config.llm,'ideation_workers',3),

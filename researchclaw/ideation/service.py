@@ -349,6 +349,8 @@ class IdeationService:
                 paper_id=paper["paper_id"], title=paper["title"], operation="download")
             if data.get('presentation_task')=='cards':
                 from .ideaspark import IdeaSparkBatch
+                if (data.get('ideaspark_batch') or {}).get('workflow') == 'ideas_then_neighbors_v1':
+                    from .idea_first import IdeaFirstBatch as IdeaSparkBatch
                 from .parallel import run_candidates
                 previous=data['card_presentation_return']
                 host=IdeaSparkBatch(self,data,event)
@@ -1331,7 +1333,7 @@ class IdeationService:
         if data.get("approved_revision") != data["revision"]:
             raise SessionError("文献版本尚未批准。")
         if data.get('ideaspark_batch') and data['phase'] in ('generate','audit'):
-            from .ideaspark import IdeaSparkBatch
+            from .idea_first import IdeaFirstBatch as IdeaSparkBatch
             IdeaSparkBatch(self,data,event).run()
             return
         if data["phase"] == "reading":
@@ -1409,7 +1411,7 @@ class IdeationService:
             self._save(data, event)
         if data["phase"] == "generate":
             if getattr(self.config.llm,'ideation_backend','builtin')=='ideaspark':
-                from .ideaspark import IdeaSparkBatch
+                from .idea_first import IdeaFirstBatch as IdeaSparkBatch
                 IdeaSparkBatch(self,data,event).run()
                 return
             result = self._json(data, event, "generate", {"direction": data["direction"], "synthesis": data["synthesis"],
@@ -1570,7 +1572,8 @@ class IdeationService:
             if data["phase"] != "idea_review" or data.get("approved_revision") != revision:
                 raise SessionError("须先完成当前版本的文献审核、全文精读与创新点审查。")
             card = next((c for c in data["cards"] if c["card_id"] == card_id), None)
-            if not card or card.get("audit", {}).get("verdict") != "pass":
+            if not card or not (card.get("audit", {}).get("verdict") == "pass" or
+                                 card.get('skill_job_id') and card.get('selection_ready')):
                 raise SessionError("该创新点不属于当前已审查的候选。")
             if card.get('skill_job_id'):
                 from .ideaspark import verify_card
@@ -1607,7 +1610,8 @@ class IdeationService:
             target.mkdir(parents=True)
             for num in range(3, 9):
                 (target / f"stage-{num:02d}").mkdir()
-            rows = self._merge([p for p in data["papers"] if p.get("selected")] + card["closest_papers"])
+            rows = self._merge([p for p in data["papers"] if p.get("selected")] + card["closest_papers"] +
+                               card.get('neighbor_check', {}).get('papers', []))
             serialized = "\n".join(json.dumps(p, ensure_ascii=False) for p in rows) + "\n"
             (target / "stage-03/search_plan.yaml").write_text(json.dumps(data.get("plan", {}), ensure_ascii=False))
             (target / "stage-04/candidates.jsonl").write_text(serialized)
@@ -1646,6 +1650,9 @@ class IdeationService:
         scope += "\n\n数据访问：" + json.dumps(card.get("data_sources", []), ensure_ascii=False)
         if native_source:
             scope += '\n\nIdeaSpark原始方案规范（方法、变量、假设、可证伪判据与资源以原始版本为准；预期不等于实验结果）：\n'+json.dumps(native_source,ensure_ascii=False)
+        if card.get('selection_ready'):
+            check = card.get('neighbor_check', {})
+            scope += '\n\n选题阶段仅完成创新点与相近研究比较，未证明新颖性、可实现性或效果。阶段9负责根据此想法落实具体技术、数据可得性、数据划分、基线、消融、评价指标及资源；先处理以下重合风险或检索缺失，不沿用旧技术审查的通过/失败标签。未落实真实数据前不得训练或编造实验数据，必要时报告具体缺失。\n'+json.dumps({k:check[k] for k in ('status','summary','comparisons','issues','deferred','boundary') if k in check},ensure_ascii=False)
         brief = ResearchBrief.from_dict({"topic": card["title"], "scientific_question": card["scientific_question"],
             "survey_summary": data["synthesis"]["landscape_zh"], "hypotheses": [card["scientific_question"]],
             "experiment_scope": scope, "datasets": card.get("datasets") or [],

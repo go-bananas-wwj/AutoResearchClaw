@@ -72,15 +72,22 @@ class CandidateStore:
                         existing.append(copy.deepcopy(item))
             job = next(j for j in local['ideaspark_batch']['jobs'] if j['id'] == self.job_id)
             shared_job = next(j for j in shared['ideaspark_batch']['jobs'] if j['id'] == self.job_id)
+            old_job = next(j for j in self.baseline['ideaspark_batch']['jobs'] if j['id'] == self.job_id)
+            for key in old_job.keys() - job.keys():
+                shared_job.pop(key, None)
             shared_job.update(copy.deepcopy(job))
             own = [c for c in local.get('idea_pool', []) if c.get('skill_job_id') == self.job_id]
             for card in own:
                 digest = card.get('native_intervention_hash')
-                if digest and any(c.get('native_intervention_hash') == digest and c.get('skill_job_id') != self.job_id for c in shared.get('idea_pool', [])):
+                similar = [c['skill_job_id'] for c in shared.get('idea_pool', []) if digest
+                           and c.get('native_intervention_hash') == digest and c.get('skill_job_id') != self.job_id]
+                if similar and shared['ideaspark_batch'].get('workflow') == 'ideas_then_neighbors_v1':
+                    card['similar_candidate_job_ids'] = similar
+                elif similar:
                     shared_job.update(status='needs_work', reason='该候选与本批已有方案的机制完全相同，未重复计数。')
                     own = []; break
             shared['idea_pool'] = [c for c in shared.get('idea_pool', []) if c.get('skill_job_id') != self.job_id] + copy.deepcopy(own)
-            shared['cards'] = [c for c in shared['idea_pool'] if c.get('skill_status') == 'validated']
+            shared['cards'] = [c for c in shared['idea_pool'] if c.get('skill_status') == 'validated' or c.get('selection_ready')]
             progress = copy.deepcopy(local.get('progress', {}))
             parallel = shared['ideaspark_batch']['parallel']
             parallel['active'][self.job_id] = {

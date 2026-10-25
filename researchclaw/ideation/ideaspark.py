@@ -120,6 +120,9 @@ def reference_labels(run, identifiers):
 
 
 class IdeaSparkBatch:
+    def batch_profile(self):
+        return profile()
+
     def __init__(self, service, data, event):
         self.service, self.data, self.event = service, data, event
         self.directory = service.store.directory(data['session_id']).resolve()
@@ -220,7 +223,8 @@ class IdeaSparkBatch:
         base = self.service._client()
         use_thinking = reasoning and getattr(self.service.config.llm, 'ideation_thinking', 'disabled') == 'enabled'
         budgets = {'generation':16384, 'coherence':16384, 'critique':12288, 'revision':16384, 'json_transport_repair':32768,
-                   'batch_plan':3072, 'pattern_tagging':8192, 'bottleneck':8192}
+                   'batch_plan':3072, 'pattern_tagging':8192, 'bottleneck':8192,
+                   'idea_generation':8192, 'neighbor_check':4096}
         budget = 8192 if stage.endswith(':execution_binding') else budgets.get(stage, 12288)
         if use_thinking:budget = 32768
         feedback = None
@@ -549,8 +553,12 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
         if not set(refs)&method_refs:raise SessionError('IdeaSpark卡片缺少方法正文引用，未将其作为可确认方案。')
         intervention=native.get('intervention_object')
         intervention_hash=fingerprint(intervention) if intervention else None
-        if intervention_hash and any(c.get('native_intervention_hash')==intervention_hash and c.get('skill_job_id')!=job['id'] for c in self.data.get('idea_pool',[])):
-            raise SessionError('该独立任务与本批已有候选的机制对象完全相同，未重复充数。')
+        similar = [c['skill_job_id'] for c in self.data.get('idea_pool', []) if intervention_hash
+                   and c.get('native_intervention_hash') == intervention_hash and c.get('skill_job_id') != job['id']]
+        if similar:
+            if self.data.get('ideaspark_batch', {}).get('workflow') != 'ideas_then_neighbors_v1':
+                raise SessionError('该独立任务与本批已有候选的机制对象完全相同，未重复充数。')
+            card['similar_candidate_job_ids'] = similar
         card.update(card_id=f"r{self.data['revision']}-spark-{job['number']}",candidate_key=fingerprint(native),
             evidence=[allowed[r] for r in refs],skill=profile(),skill_job_id=job['id'],
             presentation_model=next((u.get('model', '') for u in reversed(self.data['usage']) if u.get('stage') == 'spark_card'), ''),
@@ -623,7 +631,7 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
             target=max(1,min(20,int(getattr(self.service.config.llm,'ideation_card_target',12))))
             root=self.directory/'ideaspark'/f"r{self.data['revision']}"
             root.mkdir(parents=True,exist_ok=True)
-            self.data['ideaspark_batch']={'profile':profile(),'target':target,'jobs':[],'scope_revision':self.data['revision']}
+            self.data['ideaspark_batch']={'profile':self.batch_profile(),'workflow':self.batch_profile().get('workflow'),'target':target,'jobs':[],'scope_revision':self.data['revision']}
             self.service._progress(self.data,self.event,'IdeaSpark：正在导入已批准全文并诊断研究瓶颈',
                 operation='ideaspark',current=0,total=target,unit='构思任务',title='')
             p1=self.seed(root/'grounding')
@@ -641,7 +649,7 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
                 shutil.copytree(root/'grounding/phase0',run/'phase0',dirs_exist_ok=True);shutil.copytree(root/'grounding/phase1',run/'phase1',dirs_exist_ok=True)
                 write(run/'context/cross_run.json',{'batch_assignment':focus,'source':'user-requested diverse independent proposals; not prior-art evidence','scope_revision':self.data['revision']})
                 jobs.append({'id':uuid.uuid4().hex[:12],'number':i,'focus':focus,'directory':str(run.relative_to(self.directory)),'status':'running','steps':0})
-            batch={'profile':profile(),'target':target,'jobs':jobs,'scope_revision':self.data['revision']}
+            batch={'profile':self.batch_profile(),'workflow':self.batch_profile().get('workflow'),'target':target,'jobs':jobs,'scope_revision':self.data['revision']}
             self.data.update(ideaspark_batch=batch,idea_pool=[],cards=[]);self.service._save(self.data,self.event)
         # Each worker owns one candidate snapshot. Only short publications serialize.
         workers=max(1,min(4,int(getattr(self.service.config.llm,'ideation_workers',3))))
@@ -669,6 +677,9 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
 
 
 def verify_card(service, data, card):
+    if (data.get('ideaspark_batch') or {}).get('workflow') == 'ideas_then_neighbors_v1':
+        from .idea_first import verify_idea_card
+        return verify_idea_card(service, data, card)
     verify_installation()
     batch=data.get('ideaspark_batch') or {}
     job=next((j for j in batch.get('jobs',[]) if j['id']==card.get('skill_job_id')),None)
