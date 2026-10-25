@@ -113,32 +113,51 @@ def test_new_idea_uses_official_reference_prompts_and_has_no_execution_stage(eng
 
 
 @pytest.mark.asyncio
-async def test_selecting_an_idea_hands_unknown_data_to_stage9_once(engine, monkeypatch):
+async def test_selecting_an_idea_hands_unknown_data_to_real_pipeline_route_once(engine, tmp_path, monkeypatch):
     import httpx
-    from types import SimpleNamespace
-    from fastapi import FastAPI
-    from researchclaw.server.app import _app_state
+    from researchclaw.config import RCConfig
+    from researchclaw.server.app import create_app, _app_state
     from researchclaw.server.routes import ideation, pipeline
+    from researchclaw.pipeline.executor import StageResult
+    from researchclaw.pipeline.stages import Stage, StageStatus
+    from researchclaw.hardware import HardwareProfile
     h, _ = prepared(engine)
     monkeypatch.setattr(IdeaFirstBatch, 'model', comparisons)
     h.run()
     card = h.data['cards'][0]
     card['data_sources'] = [{'name': 'not chosen yet', 'availability': 'unknown', 'url': ''}]
     engine.store.save(h.data)
+    config=RCConfig.from_dict({'project':{'name':'fixture'},'research':{'topic':'fixture'},'runtime':{'timezone':'UTC'},
+        'notifications':{'channel':'console'},'knowledge_base':{'root':str(tmp_path/'kb')},
+        'llm':{'base_url':'https://example.org','api_key_env':'TEST'}},check_paths=False)
+    app=create_app(config)
     monkeypatch.setitem(_app_state, 'ideation_service', engine)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pipeline, '_active_run', None)
     monkeypatch.setattr(ideation, '_check_data_access', lambda *a: pytest.fail('Data selection belongs to stage 9'))
-    requests = []
-    async def start(req):
-        requests.append(req)
-        return SimpleNamespace(run_id='rc-fixture-idea-first')
-    monkeypatch.setattr(pipeline, 'start_pipeline', start)
-    app = FastAPI();app.include_router(ideation.router)
+    monkeypatch.setattr('researchclaw.hardware.detect_hardware',lambda:HardwareProfile(False,'cpu','CPU',None,'limited',''))
+    requests=[]
+    def execute(**kwargs):
+        requests.append(kwargs)
+        return [StageResult(stage=Stage.EXPERIMENT_DESIGN,status=StageStatus.DONE,artifacts=())]
+    monkeypatch.setattr('researchclaw.pipeline.runner.execute_pipeline',execute)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://fixture') as client:
         url = '/api/ideation/sessions/'+h.data['session_id']+'/confirm'
         body = {'revision': h.data['revision'], 'card_id': card['card_id']}
         first = await client.post(url, json=body)
+        assert first.status_code == 200, first.text
+        await pipeline._run_task
         again = await client.post(url, json=body)
+        key=f"{h.data['session_id']}:{body['revision']}:{body['card_id']}"
+        direct_retry=await client.post('/api/pipeline/start',json={'idempotency_key':key})
+        assert direct_retry.status_code==200 and direct_retry.json()['run_id']==first.json()['run_id']
+        bad=await client.post('/api/pipeline/start',json={'idempotency_key':key+'/../other'})
+        assert bad.status_code==400
     assert first.status_code == again.status_code == 200
-    assert len(requests) == 1 and requests[0].from_stage == 'EXPERIMENT_DESIGN'
-    assert '数据可得性' in requests[0].brief['experiment_scope']
-    assert requests[0].auto_approve is True
+    assert first.json()['run_id']==again.json()['run_id']
+    assert len(requests) == 1 and requests[0]['from_stage'] == Stage.EXPERIMENT_DESIGN
+    assert requests[0]['auto_approve_gates'] is True
+    run=tmp_path/'artifacts'/first.json()['run_id']
+    assert '数据可得性' in read(run/'research_brief.json')['experiment_scope']
+    assert read(run/'ideation_origin.json')['key']==key
+    assert (run/'ideation_evidence/ideaspark/idea_review/neighbors.json').exists()

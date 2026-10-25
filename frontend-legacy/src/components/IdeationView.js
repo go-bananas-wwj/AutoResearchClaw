@@ -76,8 +76,7 @@ const IdeationView = {
       ${!active && (d.missing || []).length?this._blockerHtml(d):''}
       ${d.ideaspark_batch?.workflow==='ideas_then_neighbors_v1' && d.phase==='idea_review'?`<p>已整理 ${d.cards.length} 个可选创新点。查看相近研究的比较与待确认事项，选定后再生成具体实验方案。</p>`:''}
       ${d.run_id?`<p>科研任务已开始：<button class="idea-text-btn" data-action="project">打开科研项目</button></p>`:''}</div>
-      ${d.cards.length?this._cardsHtml(d):''}
-      ${this._ideaPoolHtml(d)}
+      ${d.ideaspark_batch?.workflow==='ideas_then_neighbors_v1'?this._ideaChoicesHtml(d):(d.cards.length?this._cardsHtml(d):'')+this._ideaPoolHtml(d)}
       ${!active && (d.rejected_cards || []).length?this._reviewResultsHtml(d):''}
       ${d.approved_revision===d.revision && !locked && !['reading','synthesis'].includes(d.phase)?`<section class="card" id="ideation-feedback" data-material-stage="next-action"><h3>继续优化方案</h3><p class="idea-evidence-note">沿用已确认的文献和审查意见，继续构思方案。</p><textarea id="idea-feedback" class="gate-textarea" rows="3" placeholder="可选：指定要优先解决的问题、验证方式或数据条件。"></textarea><button class="proj-btn" data-action="regenerate">${d.cards.length?'修改方案并重新生成':'根据审查意见继续优化'}</button></section>`:''}
       ${d.synthesis?this._landscapeHtml(d):''}
@@ -104,8 +103,11 @@ const IdeationView = {
   },
   _bookmarksHtml(d) {
     const items=[['ideation-workflow','完整流程'],['ideation-status','最新进展']];
-    if(d.cards?.length)items.push(['ideation-approved','可确认方案']);
-    if(d.ideaspark_batch || d.idea_pool?.length)items.push(['ideation-candidates','候选卡片']);
+    if(d.ideaspark_batch?.workflow==='ideas_then_neighbors_v1')items.push(['ideation-approved','创新点']);
+    else{
+      if(d.cards?.length)items.push(['ideation-approved','可确认方案']);
+      if(d.ideaspark_batch || d.idea_pool?.length)items.push(['ideation-candidates','候选卡片']);
+    }
     if(d.synthesis)items.push(['ideation-analysis','领域分析']);
     if(d.synthesis?.method_comparison?.length)items.push(['ideation-comparison','方案对照']);
     items.push(['ideation-input','研究方向']);
@@ -143,6 +145,11 @@ const IdeationView = {
       <p class="idea-evidence-note">${jobs.length?`本批已分配 ${jobs.length} 个独立构思任务${jobs.length!==(batch?.target || 12)?`（目标 ${batch?.target || 12} 个）`:''}。`:`正在规划独立任务，目标 ${batch?.target || 12} 个。`}${simple?'只生成创新点并检查相近研究；选定后再落实具体技术和实验。':'候选逐张展示，审查通过后可确认启动科研。'}</p>
       <div class="idea-cards">${cards.map(({c,i})=>`<button class="proj-big-card idea-card" data-action="pool-card" data-index="${i}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>${this._esc(label(c))}</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${this._esc(c.title)}</span><span class="idea-card-summary" data-no-i18n>${this._esc(this._short(c.one_liner))}</span><span class="idea-card-more">查看背景、方法与审查进度</span></button>`).join('') || (pool.length?'已通过的方案显示在上方。':'正在进行官方瓶颈诊断与独立构思，生成后逐张显示。')}</div>
       ${jobs.some(j=>j.reason || j.presentation_error)?`<details class="idea-prompt-block"><summary>任务处理记录</summary>${jobs.filter(j=>j.reason || j.presentation_error).map(j=>`<p data-no-i18n>${this._esc(j.focus)}：${this._esc(j.reason || j.presentation_error)}</p>`).join('')}</details>`:''}</section>`;
+  },
+  _ideaChoicesHtml(d) {
+    const e=this._esc.bind(this),ready=d.cards || [],seen=new Set(ready.map(c=>c.card_id));
+    const choices=ready.map((c,index)=>({c,index,action:'card'})).concat((d.idea_pool || []).map((c,index)=>({c,index,action:'pool-card'})).filter(({c})=>!seen.has(c.card_id)));
+    return `<section class="card ideation-choices" id="ideation-approved"><h3>创新点 · ${choices.length} 个</h3><p class="idea-evidence-note">点一张卡片查看详情，确定后在详情底部点击“启动科研项目”。</p><div class="idea-cards">${choices.map(({c,index,action},i)=>`<button class="proj-big-card idea-card" data-action="${action}" data-index="${index}" aria-haspopup="dialog"><span class="idea-card-top">候选 ${i+1}<span>${e(c.selection_ready?'查看详情':'整理中')}</span></span><span class="proj-big-card-title idea-card-title" data-no-i18n>${e(c.title)}</span><span class="idea-card-summary" data-no-i18n>${e(this._short(c.one_liner))}</span></button>`).join('') || '<p role="status">正在整理创新点，完成后会显示在这里。</p>'}</div></section>`;
   },
   _issueHtml(context) {
     const e=this._esc.bind(this),c=context || {};
@@ -281,7 +288,6 @@ const IdeationView = {
         <span class="journey-marker" aria-hidden="true">${icon}</span><div class="journey-station-body">
           <div class="journey-station-heading"><h4>${e(s.title)}</h4>${human?'<span class="journey-human">由你确认</span>':''}${s===next?'<span class="journey-next">下一步</span>':''}<span class="journey-station-status">${e(s.status)}</span></div>
           ${s.description?`<p class="journey-description">${e(s.description)}</p>`:''}
-          ${here && s.id==='idea_review' && d.cards?.length && !d.run_id?'<button class="proj-btn primary" data-action="jump" data-index="ideation-approved">选择创新点并启动项目 ↓</button>':''}
           ${here && s.round>1?`<span class="journey-round">第 ${s.round} 轮构思与审查</span>`:''}
           ${here?`<div class="journey-current-detail" role="status" aria-live="polite" aria-atomic="true">${message?`<p>${e(active?message:'上次进度：'+message)}</p>`:''}${showLive && live.line?`<p class="journey-current-count">${e(live.line)}</p>`:''}${showLive && live.title?`<p class="journey-current-paper" data-no-i18n>${e(live.title)}</p>`:''}${showLive && live.detail?`<p class="journey-current-evidence">${e(live.detail)}</p>`:''}${d.run_id?'<p>后续实验与论文进度请在科研项目中查看。</p>':''}</div>`:''}
         </div></li>`;
@@ -519,10 +525,11 @@ const IdeationView = {
 
     const idle=['blocked','stopped','interrupted'].includes(this.data.status) && !this.data.run_id;
     const retry=idle && review.technical;
-    const footer='<div id="idea-confirm-feedback" class="idea-confirm-feedback" role="status" aria-live="polite" hidden></div><button class="proj-btn" data-dialog-close>返回卡片</button>'+(confirmable?`<button class="proj-btn primary" id="idea-confirm-card">${card.selection_ready?'选择这个创新点，启动科研项目':'确认创新点，自动完成科研'}</button>`:
+    const footer='<div id="idea-confirm-feedback" class="idea-confirm-feedback" role="status" aria-live="polite" hidden></div><button class="proj-btn" data-dialog-close>返回卡片</button>'+(this.data.run_id?'<button class="proj-btn primary" id="idea-open-project">打开已启动项目</button>':confirmable?'<button class="proj-btn primary" id="idea-confirm-card">启动科研项目</button>':
       `<span class="idea-confirm-help">${review.technical?'审查中断，尚不能启动实验':card.audit?.verdict==='pass'?'本批审查结束后可确认':'此方案仍需完成审查或修改'}</span>`+
       (retry?'<button class="proj-btn primary" id="idea-retry-review">重试未完成的审查</button>':idle?'<button class="proj-btn" id="idea-edit-card">填写修改意见</button>':''));
     const dialog=this._showDialog(card.title,body,footer);
+    dialog.querySelector('#idea-open-project')?.addEventListener('click',()=>{App.currentTab='overview';App.openProject(this.data.run_id);});
     dialog.querySelector('#idea-task-output')?.addEventListener('click',()=>{const opener=this._returnFocus;this._openJobOutput(card.skill_job_id);this._returnFocus=opener;});
     dialog.querySelector('#idea-retry-review')?.addEventListener('click',()=>{this._closeDialog(false);this._action('resume',{});});
     dialog.querySelector('#idea-edit-card')?.addEventListener('click',()=>{this._closeDialog(false);this._jumpTo('ideation-feedback');document.getElementById('idea-feedback')?.focus();});

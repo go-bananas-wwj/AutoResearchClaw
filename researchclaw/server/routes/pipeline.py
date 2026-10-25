@@ -91,7 +91,7 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
 
     async with _run_lock:
         if req.idempotency_key:
-            if not _re.fullmatch(r"is-[a-f0-9]{20}:\d+:r\d+-c\d+", req.idempotency_key):
+            if not _re.fullmatch(r"is-[a-f0-9]{20}:\d+:r\d+-(?:c\d+|spark-\d+)", req.idempotency_key):
                 raise HTTPException(400, detail="无效的调研交接标识")
             for origin in Path("artifacts").glob("rc-*/ideation_origin.json"):
                 record = json.loads(origin.read_text())

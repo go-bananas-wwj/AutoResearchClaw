@@ -22,7 +22,7 @@ test('idea-first cards remain selectable with explicit partial neighbor checks a
   const original=view._showDialog;
   view._showDialog=(title,b,f)=>{body=b;footer=f;return {querySelector:()=>null};};
   try{view._openCard(0);}finally{view._showDialog=original;}
-  assert.match(footer,/选择这个创新点，启动科研项目/);
+  assert.match(footer,/启动科研项目/);
   assert.match(body,/一个检索来源不可用/);
   assert.match(body,/新颖性或效果/);
   assert.doesNotMatch(body,/审查通过|当前不能确认启动实验/);
@@ -299,11 +299,30 @@ test('handoff errors stay visible in the dialog and the same choice can be retri
   }finally{view.data=saved.data;view.refresh=saved.refresh;view.busy=saved.busy;sandbox.API=saved.api;sandbox.App=saved.app;sandbox.window.App=saved.windowApp;view._error='';}
 });
 
-test('the human confirmation station links to choices and a failed handoff can be reopened',()=>{
+test('the route remains informational and a failed handoff can be reopened',()=>{
   const card={title:'选定想法',selection_ready:true,neighbor_check:{summary:'比较已保存'},card_id:'chosen'};
   const d=state({phase:'idea_review',status:'blocked',cards:[card],approved_revision:1});
-  assert.match(view._progressHtml(d,false),/data-action="jump" data-index="ideation-approved"/);
+  assert.ok(!view._progressHtml(d,false).includes('data-action='));
   const saved={data:view.data,show:view._showDialog};let footer='';view.data=d;
   view._showDialog=(title,body,f)=>{footer=f;return {querySelector:()=>null};};
-  try{view._openCard(0);assert.match(footer,/id="idea-confirm-card"/);}finally{view.data=saved.data;view._showDialog=saved.show;}
+  try{
+    view._openCard(0);assert.match(footer,/id="idea-confirm-card"/);
+    view.data={...d,phase:'handed_off',status:'completed',run_id:'rc-existing'};
+    view._openCard(0);assert.match(footer,/id="idea-open-project"/);assert.ok(!footer.includes('id="idea-confirm-card"'));
+  }finally{view.data=saved.data;view._showDialog=saved.show;}
+});
+
+test('simplified ideation has one candidate list and one navigation bookmark',()=>{
+  const first={card_id:'first',title:'可选创新点',selection_ready:true,one_liner:'能不能改进？'};
+  const pending={card_id:'pending',title:'待整理创新点',skill_status:'running'};
+  const d=state({phase:'idea_review',status:'waiting',cards:[first],idea_pool:[first,pending],
+    ideaspark_batch:{workflow:'ideas_then_neighbors_v1',jobs:[]}});
+  const html=view._sessionHtml(d),nav=view._bookmarksHtml(d);
+  assert.equal((html.match(/data-action="card"/g)||[]).length,1);
+  assert.equal((html.match(/data-action="pool-card"/g)||[]).length,1);
+  assert.equal((html.match(/id="ideation-approved"/g)||[]).length,1);
+  assert.ok(!html.includes('id="ideation-candidates"'));
+  assert.match(nav,/data-index="ideation-approved"[^>]*>创新点/);
+  assert.ok(!nav.includes('data-index="ideation-candidates"'));
+  assert.ok(!html.includes('选择创新点并启动项目 ↓'));
 });
