@@ -6,7 +6,7 @@ Features:
   - Cloudflare User-Agent bypass
   - Exponential backoff retry with jitter
   - JSON mode support
-  - Streaming disabled (sync only)
+  - Optional streamed content callbacks with the same retry/fallback contracts
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,10 @@ _DEFAULT_USER_AGENT = (
 )
 
 _MAX_BACKOFF_SEC = 300  # 5-minute ceiling for retry delays
+
+
+class LLMStreamAborted(Exception):
+    """Caller cancellation must not trigger another provider/model call."""
 
 
 @dataclass
@@ -250,6 +254,8 @@ class LLMClient:
         json_mode: bool = False,
         system: str | None = None,
         strip_thinking: bool = True,
+        on_content: Callable[[str], None] | None = None,
+        on_reset: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         """Send a chat completion request with retry and fallback.
 
@@ -283,7 +289,8 @@ class LLMClient:
 
         for m in models:
             try:
-                resp = self._call_with_retry(m, messages, max_tok, temp, json_mode)
+                resp = self._call_with_retry(m, messages, max_tok, temp, json_mode,
+                    **({'on_content':on_content,'on_reset':on_reset} if on_content else {}))
                 if strip_thinking:
                     from researchclaw.utils.thinking_tags import strip_thinking_tags
 
@@ -300,6 +307,8 @@ class LLMClient:
                 from researchclaw.cost_tracker import get_global_tracker
                 get_global_tracker().record(resp, messages)
                 return resp
+            except LLMStreamAborted:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Model %s failed: %s. Trying next.", m, exc)
                 last_error = exc
@@ -358,14 +367,18 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         json_mode: bool,
+        on_content: Callable[[str], None] | None = None,
+        on_reset: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         """Call with exponential backoff retry."""
         last_exc: Exception | None = None
         for attempt in range(self.config.max_retries):
             is_last_attempt = attempt >= self.config.max_retries - 1
             try:
+                if on_reset:on_reset(model)
                 return self._raw_call(
-                    model, messages, max_tokens, temperature, json_mode
+                    model, messages, max_tokens, temperature, json_mode,
+                    **({'on_content':on_content,'on_reset':on_reset} if on_content else {})
                 )
             except urllib.error.HTTPError as e:
                 status = e.code
@@ -468,6 +481,8 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         json_mode: bool,
+        on_content: Callable[[str], None] | None = None,
+        on_reset: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         """Make a single API call."""
 
@@ -551,6 +566,8 @@ class LLMClient:
                 else:
                     body["response_format"] = {"type": "json_object"}
 
+            if on_content and self._normalize_wire_api(self.config.wire_api)=='chat_completions':
+                body.update(stream=True,stream_options={'include_usage':True})
             payload = json.dumps(body).encode("utf-8")
             url = self._endpoint_url(self.config.base_url)
 
@@ -568,7 +585,7 @@ class LLMClient:
                 with urllib.request.urlopen(
                     req, timeout=self.config.timeout_sec
                 ) as resp:
-                    data = json.loads(resp.read())
+                    data = self._read_stream_response(resp,on_content) if on_content and body.get('stream') else json.loads(resp.read())
             except (urllib.error.URLError, OSError) as exc:
                 # MetaClaw bridge: fallback to direct LLM if proxy unreachable
                 if self.config.fallback_url:
@@ -590,7 +607,10 @@ class LLMClient:
                     with urllib.request.urlopen(
                         fallback_req, timeout=self.config.timeout_sec
                     ) as resp:
-                        data = json.loads(resp.read())
+                        if on_content and body.get('stream'):
+                            if on_reset:on_reset(model)
+                            data=self._read_stream_response(resp,on_content)
+                        else:data=json.loads(resp.read())
                 else:
                     raise
 
@@ -652,6 +672,38 @@ class LLMClient:
                 }
             )
         return items
+
+    @staticmethod
+    def _read_stream_response(response, on_content):
+        """Assemble SSE deltas; expose content only, never reasoning_content."""
+        if 'text/event-stream' not in response.headers.get('Content-Type',''):
+            data=json.loads(response.read())
+            content=(data.get('choices') or [{}])[0].get('message',{}).get('content')
+            if isinstance(content,str) and content:on_content(content)
+            data['streamed']=False
+            return data
+        parts=[];usage={};model='';finish='';done=False
+        for raw in response:
+            line=raw.decode('utf-8').strip()
+            if not line.startswith('data:'):continue
+            value=line[5:].strip()
+            if value=='[DONE]':done=True;break
+            if not value:continue
+            chunk=json.loads(value)
+            if chunk.get('error'):raise RuntimeError('Streaming provider returned an error')
+            model=chunk.get('model') or model
+            if chunk.get('usage'):usage=chunk['usage']
+            choices=chunk.get('choices') or []
+            if not choices:continue
+            choice=choices[0];delta=choice.get('delta') or {}
+            content=delta.get('content')
+            if isinstance(content,str) and content:
+                on_content(content);parts.append(content)
+            finish=choice.get('finish_reason') or finish
+        if not done or not finish:
+            raise OSError('Streaming response ended without terminal metadata')
+        return {'model':model,'choices':[{'message':{'content':''.join(parts)},'finish_reason':finish}],
+                'usage':usage,'streamed':True}
 
     def _parse_chat_completions_response(
         self, data: dict[str, Any], model: str

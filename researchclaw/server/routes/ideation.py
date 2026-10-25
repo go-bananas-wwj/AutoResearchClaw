@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -104,6 +105,51 @@ async def list_sessions():
 @router.get("/ideation/sessions/{sid}")
 async def session_detail(sid: str):
     return public(invoke(get_service().snapshot, sid))
+
+
+@router.get('/ideation/sessions/{sid}/ideaspark/jobs/{job_id}/activity')
+async def idea_job_activity(sid: str, job_id: str, call_id: str | None = None, full: bool = False):
+    service=get_service();data=invoke(service.snapshot,sid)
+    job=next((j for j in (data.get('ideaspark_batch') or {}).get('jobs',[]) if j['id']==job_id),None)
+    if not job:raise HTTPException(404,'未找到该调研任务')
+    root=service.store.directory(sid).resolve();run=(root/job['directory']).resolve()
+    if not run.is_relative_to(root):raise HTTPException(403,'无效任务目录')
+    def read_json(path):
+        try:return json.loads(path.read_text())
+        except (FileNotFoundError,json.JSONDecodeError):return {}
+    activity=read_json(run/'host_activity.json')
+    entries=[u for u in data.get('usage',[]) if u.get('skill_job_id')==job_id and re.fullmatch(r'[a-f0-9]{32}',u.get('call_id',''))]
+    entry=next((u for u in entries if u['call_id']==call_id),None) if call_id else entries[-1] if entries else None
+    if call_id and entry is None:raise HTTPException(404,'未找到本任务的调用记录')
+    output=None
+    if entry:
+        directory=root/'streams'/entry['call_id'];meta=read_json(directory/'stream.json');text='';legacy_file=None
+        filename=meta.get('file','')
+        if re.fullmatch(r'content-\d+\.txt',filename):
+            try:
+                with (directory/filename).open(encoding='utf-8') as f:text=f.read(2_000_000)
+            except FileNotFoundError:pass
+        elif entry.get('request_file'):
+            path=(root/entry['request_file']).resolve()
+            if path.is_relative_to(root):
+                legacy_file=path.with_name('response.json');text=read_json(legacy_file).get('content','')
+        elif re.fullmatch(r'[a-z_]+',entry['stage']):
+            legacy_file=root/'model_outputs'/f"r{data['revision']}-{entry['call_id']}-{entry['stage']}.txt"
+            if legacy_file.exists():text=legacy_file.read_text()[:2_000_000]
+        active=data['status']=='running' and job['status']=='running'
+        output={'call_id':entry['call_id'],'stage':entry['stage'],'model':entry.get('model') or meta.get('model',''),
+            'status':entry['status'] if active or entry['status']!='pending' else 'interrupted',
+            'mode':meta.get('mode','buffered'),'started_at':meta.get('started_at') or entry['at'],
+            'updated_at':meta.get('updated_at'),'finished_at':meta.get('finished_at') or (
+                datetime.fromtimestamp(legacy_file.stat().st_mtime,timezone.utc).isoformat() if legacy_file and legacy_file.exists() else None),
+            'attempt':meta.get('attempt',1),'characters':meta.get('characters',len(text)),
+            'content':text if full else text[-65536:],'windowed':not full and len(text)>65536,'finish_reason':entry.get('finish_reason') or meta.get('finish_reason','')}
+    return {'job_id':job_id,'number':job['number'],'focus':job['focus'],'status':job['status'],
+        'session_status':data['status'],'stage':job.get('stage',''),'stage_started_at':job.get('stage_started_at'),
+        'reason':job.get('reason',''),'activity':{k:v for k,v in activity.items() if k in
+            ('kind','status','stage','command','started_at','finished_at','timeout_sec','exit_code')},
+        'output':output,'calls':[{k:u.get(k) for k in ('call_id','stage','at','status','model','prompt_tokens','completion_tokens')}
+            for u in entries[-20:]]}
 
 
 @router.post("/ideation/sessions/{sid}/literature-review")

@@ -268,10 +268,18 @@ class IdeationService:
         data["usage"].append(entry)
         self.store.save(data)
         response = None
+        from .streams import CallStream
+        from researchclaw.llm.client import LLMStreamAborted
+        stream=CallStream(self.store.directory(data['session_id']),entry['call_id'],stage,event)
         try:
-            response = self._client().chat([{"role": "user", "content": prompt}],
-                system=PROMPTS[stage], max_tokens=output_budget, temperature=0.3, json_mode=True)
+            client=self._client()
+            try:
+                response = client.chat([{"role": "user", "content": prompt}],
+                    system=PROMPTS[stage], max_tokens=output_budget, temperature=0.3, json_mode=True,**stream.options(client))
+            except LLMStreamAborted:
+                self._check(data,event);raise
         finally:
+            stream.finish(response)
             # Failed/cancelled/truncated calls also retain their reservation and usage.
             entry.update({"status": "returned" if response is not None else "failed",
                 "model": getattr(response, "model", self.config.llm.primary_model),

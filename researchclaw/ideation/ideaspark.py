@@ -124,6 +124,7 @@ class IdeaSparkBatch:
         self.service, self.data, self.event = service, data, event
         self.directory = service.store.directory(data['session_id']).resolve()
         self.client = None
+        self.active_job = None
         self.env = dict(os.environ, IDEASPARK_DEPTH='idea', IDEASPARK_FAILED_CARD='on',
             IDEASPARK_DEFAULT_COMPUTE='沿用本系统实际实验硬件配置；不假设额外GPU，API费用不限预算。具体规模未知时明确标记未知。',
             PYTHONDONTWRITEBYTECODE='1')
@@ -131,6 +132,12 @@ class IdeaSparkBatch:
 
     def command(self, arguments, timeout=900, input_text=None):
         self.service._check(self.data, self.event)
+        activity=None
+        if self.active_job:
+            activity=self.directory/self.active_job['directory']/'host_activity.json'
+            write(activity,{'kind':'tool','status':'running','stage':self.active_job.get('stage',''),
+                'command':str(arguments[2]) if len(arguments)>2 and str(arguments[1]).endswith('/scripts/run.py') else Path(str(arguments[0])).name,
+                'started_at':now(),'timeout_sec':timeout})
         p = subprocess.Popen(arguments, cwd=str(ROOT), env=self.env, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, stdin=subprocess.PIPE if input_text is not None else None,
                              text=True, start_new_session=True)
@@ -138,6 +145,7 @@ class IdeaSparkBatch:
         while True:
             try:
                 out, err = p.communicate(input=input_text,timeout=1)
+                if activity:write(activity,{**read(activity,{}),'status':'returned','finished_at':now(),'exit_code':p.returncode})
                 return p.returncode, out, err
             except subprocess.TimeoutExpired:
                 input_text=None
@@ -145,6 +153,7 @@ class IdeaSparkBatch:
                     os.killpg(p.pid, signal.SIGTERM)
                     try:p.communicate(timeout=5)
                     except subprocess.TimeoutExpired:os.killpg(p.pid, signal.SIGKILL); p.communicate()
+                    if activity:write(activity,{**read(activity,{}),'status':'stopped' if self.event.is_set() else 'timed_out','finished_at':now()})
                     self.service._check(self.data, self.event)
                     raise SessionError('IdeaSpark步骤运行超时，已保存最近完成点。')
 
@@ -237,13 +246,23 @@ class IdeaSparkBatch:
                 'skill_commit':PIN,'cost_basis':'conservative_reservation_not_invoice'}
             self.data['usage'].append(entry);self.service.store.save(self.data)
             response = None
+            from .streams import CallStream
+            from researchclaw.llm.client import LLMStreamAborted
+            stream=CallStream(self.directory,call_id,entry['stage'],self.event)
             try:
                 client = LLMClient(dataclasses.replace(base.config, thinking=thinking)) if isinstance(base, LLMClient) else base
-                response=client.chat([{'role':'user','content':text}],system=system,
-                    max_tokens=budget,temperature=0.3,json_mode=True)
+                options=stream.options(client)
+                if self.active_job:write(self.directory/self.active_job['directory']/'host_activity.json',
+                    {'kind':'model','status':'running','stage':stage,'call_id':call_id,'started_at':now()})
+                try:
+                    response=client.chat([{'role':'user','content':text}],system=system,
+                        max_tokens=budget,temperature=0.3,json_mode=True,**options)
+                except LLMStreamAborted:
+                    self.service._check(self.data,self.event);raise
                 write(call/'response.json',{'content':response.content,'finish_reason':getattr(response,'finish_reason',''),
                     'model':getattr(response,'model','')})
             finally:
+                stream.finish(response)
                 entry.update(status='returned' if response else 'failed',model=getattr(response,'model',self.service.config.llm.primary_model),
                     prompt_tokens=getattr(response,'prompt_tokens',0),completion_tokens=getattr(response,'completion_tokens',0),
                     finish_reason=getattr(response,'finish_reason',''))
@@ -345,7 +364,7 @@ class IdeaSparkBatch:
             write(run/'context/cross_run.json',{'batch_assignment':job['focus'],'soft_negative_anchors':siblings,
                 'source':'user-requested independent proposals; not prior-art evidence','scope_revision':self.data['revision']})
         action=self.navigator(run)
-        job.update(stage=action['step'],state=action['state'])
+        job.update(stage=action['step'],state=action['state'],stage_started_at=now())
         self.data['phase']='generate' if self.data['ideaspark_batch'].get('phase','drafts')=='drafts' else 'audit'
         self.service._progress(self.data,self.event,'IdeaSpark：'+action['step'], operation='ideaspark',
             current=job['number'],total=len(self.data['ideaspark_batch']['jobs']),unit='构思任务',title=job['focus'])
@@ -568,6 +587,7 @@ You cannot execute code yourself. For arithmetic toy traces provide stdlib Pytho
 
     def process_job(self, job, phase):
         from .service import Cancelled
+        self.active_job=job
         try:
             if phase=='refresh':
                 if self.candidate(job):self.present_safely(job)

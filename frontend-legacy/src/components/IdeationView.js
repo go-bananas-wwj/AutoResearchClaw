@@ -3,7 +3,7 @@ const IdeationView = {
   host: null, data: null, sessionId: null, busy: false,
   _timer: null, _token: 0, _signature: '', _dialog: null, _returnFocus: null, _listener: null, _error: '',
   phaseLabel(p) { return ({retrieval:'检索与筛选',literature_review:'待确认研究方向',reading:'原文证据核对',synthesis:'问题定位',generate:'构思创新点',audit:'最近邻查重与审查',idea_review:'待审核创新点',handed_off:'已交接自动科研'})[p] || p; },
-  statusLabel(s) { return ({pending:'待执行',running:'进行中',handoff:'正在交接科研',waiting:'等待审核',blocked:'已暂停',interrupted:'已中断',stopped:'已停止',stopping:'停止中',completed:'已完成'})[s] || s; },
+  statusLabel(s) { return ({pending:'待执行',running:'进行中',handoff:'正在交接科研',waiting:'等待审核',blocked:'已暂停',interrupted:'已中断',stopped:'已停止',stopping:'停止中',completed:'已完成',needs_work:'待完善',validated:'审查通过'})[s] || s; },
   stateLabel(d) { return d.status==='blocked' && d.blocker ? ({technical:'调用待重试',evidence:'证据待补充',scientific:'方案待调整',budget:'预算待调整'})[d.blocker.category] || '已暂停' : this.statusLabel(d.status); },
   _esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
   _link(url, label) { return /^https?:\/\//i.test(url || '') ? `<a href="${this._esc(url)}" target="_blank" rel="noopener noreferrer">${this._esc(label || '原文链接')}</a>` : ''; },
@@ -19,6 +19,9 @@ const IdeationView = {
   },
   destroy() {
     this._token++; clearInterval(this._timer); this._timer=null; this._closeDialog(false);
+    const slot=typeof document==='undefined'?null:document.getElementById('ideation-header-nav');
+    if(slot){slot.hidden=true;slot.innerHTML='';if(this._headerListener)slot.removeEventListener('click',this._headerListener);slot.closest('.header')?.classList.remove('ideation-header');slot.closest('.app')?.classList.remove('has-ideation-header');}
+    this._headerListener=null;
     if(this.host && this._listener) this.host.removeEventListener('click',this._listener);
     this.host=null;
   },
@@ -46,11 +49,11 @@ const IdeationView = {
       <p class="proj-welcome-sub">智能体先调研相关文献，你确认方向后，它会比较论文、核对依据并寻找创新点。</p>
       <div class="ideation-steps"><span class="${!d || ['retrieval','literature_review'].includes(d.phase)?'active':''}">1 · 确认文献方向</span><span class="${d && ['reading','synthesis','generate','audit','idea_review'].includes(d.phase)?'active':''}">${d?.phase==='idea_review'?'2 · 确认创新点':'2 · 创新点准备与审查'}</span><span class="${d && d.run_id?'active':''}">3 · 自动科研与论文</span></div>
       ${d?this._statusStripHtml(d):''}
-      ${d?this._bookmarksHtml(d):''}
       ${this._pending?`<div class="card literature-live" role="status" aria-live="polite"><span class="literature-spinner" aria-hidden="true"></span>${this._esc(this._pending)}</div>`:''}
       ${this._error?`<p class="ideation-alert" role="alert">${this._esc(this._error)}</p>`:''}
       ${!this.sessionId?this._newHtml():!d?'<p role="status">正在读取调研会话…</p>':this._sessionHtml(d)}
       </div>`;
+    this._renderHeaderBookmarks(d);
     Object.entries(inputs).forEach(([id,value])=>{const el=document.getElementById(id);if(el)el.value=value;});
     const focused=document.getElementById(focus); if(focused){focused.focus({preventScroll:true});if(typeof selection==='number' && focused.setSelectionRange)focused.setSelectionRange(selection,selection);}
     this.host.scrollTop=top;
@@ -92,6 +95,12 @@ const IdeationView = {
       ${d.papers.length?this._papersHtml(d):''}`;
 
   },
+  _renderHeaderBookmarks(d) {
+    const slot=document.getElementById('ideation-header-nav');if(!slot)return;
+    slot.hidden=!d;slot.closest('.header')?.classList.toggle('ideation-header',!!d);slot.closest('.app')?.classList.toggle('has-ideation-header',!!d);
+    slot.innerHTML=d?this._bookmarksHtml(d):'';
+    if(!this._headerListener){this._headerListener=e=>{const b=e.target.closest('[data-action="jump"]');if(b)this._jumpTo(b.dataset.index);};slot.addEventListener('click',this._headerListener);}
+  },
   _bookmarksHtml(d) {
     const items=[['ideation-workflow','完整流程'],['ideation-status','最新进展']];
     if(d.cards?.length)items.push(['ideation-approved','可确认方案']);
@@ -102,13 +111,13 @@ const IdeationView = {
     if(!this.busy && !['running','pending','stopping','handoff'].includes(d.status) && !d.run_id)items.push(['ideation-scope-editor','调整方向']);
     if(!this.busy && d.approved_revision===d.revision && !['running','pending','stopping','handoff'].includes(d.status) && !d.run_id && !['reading','synthesis'].includes(d.phase))items.push(['ideation-feedback','修改意见']);
     if(d.papers?.length)items.push(['ideation-literature','论文总结']);
-    return `<nav class="ideation-bookmarks" aria-label="调研内容书签">${items.map(([id,label])=>`<button type="button" class="idea-text-btn" data-action="jump" data-index="${id}"${this._bookmark===id?' aria-current="location"':''}>${label}</button>`).join('')}</nav>`;
+    return `<nav class="ideation-bookmarks" aria-label="调研内容书签">${items.map(([id,label])=>`<button type="button" id="ideation-nav-${id}" class="idea-text-btn" data-action="jump" data-index="${id}"${this._bookmark===id?' aria-current="location"':''}>${label}</button>`).join('')}</nav>`;
   },
   _jumpTo(id) {
     if(!/^ideation-[a-z-]+$/.test(id || ''))return;
     const target=this.host?.querySelector('[id="'+id+'"]');if(!target)return;
     if(target.tagName==='DETAILS')target.open=true;
-    this._bookmark=id;this.host.querySelectorAll('.ideation-bookmarks button').forEach(b=>{if(b.dataset.index===id)b.setAttribute('aria-current','location');else b.removeAttribute('aria-current');});
+    this._bookmark=id;document.querySelectorAll('#ideation-header-nav .ideation-bookmarks button').forEach(b=>{if(b.dataset.index===id)b.setAttribute('aria-current','location');else b.removeAttribute('aria-current');});
     target.setAttribute('tabindex','-1');target.focus({preventScroll:true});target.scrollIntoView?.({block:'start',behavior:'smooth'});
   },
   _reviewResultsHtml(d) {
@@ -176,7 +185,8 @@ const IdeationView = {
     let stage=raw.slice(10),prefix='正在';
     if(stage.startsWith('Prepare version-bound ')){stage=stage.slice(22);prefix='准备';}
     if(stage.startsWith('Commit version-bound ')){stage=stage.slice(21);prefix='校验并保存';}
-    const labels={generation:'独立构思方案',coherence:'核对机制一致性',critique:'审查最近邻与新颖性',formula_repair:'修正机制中的公式',revision:'根据审查意见修订',post_revision:'独立复核修订结果',post_novelty:'复核近邻差异',technical_fill:'完善具体方法',implementability:'检查可实施性与资源',technical_repair:'补全来源信息',technical_review:'复核技术细节',plain_derive:'撰写通俗中文方案',fidelity:'核对方案讲解与原始机制'};
+    const labels={generation:'独立构思方案',coherence:'核对机制一致性',critique:'审查最近邻与新颖性',formula_repair:'修正机制中的公式',revision:'根据审查意见修订',post_revision:'独立复核修订结果',post_novelty:'复核近邻差异',technical_fill:'完善具体方法',implementability:'检查可实施性与资源',technical_repair:'补全来源信息',technical_review:'复核技术细节',plain_derive:'撰写通俗中文方案',fidelity:'核对方案讲解与原始机制',json_transport_repair:'修复返回数据的JSON格式','Run existing dual-channel collision retrieval':'检索最接近的已有论文（查重）','Materialize canonical candidate and blocking evidence':'保存候选与审查记录','Preserve draft and report blocking findings':'保留草稿与待修改意见'};
+    if(stage.endsWith(':execution_binding'))return 'IdeaSpark：正在核对算例的真实执行结果';
     return labels[stage]?'IdeaSpark：'+prefix+labels[stage]:raw;
   },
   _batchSummary(d) {
@@ -187,9 +197,9 @@ const IdeationView = {
   _statusStripHtml(d) {
     const running=d.status==='running',waiting=d.status==='waiting';
     const label=running?'正在进行':waiting?'等待你确认':this.stateLabel(d);
-    const tasks=Object.values(d.ideaspark_batch?.parallel?.active || {}).sort((a,b)=>a.number-b.number);
-    const action=running?(d.presentation_task==='cards'?'正在更新卡片的入门背景与公式':tasks.length>1?'IdeaSpark 正在并行处理候选':this._operationLabel(d)):waiting?(d.phase==='idea_review'?'请查看创新点，选择想推进的方案':'请确认文献是否符合研究方向'):d.run_id?'后续进度请在科研项目中查看':`停在「${this.phaseLabel(d.phase)}」`;
-    return `<div class="ideation-current-status" role="status" aria-live="polite"><span class="ideation-status-dot${running?' is-active':''}" aria-hidden="true"></span><div><strong>${this._esc(label)}：${this._esc(action)}</strong>${d.ideaspark_batch?`<p>${this._esc(this._batchSummary(d))}</p>`:''}${running && tasks.length?`<ul class="ideation-parallel-tasks">${tasks.map(t=>`<li data-no-i18n>任务 ${this._esc(t.number)}：${this._esc(this._operationLabel({progress_message:t.message || 'IdeaSpark：'+t.stage}))}</li>`).join('')}</ul>`:''}</div></div>`;
+    const tasks=Object.entries(d.ideaspark_batch?.parallel?.active || {}).map(([id,t])=>({...t,id})).sort((a,b)=>a.number-b.number);
+    const action=running?(d.presentation_task==='cards'?'正在更新卡片的入门背景与公式':tasks.length>1?(d.phase==='audit'?'草稿已生成，正在并行查重与审查':'IdeaSpark 正在并行构思方案'):this._operationLabel(d)):waiting?(d.phase==='idea_review'?'请查看创新点，选择想推进的方案':'请确认文献是否符合研究方向'):d.run_id?'后续进度请在科研项目中查看':`停在「${this.phaseLabel(d.phase)}」`;
+    return `<div class="ideation-current-status" role="status" aria-live="polite"><span class="ideation-status-dot${running?' is-active':''}" aria-hidden="true"></span><div><strong>${this._esc(label)}：${this._esc(action)}</strong>${d.ideaspark_batch?`<p>${this._esc(this._batchSummary(d))}</p><button class="idea-text-btn" data-action="job-output">查看任务详情与实时输出 →</button>`:''}${running && tasks.length?`<ul class="ideation-parallel-tasks">${tasks.map(t=>`<li><button class="idea-text-btn" data-action="job-output" data-index="${this._esc(t.id)}" data-no-i18n>任务 ${this._esc(t.number)}：${this._esc(this._operationLabel({progress_message:t.message || 'IdeaSpark：'+t.stage}))} ↗</button></li>`).join('')}</ul>`:''}</div></div>`;
   },
   _progressDetails(d) {
     const p=d.progress || {},op=p.operation;
@@ -361,6 +371,7 @@ const IdeationView = {
     finally { if(token===this._token){this.busy=false; this._pending=''; await this.refresh(true); if(window.App)App._loadIdeations();} }
   },
   async _act(action,index) {
+    if(action==='job-output')return this._openJobOutput(index);
     if(action==='jump')return this._jumpTo(index);
     if(action==='prompt')return this._showPrompt();
     if(action==='card')return this._openCard(Number(index));
@@ -489,6 +500,7 @@ const IdeationView = {
     let body=this._cardBodyHtml(card);
     body+=this._section('审查进度：'+review.label,review.technical?'本方案的技术检查未完成，当前不能确认启动实验。可重试审查，草稿和已完成记录会保留。':review.reason);
     if(review.technical)body+=`<details class="idea-prompt-block"><summary>查看具体中断记录</summary>${this._textHtml(review.reason)}</details>`;
+    if(card.skill_job_id)body+='<button class="idea-text-btn" id="idea-task-output">查看本任务的实时输出与历史 →</button>';
     if(card.skill)body+='<details class="idea-prompt-block"><summary>生成来源</summary>'+this._section('执行信息',`Microsoft IdeaSpark 官方技能 · ${card.skill.commit}\n模型：DeepSeek API${card.presentation_model?' · '+card.presentation_model:''}\n${card.skill_status==='validated'?'提案审查通过，尚未经实验验证':'审查记录尚不完整，不能启动科研'}`)+'</details>';
     if(card.skill_job_id && card.skill_card_available)body+=this._link(window.location.origin+'/api/ideation/sessions/'+encodeURIComponent(this.sessionId)+'/ideaspark/jobs/'+encodeURIComponent(card.skill_job_id)+'/card','查看官方IdeaSpark完整中文方案');
     else if(card.skill_job_id)body+='<p class="idea-evidence-note">官方完整方案尚未发布，当前内容为候选草稿。</p>';
@@ -500,6 +512,7 @@ const IdeationView = {
       `<span class="idea-confirm-help">${review.technical?'审查中断，尚不能启动实验':card.audit?.verdict==='pass'?'本批审查结束后可确认':'此方案仍需完成审查或修改'}</span>`+
       (retry?'<button class="proj-btn primary" id="idea-retry-review">重试未完成的审查</button>':idle?'<button class="proj-btn" id="idea-edit-card">填写修改意见</button>':''));
     const dialog=this._showDialog(card.title,body,footer);
+    dialog.querySelector('#idea-task-output')?.addEventListener('click',()=>{const opener=this._returnFocus;this._openJobOutput(card.skill_job_id);this._returnFocus=opener;});
     dialog.querySelector('#idea-retry-review')?.addEventListener('click',()=>{this._closeDialog(false);this._action('resume',{});});
     dialog.querySelector('#idea-edit-card')?.addEventListener('click',()=>{this._closeDialog(false);this._jumpTo('ideation-feedback');document.getElementById('idea-feedback')?.focus();});
     dialog.querySelector('#idea-confirm-card')?.addEventListener('click',async e=>{
@@ -508,6 +521,41 @@ const IdeationView = {
       catch(error){if(token===this._token){this._error=error.message;this._closeDialog();}}
       finally{if(token===this._token){this.busy=false;await this.refresh(true);if(window.App)App._loadProjects();}}
     });
+  },
+  _openJobOutput(jobId) {
+    const jobs=this.data?.ideaspark_batch?.jobs || [];
+    const job=jobs.find(j=>j.id===jobId) || jobs.find(j=>j.status==='running') || jobs[0];if(!job)return;
+    this._jobCall='';this._jobFull=false;
+    const body=`<p data-no-i18n>${this._esc(job.focus)}</p><div class="idea-live-meta" id="job-output-status" role="status">正在读取任务详情…</div><label class="idea-live-call-label" for="job-output-call">调用记录</label><select id="job-output-call" class="gate-input"><option value="">跟随最新调用</option></select><p class="idea-evidence-note" id="job-output-description"></p><button class="idea-text-btn" id="job-output-full" hidden>显示全部已收到的内容</button><pre class="idea-live-output" id="job-output-content" tabindex="0" aria-label="模型返回内容">等待读取…</pre>`;
+    const dialog=this._showDialog('任务 '+job.number+' · 实时输出',body);dialog.classList.add('idea-output-dialog');
+    dialog.querySelector('#job-output-call').addEventListener('change',e=>{this._jobCall=e.target.value;clearTimeout(this._jobOutputTimer);this._pollJobOutput(dialog,job.id);});
+    dialog.querySelector('#job-output-full').addEventListener('click',()=>{this._jobFull=true;clearTimeout(this._jobOutputTimer);this._pollJobOutput(dialog,job.id);});
+    this._pollJobOutput(dialog,job.id);
+  },
+  _elapsed(start,end) {
+    const time=Date.parse(start);if(!Number.isFinite(time))return '尚未记录';
+    const seconds=Math.max(0,Math.floor(((end?Date.parse(end):Date.now())-time)/1000));
+    return seconds>=60?`${Math.floor(seconds/60)}分${seconds%60}秒`:`${seconds}秒`;
+  },
+  async _pollJobOutput(dialog,jobId) {
+    const token=this._jobPollToken=(this._jobPollToken || 0)+1;
+    try {
+      const params=new URLSearchParams();if(this._jobCall)params.set('call_id',this._jobCall);if(this._jobFull)params.set('full','true');const query=params.toString();const suffix=query?'?'+query:'';
+      const info=await API.get('/ideation/sessions/'+encodeURIComponent(this.sessionId)+'/ideaspark/jobs/'+encodeURIComponent(jobId)+'/activity'+suffix);
+      if(this._dialog!==dialog || this._jobPollToken!==token)return;
+      const out=info.output,tool=info.activity || {},retrieval=/collision retrieval/.test(info.stage),streaming=out?.status==='pending' && out.mode==='streaming' && !out.finished_at && !this._jobCall;
+      const step=this._operationLabel({progress_message:'IdeaSpark：'+info.stage});
+      const elapsed=this._elapsed(tool.kind==='tool' && tool.status==='running'?tool.started_at:retrieval?info.stage_started_at:out?.started_at || info.stage_started_at,out?.status!=='pending' && !retrieval?out?.finished_at:null);
+      dialog.querySelector('#job-output-status').textContent=`${step} · ${this.statusLabel(info.status)} · 已耗时 ${elapsed}`;
+      const select=dialog.querySelector('#job-output-call'),options=JSON.stringify(info.calls.map(c=>[c.call_id,c.status]));
+      if(select.dataset.options!==options){select.dataset.options=options;select.innerHTML='<option value="">跟随最新调用</option>'+info.calls.slice().reverse().map(c=>`<option value="${this._esc(c.call_id)}">${this._esc(c.stage)} · ${this._esc(c.status==='pending'?'进行中':'已结束')}</option>`).join('');select.value=this._jobCall;}
+      dialog.querySelector('#job-output-description').textContent=retrieval&&!this._jobCall?'正在检索最接近的已有论文，当前不是生成新草稿。下方可查看最近一次模型返回。'+(tool.timeout_sec?`本次命令等待上限 ${Math.ceil(tool.timeout_sec/60)} 分钟。`:''):out?.finish_reason==='length'?'本次返回达到输出上限；这里保留已收到的片段，审查仍需继续。':streaming?'正在接收 DeepSeek 的真实流式返回。':out?out.mode==='buffered'?'这次调用没有记录流式分片；显示已返回的完整内容。':'显示这次调用已收到的内容。':'这一步尚无模型返回，可在调用开始后查看。';
+      dialog.querySelector('#job-output-full').hidden=!out?.windowed;
+      const pre=dialog.querySelector('#job-output-content'),follow=pre.scrollHeight-pre.scrollTop-pre.clientHeight<60;
+      pre.textContent=out?.content || (retrieval?'本步骤正在检索文献，没有模型生成内容。':out?.status==='pending'?'请求已发出，等待模型返回首段内容…':info.reason || '暂无模型输出记录。');
+      if(follow)pre.scrollTop=pre.scrollHeight;
+    } catch(error){if(this._dialog===dialog && this._jobPollToken===token)dialog.querySelector('#job-output-status').textContent='读取失败：'+error.message;}
+    if(this._dialog===dialog && this._jobPollToken===token)this._jobOutputTimer=setTimeout(()=>this._pollJobOutput(dialog,jobId),1000);
   },
   _showDialog(title,body,footer) {
     const opener=document.activeElement;this._closeDialog(false);this._returnFocus=opener;
@@ -531,7 +579,7 @@ const IdeationView = {
     dialog.querySelectorAll('[data-dialog-close]').forEach(b=>b.addEventListener('click',()=>this._closeDialog()));
     dialog.addEventListener('cancel',e=>{e.preventDefault();this._closeDialog();});dialog.addEventListener('close',()=>{if(this._dialog===dialog)this._closeDialog();});dialog.addEventListener('click',e=>{if(e.target===dialog)this._closeDialog();});dialog.showModal();return dialog;
   },
-  _closeDialog(restore=true) {const d=this._dialog;if(!d)return;this._dialog=null;if(d.open)d.close();d.remove();if(restore && this._returnFocus && this._returnFocus.isConnected)this._returnFocus.focus();this._returnFocus=null;},
+  _closeDialog(restore=true) {clearTimeout(this._jobOutputTimer);this._jobPollToken=(this._jobPollToken || 0)+1;const d=this._dialog;if(!d)return;this._dialog=null;if(d.open)d.close();d.remove();if(restore && this._returnFocus && this._returnFocus.isConnected)this._returnFocus.focus();this._returnFocus=null;},
   async _showPrompt() {
     const dialog=this._showDialog('各阶段生成方式与实际提示词','<p>正在读取…</p>');
     try{const info=await API.ideaPrompt();if(this._dialog!==dialog)return;

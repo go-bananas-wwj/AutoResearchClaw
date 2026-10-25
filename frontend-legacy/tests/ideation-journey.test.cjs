@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'../src/components/IdeationView.js'),'utf8');
-const sandbox={window:{}};vm.runInNewContext(source+';globalThis.view=IdeationView;',sandbox);
+const sandbox={window:{},setTimeout,clearTimeout,setInterval,clearInterval};vm.runInNewContext(source+';globalThis.view=IdeationView;',sandbox);
 const view=sandbox.view;
 function state(extra={}) { return {status:'running',phase:'retrieval',revision:1,approved_revision:null,plan:{research_object:'坡长坡度因子'},papers:[],reading:{},cards:[],reviews:[],progress:{operation:'plan'},...extra}; }
 function current(d) { return view._journeySteps(d).find(s=>s.state==='current'); }
@@ -217,4 +217,32 @@ test('repeated TeX scripts are grouped without changing symbols or operators',()
     assert.notEqual(grouped,raw);assert.equal(grouped.replace(/[{}]/g,''),raw.replace(/[{}]/g,''));
   }
   assert.equal(view._groupMathScripts(String.raw`\sigma_{kk'}`),String.raw`\sigma_{kk'}`);
+});
+
+test('bookmarks mount in the app header, handle clicks, and clean up on leaving research',()=>{
+  const oldDocument=sandbox.document,oldHost=view.host;const headerClasses=new Set(),appClasses=new Set(),listeners=new Map();
+  const classes=set=>({toggle:(name,on)=>on?set.add(name):set.delete(name),remove:name=>set.delete(name)});
+  const header={classList:classes(headerClasses)},app={classList:classes(appClasses)};
+  const button={dataset:{index:'ideation-workflow'},setAttribute(){},removeAttribute(){}};
+  const target={setAttribute(){},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;}};
+  const slot={hidden:true,innerHTML:'',closest:s=>s==='.header'?header:app,
+    addEventListener:(type,fn)=>listeners.set(type,fn),removeEventListener:type=>listeners.delete(type)};
+  sandbox.document={getElementById:()=>slot,querySelectorAll:()=>[button]};
+  view.host={querySelector:()=>target,removeEventListener(){}};
+  try {
+    view._renderHeaderBookmarks(state());
+    assert.equal(slot.hidden,false);assert.ok(slot.innerHTML.includes('完整流程'));assert.ok(headerClasses.has('ideation-header'));
+    listeners.get('click')({target:{closest:()=>button}});
+    assert.ok(target.focused && target.scrolled);assert.equal(view._bookmark,'ideation-workflow');
+    view.destroy();assert.equal(slot.hidden,true);assert.equal(slot.innerHTML,'');assert.equal(listeners.size,0);
+    assert.ok(!headerClasses.size && !appClasses.size);
+  } finally {sandbox.document=oldDocument;view.host=oldHost;}
+});
+
+test('progress opens output details and translates collision retrieval accurately',()=>{
+  const d=state({phase:'audit',ideaspark_batch:{jobs:[],parallel:{workers:3,active:{job:{number:1,message:'IdeaSpark：Run existing dual-channel collision retrieval'}}}}});
+  const html=view._statusStripHtml(d);
+  assert.match(html,/data-action="job-output"/);assert.match(html,/data-index="job"/);
+  assert.match(html,/检索最接近的已有论文（查重）/);assert.ok(!html.includes('Run existing dual-channel'));
+  assert.equal(view._elapsed('2026-10-25T00:00:00Z','2026-10-25T00:01:05Z'),'1分5秒');
 });
