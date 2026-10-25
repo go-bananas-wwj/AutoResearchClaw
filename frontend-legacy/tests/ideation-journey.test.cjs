@@ -22,7 +22,7 @@ test('idea-first cards remain selectable with explicit partial neighbor checks a
   const original=view._showDialog;
   view._showDialog=(title,b,f)=>{body=b;footer=f;return {querySelector:()=>null};};
   try{view._openCard(0);}finally{view._showDialog=original;}
-  assert.match(footer,/选择这个创新点，继续设计实验/);
+  assert.match(footer,/选择这个创新点，启动科研项目/);
   assert.match(body,/一个检索来源不可用/);
   assert.match(body,/新颖性或效果/);
   assert.doesNotMatch(body,/审查通过|当前不能确认启动实验/);
@@ -264,4 +264,46 @@ test('progress opens output details and translates collision retrieval accuratel
   assert.match(html,/data-action="job-output"/);assert.match(html,/data-index="job"/);
   assert.match(html,/检索最接近的已有论文（查重）/);assert.ok(!html.includes('Run existing dual-channel'));
   assert.equal(view._elapsed('2026-10-25T00:00:00Z','2026-10-25T00:01:05Z'),'1分5秒');
+});
+
+test('idea confirmation sends one request and opens the new project overview',async()=>{
+  const saved={data:view.data,refresh:view.refresh,busy:view.busy,token:view._token,api:sandbox.API,app:sandbox.App,windowApp:sandbox.window.App};
+  const feedback={hidden:true,setAttribute(k,v){this[k]=v;}},button={setAttribute(){},removeAttribute(){}};
+  let resolve,requests=0,opened='',loaded=0;
+  sandbox.API={ideationAction(sid,action,body){requests++;assert.equal(action,'confirm');assert.equal(body.card_id,'selected-card');return new Promise(r=>{resolve=r;});}};
+  sandbox.App=sandbox.window.App={currentTab:'manage',openProject(id){opened=id;},_loadProjects(){loaded++;}};
+  view.data=state({phase:'idea_review',status:'waiting'});view.busy=false;view.refresh=async()=>{};
+  try{
+    const pending=view._confirmCard({card_id:'selected-card'},button,{querySelector:()=>feedback});
+    await view._confirmCard({card_id:'selected-card'},button,{querySelector:()=>feedback});
+    assert.equal(requests,1);assert.equal(button.disabled,true);assert.equal(feedback.hidden,false);
+    assert.match(feedback.textContent,/启动实验设计/);
+    resolve({run_id:'rc-new-project'});await pending;
+    assert.equal(opened,'rc-new-project');assert.equal(sandbox.App.currentTab,'overview');assert.equal(loaded,1);
+    assert.equal(view.data.run_id,'rc-new-project');assert.equal(view.busy,false);
+  }finally{view.data=saved.data;view.refresh=saved.refresh;view.busy=saved.busy;view._token=saved.token;sandbox.API=saved.api;sandbox.App=saved.app;sandbox.window.App=saved.windowApp;}
+});
+
+test('handoff errors stay visible in the dialog and the same choice can be retried',async()=>{
+  const saved={data:view.data,refresh:view.refresh,busy:view.busy,api:sandbox.API,app:sandbox.App,windowApp:sandbox.window.App};
+  const feedback={hidden:true,setAttribute(k,v){this[k]=v;}},button={setAttribute(){},removeAttribute(){}};
+  let attempts=0,opened='';sandbox.API={async ideationAction(){if(++attempts===1)throw new Error('API 409: {"detail":"另一个项目正在运行"}');return {run_id:'rc-retry-project'};}};
+  sandbox.App=sandbox.window.App={openProject(id){opened=id;},_loadProjects(){}};
+  view.data=state({phase:'idea_review',status:'waiting'});view.busy=false;view.refresh=async()=>{};
+  try{
+    await view._confirmCard({card_id:'same-choice'},button,{querySelector:()=>feedback});
+    assert.equal(feedback.role,'alert');assert.match(feedback.textContent,/另一个项目正在运行/);
+    assert.equal(view._error,'另一个项目正在运行');assert.equal(button.disabled,false);assert.equal(button.textContent,'重试创建科研项目');assert.equal(view.busy,false);
+    await view._confirmCard({card_id:'same-choice'},button,{querySelector:()=>feedback});
+    assert.equal(attempts,2);assert.equal(opened,'rc-retry-project');
+  }finally{view.data=saved.data;view.refresh=saved.refresh;view.busy=saved.busy;sandbox.API=saved.api;sandbox.App=saved.app;sandbox.window.App=saved.windowApp;view._error='';}
+});
+
+test('the human confirmation station links to choices and a failed handoff can be reopened',()=>{
+  const card={title:'选定想法',selection_ready:true,neighbor_check:{summary:'比较已保存'},card_id:'chosen'};
+  const d=state({phase:'idea_review',status:'blocked',cards:[card],approved_revision:1});
+  assert.match(view._progressHtml(d,false),/data-action="jump" data-index="ideation-approved"/);
+  const saved={data:view.data,show:view._showDialog};let footer='';view.data=d;
+  view._showDialog=(title,body,f)=>{footer=f;return {querySelector:()=>null};};
+  try{view._openCard(0);assert.match(footer,/id="idea-confirm-card"/);}finally{view.data=saved.data;view._showDialog=saved.show;}
 });
