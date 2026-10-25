@@ -151,6 +151,7 @@ PROMPTS['spark_card'] = COMMON + r'''你负责把当前一个官方IdeaSpark候�
 遵循官方fidelity_review的beginner_readability与claims要求：解释输入→操作→输出及每步作用，术语第一次出现就解释，保持假设、对照、评价独立性、失败条件与资源不确定性。
 把读者当作完全不懂本领域的人。one_liner必须是一句以“能不能”开头的问题（不超过90字）：用日常语言说明想改变什么、期望解决什么问题，不堆工具名，不使用公式或未解释的缩写。可用“能不能让……，从而……？”的句式，但内容必须来自当前候选，不能照搬通用套话。
 plain_language必须由你根据当前候选撰写，不能复制技术段落，也不能把未经验证的效果写成已经有效：
+- background：在提出创新点前，先用两三句讲清研究对象是什么、已有方法通常怎样工作、为什么会遇到这个问题。读者一窍不通，第一次遇到学科名或缩写就解释，例如雷达卫星如何通过多次观测估计地表移动；内容须来自当前材料，不能编造领域知识或具体效果。
 - problem：先讲已有做法哪里不够、对实际使用有什么影响；最多两句。
 - steps：2至5步。每步有简短title和text；text用两三句说明拿什么输入、做什么、得到什么、为什么需要这步。首次术语要用括号解释，不用符号推导。
 - test：2至4步，说明用什么真实数据、和谁比较、怎样判断有没有用、出现什么结果就否定想法。保留原候选必要条件，不能只讲预期好处。
@@ -158,10 +159,10 @@ plain_language必须由你根据当前候选撰写，不能复制技术段落，
 - data与risks：具体数据与尚待落实项、限制与适用条件；来源未知就明确未知，不泛化成“数据公开可得”。
 - terms：仅解释本卡必须出现的术语，最多6个{name,meaning}。不要为凑数引入术语。
 以上白话字段每段不超过180字；内容较多就增加步骤，不压缩成密集长句，不插入变量、公式或代码。
-formulas：原候选确有公式时选最多3条核心公式，返回title、latex（仅数学表达式，不带美元符/代码围栏）、explanation和symbols（[{symbol,meaning}]）；只做忠实排版，不能改写数学含义或引入新假设。无法无歧义转成LaTeX时返回空数组，原始技术说明仍完整保留。latex必须是KaTeX支持的规范LaTeX：希腊字母用\alpha、\sigma等命令；多字符下标加花括号（如\Delta_{d,\max}），不能写Delta_d_max；集合用\{与\}，中文必须放在\text{...}内；绝不能把混有中文、alpha字样和未加括号下标的原始字符串直接粘到latex字段。JSON里的LaTeX反斜杠必须双重转义。
+formulas：原候选确有公式时选最多3条核心公式，返回title、latex（仅数学表达式，不带美元符/代码围栏）、explanation和symbols（[{symbol,meaning}]）；只做忠实排版，不能改写数学含义或引入新假设。无法无歧义转成LaTeX时返回空数组，原始技术说明仍完整保留。latex必须是KaTeX支持的规范LaTeX：希腊字母用\alpha、\sigma等命令；多字符下标加花括号（如\Delta_{d,\max}），不能写Delta_d_max；集合用\{与\}，中文必须放在\text{...}内；绝不能把混有中文、alpha字样和未加括号下标的原始字符串直接粘到latex字段。JSON里的LaTeX反斜杠必须双重转义。不要产生连续的双下标（如\Delta_t^{*}_p）；请根据变量定义把各下标收进同一组花括号。symbols.symbol也必须是规范LaTeX，使用与公式一致的符号，不附美元符或公式环境。
 method、scientific_question、falsification、novelty保留原候选的技术条件、变量与失败判据，用换行分段；不是用白话取代原始规范。
 引用只能来自给定reading的paper_id及evidence中的passage_id。每张至少引用一个方法原文证据，closest_paper_ids使用输入reading中的真实论文ID。数据未知不能编造下载链接。
-输出JSON {"cards":[{"title":"准确、简洁的中文标题","one_liner":"能不能……？","plain_language":{"problem":"为什么要研究","steps":[{"title":"步骤标题","text":"输入、操作、输出及作用"}],"test":[{"title":"验证步骤","text":"数据、对照与失败条件"}],"difference":"真正改变的地方及边界","data":"数据来源及未落实项","risks":"局限与适用条件","terms":[{"name":"术语","meaning":"白话解释"}]},"formulas":[{"title":"核心关系","latex":"数学表达式","explanation":"白话说明这个关系的用途与条件","symbols":[{"symbol":"符号","meaning":"含义"}]}],"scientific_question":"原候选科学问题","method":"原候选技术方法，按步骤换行","falsification":"原候选最小验证与失败判据，分段","novelty":"相对已有工作的差异及条件","risks":"风险和待落实项","compute":"沿用原候选资源判断","datasets":[],"data_sources":[{"name":"实际数据或待落实数据","url":"有依据的入口或空串","availability":"public/local/unknown"}],"data_availability":"数据是否已落实","metrics":[],"patterns":[],"baselines":[],"evidence_refs":["输入原文片段ID"],"closest_paper_ids":["输入论文ID"]}]}。
+输出JSON {"cards":[{"title":"准确、简洁的中文标题","one_liner":"能不能……？","plain_language":{"background":"先为完全不懂本领域的人解释已有技术如何工作","problem":"为什么要研究","steps":[{"title":"步骤标题","text":"输入、操作、输出及作用"}],"test":[{"title":"验证步骤","text":"数据、对照与失败条件"}],"difference":"真正改变的地方及边界","data":"数据来源及未落实项","risks":"局限与适用条件","terms":[{"name":"术语","meaning":"白话解释"}]},"formulas":[{"title":"核心关系","latex":"数学表达式","explanation":"白话说明这个关系的用途与条件","symbols":[{"symbol":"符号","meaning":"含义"}]}],"scientific_question":"原候选科学问题","method":"原候选技术方法，按步骤换行","falsification":"原候选最小验证与失败判据，分段","novelty":"相对已有工作的差异及条件","risks":"风险和待落实项","compute":"沿用原候选资源判断","datasets":[],"data_sources":[{"name":"实际数据或待落实数据","url":"有依据的入口或空串","availability":"public/local/unknown"}],"data_availability":"数据是否已落实","metrics":[],"patterns":[],"baselines":[],"evidence_refs":["输入原文片段ID"],"closest_paper_ids":["输入论文ID"]}]}。
 只整理当前一个候选。必须区分原文事实、待验证假设和资料缺失；不能用常识补齐未知事实。
 '''
 OUTPUT_TOKENS['spark_card'] = 12288

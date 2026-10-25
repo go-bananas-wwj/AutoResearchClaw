@@ -153,6 +153,11 @@ async def refresh_summaries(sid: str, req: VersionRequest):
     return public(invoke(get_service().refresh_summaries, sid, req.revision))
 
 
+@router.post('/ideation/sessions/{sid}/card-summaries')
+async def refresh_card_summaries(sid: str, req: VersionRequest):
+    return public(invoke(get_service().refresh_cards,sid,req.revision))
+
+
 @router.post("/ideation/sessions/{sid}/papers/{paper_id}/remove")
 async def remove_paper(sid: str, paper_id: str, req: VersionRequest):
     return public(invoke(get_service().remove_paper, sid, req.revision, paper_id))

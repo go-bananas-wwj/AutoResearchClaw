@@ -144,6 +144,13 @@ class IdeationService:
 
     def snapshot(self, sid: str) -> dict[str, Any]:
         data = self.store.load(sid)
+        if (data.get('blocker') or {}).get('code')=='ideaspark_no_validated_cards':
+            jobs=(data.get('ideaspark_batch') or {}).get('jobs',[])
+            pending=sum(bool(j.get('retryable')) for j in jobs)
+            if pending:
+                message=f'已有{len(data.get("idea_pool",[]))}张草稿；{pending}个任务因技术问题未完成审查，尚不能确认。'
+                data.update(missing=[message],blocker={'category':'technical','code':'ideaspark_review_incomplete',
+                    'message':message,'actions':['重试未完成的审查'],'context':{}})
         # Old sessions retain real failed-source receipts, even without typed errors.
         for item in data.get("rejected_cards", []):
             failure = item.get("failure") or {}
@@ -317,7 +324,7 @@ class IdeationService:
         with self.store.lock:
             self._ensure_capacity()
             data = self.snapshot(sid)
-            if data.get("run_id") or (data["phase"] in ("literature_review", "idea_review", "handed_off") and not data.get("download_task")):
+            if data.get("run_id") or (data["phase"] in ("literature_review", "idea_review", "handed_off") and not data.get("download_task") and data.get('presentation_task')!='cards'):
                 raise SessionError("当前阶段需要审核，不能跳过。")
             data.update(status="running", missing=[], blocker=None, unavailable_fulltexts={})
             self.store.save(data)
@@ -332,7 +339,18 @@ class IdeationService:
         try:
             self.sources.progress = lambda paper, message: self._progress(data, event, message,
                 paper_id=paper["paper_id"], title=paper["title"], operation="download")
-            if data.get("download_task"):
+            if data.get('presentation_task')=='cards':
+                from .ideaspark import IdeaSparkBatch
+                from .parallel import run_candidates
+                previous=data['card_presentation_return']
+                host=IdeaSparkBatch(self,data,event)
+                run_candidates(host,data['ideaspark_batch']['jobs'],'refresh',getattr(self.config.llm,'ideation_workers',3))
+                data.update({k:v for k,v in previous.items() if k!='batch_phase'})
+                data['ideaspark_batch']['phase']=previous['batch_phase']
+                data.pop('presentation_task',None);data.pop('card_presentation_return',None)
+                data.pop('progress',None);data.pop('progress_message',None)
+                self._save(data,event)
+            elif data.get("download_task"):
                 previous = dict(data["download_task"])
                 self._curate_fulltext_literature(data, event, attempt_id=data["download_task"]["attempt_id"])
                 data.pop("download_task", None)
@@ -628,6 +646,17 @@ class IdeationService:
                              fulltext_error=str(exc)[:500])
             paper["fulltext_attempt_id"] = attempt_id
             self._save(data, event)
+
+    def refresh_cards(self,sid,revision):
+        with self.store.lock:
+            data=self.snapshot(sid)
+            self.store.require_revision(data,revision);self._editable(data);self._ensure_capacity()
+            if not data.get('ideaspark_batch'):
+                raise SessionError('当前没有IdeaSpark候选卡片。')
+            data['card_presentation_return']={k:copy.deepcopy(data.get(k)) for k in ('phase','status','blocker','missing')}
+            data['card_presentation_return']['batch_phase']=data['ideaspark_batch'].get('phase','review')
+            data['presentation_task']='cards';self.store.save(data);self.launch(sid)
+            return self.snapshot(sid)
 
     def refresh_summaries(self, sid, revision):
         with self.store.lock:

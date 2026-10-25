@@ -71,7 +71,7 @@ test('workflow stays the first panel through running, review, paused and handoff
     {status:'completed',phase:'handed_off',approved_revision:1,run_id:'rc-example'}
   ]) {
     const html=view._sessionHtml(state(extra));
-    assert.match(html,/^<div class="card ideation-route-card" data-material-stage="workflow">/);
+    assert.match(html,/^<div class="card ideation-route-card" id="ideation-workflow" data-material-stage="workflow">/);
     assert.equal((html.match(/data-material-stage="workflow"/g)||[]).length,1);
   }
 });
@@ -129,7 +129,7 @@ test('IdeaSpark pool can show many drafts without exposing experiment confirmati
   const d=state({phase:'generate',idea_pool:pool,ideaspark_batch:{target:12,jobs:pool.map((c,i)=>({id:String(i),status:c.skill_status}))}});
   const html=view._ideaPoolHtml(d);
   assert.match(html,/12 张/);assert.equal((html.match(/data-action="pool-card"/g)||[]).length,12);
-  assert.ok(!html.includes('id="idea-confirm-card"'));assert.match(html,/待审查/);assert.match(html,/待完善/);
+  assert.ok(!html.includes('id="idea-confirm-card"'));assert.match(html,/审查未完成/);
 });
 
 test('status distinguishes generated drafts, accepted cards and cycling task number',()=>{
@@ -172,4 +172,49 @@ test('parallel status lists each active task and keeps draft counts separate',()
   assert.match(html,/正在并行 3 个任务（上限 3）/);assert.match(html,/已生成 9 张候选草稿/);
   assert.match(html,/任务 1：IdeaSpark：正在核对机制一致性/);assert.match(html,/任务 4：/);assert.match(html,/任务 6：/);
   assert.match(p.line,/当前并行：1、4、6 号任务/);
+});
+
+test('bookmarks point to existing sections and retain workflow as first card',()=>{
+  const d=state({status:'blocked',phase:'audit',approved_revision:1,ideaspark_batch:{jobs:[]},idea_pool:[],
+    synthesis:{landscape_zh:'现状',method_comparison:[{paper_id:'p1',method:'方法',boundary:'边界'}],gaps:[]},
+    papers:[{paper_id:'p1',title:'论文',relevance:'core',fulltext_status:'read',summary_basis:'fulltext',overview:{problem:'问题',method:'方法'}}]});
+  const nav=view._bookmarksHtml(d),html=view._sessionHtml(d);
+  for(const match of nav.matchAll(/data-index="([^"]+)"/g))assert.ok(html.includes('id="'+match[1]+'"'),match[1]);
+  assert.match(nav,/方案对照/);assert.match(nav,/论文总结/);assert.match(nav,/候选卡片/);
+  assert.match(html,/^<div class="card ideation-route-card"/);
+});
+
+test('background and existing-method comparison precede the one-line idea',()=>{
+  const html=view._cardBodyHtml({one_liner:'能不能提前发现危险？',plain_language:{background:'先用重复拍照看地表移动。',problem:'问题',
+    difference:'已有方法的局限与本方案变化。',terms:[{name:'雷达',meaning:'一种观测手段'}],steps:[],test:[]}});
+  assert.ok(html.indexOf('先用重复拍照')<html.indexOf('一句话看懂这个想法'));
+  assert.ok(html.indexOf('与已有做法相比')<html.indexOf('一句话看懂这个想法'));
+  assert.ok(html.indexOf('先看懂这里的词')<html.indexOf('一句话看懂这个想法'));
+});
+
+test('interrupted review offers retry instead of a disabled confirmation, with no raw quotations',()=>{
+  const previous={show:view._showDialog,data:view.data};let body,footer;
+  const card={card_id:'draft',title:'草稿',one_liner:'能不能……',skill_job_id:'job',evidence:[{text:'RAW_QUOTE_NOT_FOR_DISPLAY'}]};
+  view.data=state({status:'blocked',phase:'audit',approved_revision:1,idea_pool:[card],ideaspark_batch:{jobs:[{id:'job',status:'needs_work',retryable:true,reason:'JSON syntax error'}]}});
+  view._showDialog=(title,b,f)=>{body=b;footer=f;return {querySelector:()=>null};};
+  try {
+    view._openCard(0,true);
+    assert.match(body,/技术检查未完成/);assert.ok(!body.includes('原文依据'));assert.ok(!body.includes('RAW_QUOTE_NOT_FOR_DISPLAY'));
+    assert.match(footer,/id="idea-retry-review"/);assert.ok(!footer.includes('id="idea-confirm-card"'));assert.ok(!footer.includes('disabled'));
+    assert.equal(card.evidence[0].text,'RAW_QUOTE_NOT_FOR_DISPLAY');
+  } finally {view._showDialog=previous.show;view.data=previous.data;}
+});
+
+test('inline LaTeX is escaped and marked for math rendering',()=>{
+  const html=view._inlineHtml('位置 $d_p$ 与 \\(\\Delta_t\\)；<img src=x>');
+  assert.match(html,/data-math="d_p" data-math-inline/);assert.match(html,/data-math="\\Delta_t"/);
+  assert.ok(!html.includes('<img'));assert.match(html,/&lt;img/);
+});
+
+test('repeated TeX scripts are grouped without changing symbols or operators',()=>{
+  for(const raw of [String.raw`\Delta_t^{*}_p(k)`,String.raw`\Delta_t^{\mathrm{used}}_p(k)`,String.raw`a_b_c`]) {
+    const grouped=view._groupMathScripts(raw);
+    assert.notEqual(grouped,raw);assert.equal(grouped.replace(/[{}]/g,''),raw.replace(/[{}]/g,''));
+  }
+  assert.equal(view._groupMathScripts(String.raw`\sigma_{kk'}`),String.raw`\sigma_{kk'}`);
 });

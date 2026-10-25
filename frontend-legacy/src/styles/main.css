@@ -732,6 +732,15 @@ button, a { touch-action: manipulation; }
 .idea-prompt-block summary { font-size: 13px; font-weight: 500; cursor: pointer; }
 .idea-prompt-block pre { max-height: none; margin-top: 12px; }
 .ideation-workspace { max-width: 1180px; margin: 0 auto; }
+.ideation-bookmarks { position: sticky; top: 0; z-index: 12; display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; padding: 10px; margin: 0 0 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-secondary); box-shadow: 0 3px 10px #00000008; }
+.ideation-bookmarks button { padding: 7px 10px; white-space: nowrap; border-radius: 7px; }
+.ideation-bookmarks button[aria-current="location"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.ideation-workspace [id^="ideation-"] { scroll-margin-top: 100px; }
+.idea-confirm-help { flex: 1; align-self: center; font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
+.idea-math-inline { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; }
+.idea-question { margin-top: 22px; }
+.idea-math-fallback details { margin-top: 6px; font-family: inherit; }
+.idea-math-fallback pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ideation-heading, .ideation-heading > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ideation-heading { justify-content: space-between; margin-bottom: 12px; }
 .ideation-heading h2 { font-size: 25px; letter-spacing: -0.5px; }

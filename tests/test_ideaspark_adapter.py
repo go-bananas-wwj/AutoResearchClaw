@@ -311,3 +311,60 @@ def test_nullable_official_notes_do_not_break_resume(engine):
         'status':'needs_work','reason':None,'steps':1}]}
     with pytest.raises(WorkflowFailure) as error:h.run()
     assert error.value.code=='ideaspark_no_validated_cards'
+
+
+def test_explicit_failed_contract_stops_after_one_host_command(engine,monkeypatch):
+    h=host(engine);job={'id':'job','number':1,'directory':'fixture','focus':'fixture','status':'running','steps':1}
+    h.data['ideaspark_batch']={'phase':'review','jobs':[job]}
+    run=h.directory/'fixture';run.mkdir()
+    action={'kind':'bash','step':'Preserve draft and report blocking findings','state':'needs_work',
+        'run':['python3 '+str(ROOT/'scripts/run.py')+' quality_needs_work --dir '+str(run)]}
+    monkeypatch.setattr(h,'navigator',lambda run:action)
+    calls=[]
+    def command(*a,**kw):
+        calls.append(a);write(run/'needs_work.json',{'findings':[{'validator':'repair_contract','message':'two conflicting field replacements'}]});return 0,'',''
+    monkeypatch.setattr(h,'command',command)
+    h.step(job)
+    assert len(calls)==1 and job['status']=='needs_work' and job['retryable']
+    assert job['reason']=='two conflicting field replacements'
+
+
+def test_local_json_repair_uses_broken_response_and_checks_unchanged_values(engine):
+    calls=[]
+    class Client:
+        def chat(self,messages,**kwargs):
+            payload=json.loads(messages[0]['content']);calls.append(payload)
+            text='{"scientific_values":[1,2] "claim":"unchanged"}' if len(calls)==1 else '{"scientific_values":[1,2],"claim":"unchanged"}'
+            return SimpleNamespace(content=text,finish_reason='stop',model='fixture',prompt_tokens=10,completion_tokens=20)
+    engine.llm=Client();h=host(engine)
+    result=h.model('coherence','system',{'full_source':'original'})
+    assert len(calls)==2 and 'broken_json' in calls[1] and 'full_source' not in calls[1]
+    assert result=={'scientific_values':[1,2],'claim':'unchanged'}
+    assert h.data['usage'][1]['stage']=='ideaspark:json_transport_repair'
+
+
+def test_existing_technical_failure_is_reported_as_incomplete_review(engine):
+    h=host(engine);h.data.update(status='blocked',blocker={'category':'scientific','code':'ideaspark_no_validated_cards'},
+        idea_pool=[{'card_id':'draft'}],ideaspark_batch={'jobs':[{'status':'needs_work','retryable':True}]})
+    engine.store.save(h.data);data=engine.snapshot(h.data['session_id'])
+    assert data['blocker']['category']=='technical' and data['blocker']['code']=='ideaspark_review_incomplete'
+    assert '草稿' in data['missing'][0]
+
+
+def test_presentation_refresh_preserves_review_and_approval_without_scientific_steps(engine,monkeypatch):
+    from tests.test_grounded_ideation import wait
+    data=develop(engine);card=data['cards'][0]
+    card.update(skill_job_id='job',skill_status='validated')
+    data.update(idea_pool=[card],ideaspark_batch={'phase':'review','jobs':[{'id':'job','number':1,'directory':'fixture','focus':'fixture','status':'validated'}]})
+    engine.store.save(data);revision=data['revision'];calls=[]
+    monkeypatch.setattr(IdeaSparkBatch,'candidate',lambda *a:{'title':'unchanged native'})
+    def present(worker,job):
+        calls.append('presentation')
+        worker.data['idea_pool'][0]['plain_language']={'background':'模型写的入门背景'}
+    monkeypatch.setattr(IdeaSparkBatch,'present',present)
+    monkeypatch.setattr(IdeaSparkBatch,'step',lambda *a:pytest.fail('Presentation must not execute scientific steps'))
+    engine.refresh_cards(data['session_id'],revision);result=wait(engine,data['session_id'])
+    assert calls==['presentation'] and result['phase']=='idea_review' and result['status']=='waiting'
+    assert result['approved_revision']==data['approved_revision'] and result['revision']==revision
+    assert result['cards'][0]['card_id']==card['card_id'] and not result['run_id']
+    assert result['idea_pool'][0]['plain_language']['background']=='模型写的入门背景'
