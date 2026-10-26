@@ -197,10 +197,10 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
             coverage_path = previous_reviews[-1].with_name(previous_reviews[-1].name.replace("execution_plan_review", "execution_coverage"))
             prior_errors = json.loads(coverage_path.read_text())["errors"] if coverage_path.is_file() else saved.get("errors", [])
             if (saved.get("source_hash") == digest(source) and saved.get("resources") == resources
-                    and isinstance(saved.get("plan"), dict) and prior_errors):
+                    and isinstance(saved.get("plan"), dict)):
                 plan = saved["plan"]
                 errors = prior_errors
-                emit("plan", "继续上次未完成的计划修订", "\n".join(map(str, errors)),
+                emit("plan", "继续上次未完成的计划修订" if errors else "继续上次的计划核对", "\n".join(map(str, errors)),
                      run_dir=run_dir, phase="planning", status="running")
         except (ValueError, OSError, KeyError, TypeError):
             pass

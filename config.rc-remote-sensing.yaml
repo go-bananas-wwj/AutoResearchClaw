@@ -24,6 +24,7 @@ llm:
   base_url: "https://api.deepseek.com/v1"   # DeepSeek 官方端点
   api_key_env: "DEEPSEEK_API_KEY"
   thinking: "enabled"
+  reasoning_effort: "low"  # 控制层保持推理，避免默认 high 耗尽各阶段正文上限；OpenCode 实施仍用 high
   reasoning_max_tokens: 65536  # 仅为 OpenCode 可用输出上限；普通调用遵守各阶段上限，不设下限
   timeout_sec: 1200
   ideation_backend: "ideaspark"  # 官方执行器；其他科研阶段保持原有配置

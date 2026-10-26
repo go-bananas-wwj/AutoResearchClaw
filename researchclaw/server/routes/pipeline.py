@@ -159,6 +159,14 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                     metric_overrides = {'metric_key':metrics[0]['metric_key']}
                     if metrics[0].get('direction') in ('minimize', 'maximize'):
                         metric_overrides['metric_direction'] = metrics[0]['direction']
+                    else:
+                        try:
+                            resolved = json.loads((resume_dir / 'metric_direction.json').read_text())
+                            if (resolved.get('metric_key') == metrics[0]['metric_key']
+                                    and resolved.get('direction') in ('minimize', 'maximize')):
+                                metric_overrides['metric_direction'] = resolved['direction']
+                        except (OSError, ValueError):
+                            pass
                     config = dataclasses.replace(config, experiment=dataclasses.replace(config.experiment, **metric_overrides))
                 if saved.get('target_conference'):
                     config = dataclasses.replace(config, export=dataclasses.replace(config.export, target_conference=saved['target_conference']))
@@ -230,6 +238,11 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         run_id = req.resume_run_id or f"rc-{ts}-{topic_hash}"
         run_dir = _validated_run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
+        if (req.config_overrides or {}).get('metric_direction') in ('minimize', 'maximize'):
+            (run_dir / 'metric_direction.json').write_text(json.dumps({
+                'metric_key': config.experiment.metric_key,
+                'direction': config.experiment.metric_direction,
+                'source': 'explicit_pipeline_override', 'at': datetime.now(timezone.utc).isoformat()}))
         if resume_dir is not None:
             archived = _archive_resume_outputs(run_dir, forced_from_stage)
             with (run_dir / 'resume_history.jsonl').open('a') as history:

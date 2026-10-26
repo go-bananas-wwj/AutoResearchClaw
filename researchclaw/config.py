@@ -207,6 +207,7 @@ class LlmConfig:
     # providers that support it (DeepSeek V4). Disabling keeps max_tokens for
     # actual output instead of spending it on hidden reasoning tokens.
     thinking: str = ""
+    reasoning_effort: str = ""  # Optional provider effort; does not imply an output floor.
     reasoning_max_tokens: int = 65536  # OpenCode output capacity only; never a floor for API calls.
     timeout_sec: int = 600
     ideation_backend: str = "ideaspark"
@@ -1247,6 +1248,7 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         s2_api_key=data.get("s2_api_key", ""),
         notes=data.get("notes", ""),
         thinking=str(data.get("thinking", "") or ""),
+        reasoning_effort=str(data.get("reasoning_effort", "") or ""),
         reasoning_max_tokens=_safe_int(data.get("reasoning_max_tokens"), 65536),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
         ideation_backend=str(data.get("ideation_backend", "ideaspark")),

@@ -773,7 +773,7 @@ def execute_stage(
     profile_name = (
         getattr(getattr(config, "project", None), "profile", None) or None
     )
-    if gate_required(
+    if result.status == StageStatus.DONE and gate_required(
         stage,
         config.security.hitl_required_stages,
         profile=profile_name,

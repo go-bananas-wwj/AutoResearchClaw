@@ -137,3 +137,78 @@ def test_failed_stage_is_not_presented_as_a_deliverable_for_approval(tmp_path):
     result = StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
                          artifacts=(), error="output truncated")
     assert _run_hitl_post_stage(Stage.CODE_GENERATION, result, tmp_path, adapters) is result
+
+
+def test_explicit_effort_keeps_thinking_enabled_without_raising_output_cap(monkeypatch):
+    import urllib.request
+    from researchclaw.llm.client import LLMClient, LLMConfig
+    captured = {}
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}).encode()
+    def request(req, **kwargs):
+        captured.update(json.loads(req.data))
+        return Response()
+    monkeypatch.setattr(urllib.request, "urlopen", request)
+    client = LLMClient(LLMConfig(base_url="https://api.deepseek.com/v1", api_key="fixture",
+        primary_model="deepseek-flash", fallback_models=[], thinking="enabled", reasoning_effort="low"))
+    client.chat(messages=[{"role": "user", "content": "JSON"}], max_tokens=1024)
+    assert captured["thinking"] == {"type": "enabled"}
+    assert captured["reasoning_effort"] == "low"
+    assert captured["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_recovery_retains_explicit_direction_when_old_brief_omitted_it(tmp_path, monkeypatch):
+    import httpx
+    from researchclaw.config import RCConfig
+    from researchclaw.server.app import create_app
+    from researchclaw.server.routes import pipeline
+    from researchclaw.pipeline.executor import StageResult
+    from researchclaw.pipeline.stages import Stage, StageStatus
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pipeline, '_active_run', None)
+    run_id = 'rc-20261025-145941-c30e99'
+    root = tmp_path / 'artifacts' / run_id
+    root.mkdir(parents=True)
+    (root / 'checkpoint.json').write_text(json.dumps({'last_completed_stage': 9}))
+    brief = {'topic': 'original', 'metrics': [{'metric_key': 'CRPS', 'direction': ''}]}
+    (root / 'research_brief.json').write_text(json.dumps(brief))
+    config = RCConfig.from_dict({'project': {'name': 'test'}, 'research': {'topic': 'placeholder'},
+        'runtime': {'timezone': 'UTC'}, 'notifications': {'channel': 'console'},
+        'knowledge_base': {'root': str(tmp_path / 'kb')}, 'experiment': {'metric_direction': 'maximize'},
+        'llm': {'base_url': 'https://example.org', 'api_key_env': 'TEST'}}, check_paths=False)
+    calls = []
+    def execute(**kwargs):
+        calls.append(kwargs['config'].experiment.metric_direction)
+        return [StageResult(stage=Stage.CITATION_VERIFY, status=StageStatus.DONE, artifacts=())]
+    monkeypatch.setattr('researchclaw.pipeline.runner.execute_pipeline', execute)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(config)), base_url='http://test') as client:
+        for extra in ({'config_overrides': {'metric_direction': 'minimize'}}, {}):
+            response = await client.post('/api/pipeline/start', json={
+                'resume_run_id': run_id, 'from_stage': 'CODE_GENERATION', 'auto_approve': True, **extra})
+            assert response.status_code == 200
+            await pipeline._run_task
+    assert calls == ['minimize', 'minimize']
+    assert json.loads((root / 'research_brief.json').read_text()) == brief
+
+
+def test_failed_gate_stage_stays_failed_instead_of_becoming_approvable(tmp_path, monkeypatch):
+    from researchclaw.config import RCConfig
+    from researchclaw.adapters import AdapterBundle
+    from researchclaw.pipeline import executor
+    from researchclaw.pipeline.stages import Stage, StageStatus
+    config = RCConfig.from_dict({'project': {'name': 'test'}, 'research': {'topic': 'test'},
+        'runtime': {'timezone': 'UTC'}, 'notifications': {'channel': 'console'},
+        'knowledge_base': {'root': str(tmp_path / 'kb')},
+        'llm': {'base_url': 'https://example.org', 'api_key_env': 'TEST'}}, check_paths=False)
+    monkeypatch.setattr(executor, '_read_prior_artifact', lambda *args: 'prior evidence')
+    def fail(*args, **kwargs):
+        return executor.StageResult(stage=Stage.EXPERIMENT_DESIGN, status=StageStatus.FAILED,
+                                    artifacts=(), error='method mismatch')
+    monkeypatch.setitem(executor._STAGE_EXECUTORS, Stage.EXPERIMENT_DESIGN, fail)
+    result = executor.execute_stage(Stage.EXPERIMENT_DESIGN, run_dir=tmp_path, run_id='fixture',
+                                    config=config, adapters=AdapterBundle(), auto_approve_gates=False)
+    assert result.status == StageStatus.FAILED and result.error == 'method mismatch'

@@ -95,6 +95,7 @@ class LLMConfig:
     fallback_api_key: str = ""
     # "" | "enabled" | "disabled" — reasoning-model control (DeepSeek V4 etc.)
     thinking: str = ""
+    reasoning_effort: str = ""
     reasoning_max_tokens: int = 65536  # Compatibility field; chat() never raises a requested token limit.
 
 
@@ -171,6 +172,7 @@ class LLMClient:
             fallback_url=fallback_url,
             fallback_api_key=fallback_api_key,
             thinking=getattr(rc_config.llm, "thinking", "") or "",
+            reasoning_effort=getattr(rc_config.llm, "reasoning_effort", "") or "",
             reasoning_max_tokens=getattr(rc_config.llm, "reasoning_max_tokens", 65536),
             timeout_sec=getattr(rc_config.llm, "timeout_sec", 600),
         )
@@ -537,6 +539,8 @@ class LLMClient:
                 and self.config.thinking in ("enabled", "disabled")
             ):
                 body["thinking"] = {"type": self.config.thinking}
+                if self.config.thinking == "enabled" and self.config.reasoning_effort in ("low", "high", "max"):
+                    body["reasoning_effort"] = self.config.reasoning_effort
 
             if json_mode:
                 # Many OpenAI-compatible providers don't support the

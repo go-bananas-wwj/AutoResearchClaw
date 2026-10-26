@@ -71,3 +71,7 @@
 - **推理与实验实施（2026-10-26，用户新要求覆盖此前关闭推理的部署默认值）**：遥感部署 `thinking` 与 `ideation_thinking` 均开启，`reasoning_max_tokens=65536` 为思考与正文共用预算下限，截断/空正文拒绝。控制面固定安装 OpenCode 1.18.31，`opencode.required=true` 不允许静默降级；DeepSeek 用专用 Chat Completions 适配保留工具调用所需 reasoning_content。`execution_check` 实测兄弟容器资源，阶段9/10检查数据来源和任务书方法，最终代码必须通过独立方法审查、实际沙箱运行、方法断言与数据文件哈希验收；阶段12绑定验收哈希，阶段13改码后同样验收。阶段12失败可直接进入修复，无需阶段14先产生。完整真实数据不可得时允许明确的同方法合成pilot，外部效度列为未验证，不能偷换成通用GRU或虚构数据。保持美元预算0、docker-sibling挂载翻译和wsproto。详见 `docs/EXPERIMENT_EXECUTION_CN.md`。
 
 - **输出预算与运行可见性（2026-10-26 后续用户指令，覆盖上一条的 token 下限）**：普通 API 请求不设置 token 下限，不因推理开启抬高调用方上限；`reasoning_max_tokens` 仅供 OpenCode 的输出容量上限使用。复杂规划/复核各自设置32k/16k上限，截断仍拒绝。项目总览/交互展示 `agent_activity.jsonl` 的真实模型请求、工具调用、公开进展、检查及Docker输出，过滤推理块和凭据；活动按项目上下文隔离，刷新增量回放。恢复同项目时先归档恢复点及下游旧产物、保留任务书和主指标，继续同材料的失败计划修订；失败阶段不进入产物批准门控，成功阶段的人工门控保持不变。直达页面 `#project/<run_id>/overview|interact`。
+
+- **推理强度补充（同日实测）**：DeepSeek 默认high的控制层复核可能先耗尽正文上限，遥感预设对普通API显式配置 `reasoning_effort: low`，推理仍开启；OpenCode实施保持high。不得通过恢复全局token下限或关闭推理来掩盖截断。按同一材料断点复用已生成但尚未完成复核的计划。
+
+- **恢复指标方向（同日实测）**：旧任务书的指标方向可能为空，不能把遥感分割默认 maximize 无条件用于 CRPS。恢复请求可用既有 `config_overrides.metric_direction` 明示方向，服务端另存 `metric_direction.json`，之后仅在指标键相同且任务书方向仍空时复用；不改任务书原文。本轮原项目显式使用 minimize。失败阶段不得被门控逻辑改写成可批准状态。
