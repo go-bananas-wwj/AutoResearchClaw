@@ -42,6 +42,7 @@ class PipelineStartRequest(BaseModel):
     # 显式指定起始阶段（Stage 名或编号），优先级高于 brief 的建议值
     from_stage: str | None = None
     idempotency_key: str | None = None
+    resume_run_id: str | None = None
 
 
 def _parse_from_stage(raw: str) -> "Any":
@@ -90,6 +91,13 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
     global _active_run, _run_task, _run_cancel_event
 
     async with _run_lock:
+        resume_dir = None
+        if req.resume_run_id:
+            if req.idempotency_key or req.brief or not req.from_stage:
+                raise HTTPException(400, detail="恢复原项目须指定起始阶段，不能同时传入新任务书或选题交接标识")
+            resume_dir = _validated_run_dir(req.resume_run_id)
+            if not (resume_dir / 'checkpoint.json').is_file():
+                raise HTTPException(404, detail="未找到可恢复的项目检查点")
         if req.idempotency_key:
             if not _re.fullmatch(r"is-[a-f0-9]{20}:\d+:r\d+-(?:c\d+|spark-\d+)", req.idempotency_key):
                 raise HTTPException(400, detail="无效的调研交接标识")
@@ -105,6 +113,24 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         config = state["config"]
 
         import dataclasses
+
+        if resume_dir is not None:
+            saved_brief = resume_dir / 'research_brief.json'
+            if saved_brief.is_file():
+                saved = json.loads(saved_brief.read_text())
+                saved_topic = saved.get('topic')
+                if saved_topic:
+                    config = dataclasses.replace(config, research=dataclasses.replace(config.research, topic=saved_topic))
+                metrics = saved.get('metrics') or []
+                if metrics and isinstance(metrics[0], dict) and metrics[0].get('metric_key'):
+                    metric_overrides = {'metric_key':metrics[0]['metric_key']}
+                    if metrics[0].get('direction') in ('minimize', 'maximize'):
+                        metric_overrides['metric_direction'] = metrics[0]['direction']
+                    config = dataclasses.replace(config, experiment=dataclasses.replace(config.experiment, **metric_overrides))
+                if saved.get('target_conference'):
+                    config = dataclasses.replace(config, export=dataclasses.replace(config.export, target_conference=saved['target_conference']))
+            if req.topic:
+                raise HTTPException(400, detail="恢复原项目不能更改研究题目")
 
         if req.topic:
             new_research = dataclasses.replace(config.research, topic=req.topic)
@@ -168,9 +194,12 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         topic_hash = hashlib.sha256((config.research.topic + (req.idempotency_key or "")).encode()).hexdigest()[:6]
-        run_id = f"rc-{ts}-{topic_hash}"
+        run_id = req.resume_run_id or f"rc-{ts}-{topic_hash}"
         run_dir = _validated_run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
+        if resume_dir is not None:
+            with (run_dir / 'resume_history.jsonl').open('a') as history:
+                history.write(json.dumps({'at':datetime.now(timezone.utc).isoformat(), 'from_stage':forced_from_stage.name})+'\n')
         if req.idempotency_key:
             (run_dir / "ideation_origin.json").write_text(json.dumps({"key": req.idempotency_key}))
         cancel_event = threading.Event()

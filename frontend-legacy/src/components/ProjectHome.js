@@ -163,7 +163,8 @@ const ProjectHome = {
         <span>Stage ${stage}/${total}</span>
         <span>${updated}</span>
       </div>
-      <div class="proj-pbar-lg ${barCls}"><div style="width:${pct}%"></div></div>`;
+      <div class="proj-pbar-lg ${barCls}"><div style="width:${pct}%"></div></div>
+      ${['failed','blocked'].includes(status) && p.reason?`<p class="ideation-alert" role="alert" data-no-i18n>任务已停止：${this._esc(p.reason)}</p>`:''}`;
   },
 
   _updateHead() {

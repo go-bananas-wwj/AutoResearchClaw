@@ -23,7 +23,7 @@
     'Overview': '总览', 'Interact': '交互', 'Manage': '管理',
     'Dashboard': '仪表盘', 'Pipeline': '流水线', 'Experiments': '实验',
     'Chat': '对话', 'Paper': '论文', 'Projects': '项目', 'Wizard': '向导',
-    'Connecting...': '连接中…', 'Connected': '已连接', 'Disconnected': '已断开',
+    'Connecting...': '连接中…', 'Connected': '已连接', 'Disconnected': '已断开', 'Reconnecting...': '正在重连…',
     'Loading...': '加载中…',
     /* Dashboard */
     'Pipeline Progress': '流水线进度', 'Recent Runs': '最近的运行',

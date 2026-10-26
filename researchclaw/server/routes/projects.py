@@ -48,6 +48,22 @@ def _project_info(d: Path) -> dict[str, Any]:
     else:
         proj["status"] = "no_checkpoint"
 
+    summary_file = d / 'pipeline_summary.json'
+    if summary_file.is_file():
+        try:
+            summary = json.loads(summary_file.read_text())
+            if summary.get('final_status'):
+                proj['status'] = summary['final_status']
+            failed = d / f"stage-{int(summary.get('final_stage', 0)):02d}" / 'decision.json'
+            if failed.is_file() and proj['status'] == 'failed':
+                proj['reason'] = json.loads(failed.read_text()).get('error', '')
+        except (OSError, ValueError, TypeError):
+            pass
+    from researchclaw.server.routes.pipeline import _active_run
+    if _active_run and _active_run.get('run_id') == d.name:
+        proj['status'] = _active_run['status']
+        proj['reason'] = _active_run.get('reason') or _active_run.get('error', '')
+
     proj["topic"] = _read_topic(d)
 
     # 门控等待状态（读 hitl/waiting.json，项目卡片要亮"等门控"徽章）

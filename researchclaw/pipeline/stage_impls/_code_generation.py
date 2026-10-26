@@ -312,6 +312,7 @@ def _ensure_executable_entry(
     *,
     validation_log: list[str] | None = None,
     exp_dir: Path | None = None,
+    prompts: PromptManager | None = None,
 ) -> bool:
     """确保入口文件有可执行入口；没有则给 LLM 一次补全机会。
 
@@ -336,7 +337,7 @@ def _ensure_executable_entry(
     all_files_ctx = "\n\n".join(
         f"```filename:{f}\n{c}\n```" for f, c in files.items()
     )
-    cp = _pm.sub_prompt(
+    cp = (prompts or PromptManager()).sub_prompt(
         "code_repair",
         fname=entry,
         issues_text=(
@@ -1627,7 +1628,7 @@ def _execute_code_generation(
     # 后期的 deep-repair / 消融修复 / 对题重生成都会整体重写 files，可能
     # 再次截断入口（首跑实测：深度修复在守卫通过后又把 main.py 截断）。
     # 写 spec 前最后兜一道并同步写盘；补不回来就阻断本阶段，不让阶段 12 空跑。
-    if not _ensure_executable_entry(files, llm, exp_dir=exp_dir):
+    if not _ensure_executable_entry(files, llm, exp_dir=exp_dir, prompts=_pm):
         (stage_dir / "validation_report.md").write_text(
             "# Code Validation Report\n\n"
             "**Status**: BLOCKED — entry file has no executable entry point "

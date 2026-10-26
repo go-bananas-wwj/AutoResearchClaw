@@ -292,6 +292,10 @@
       const badge = document.getElementById('connection-badge');
       if (badge) { badge.textContent = 'Disconnected'; badge.className = 'status-badge failed'; }
     });
+    eventsWS.on('reconnecting', () => {
+      const badge = document.getElementById('connection-badge');
+      if (badge) { badge.textContent = 'Reconnecting...'; badge.className = 'status-badge idle'; }
+    });
     eventsWS.on('message', (data) => App._onWSEvent(data));
     eventsWS.connect();
 
