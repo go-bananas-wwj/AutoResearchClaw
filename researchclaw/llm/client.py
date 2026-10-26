@@ -95,6 +95,7 @@ class LLMConfig:
     fallback_api_key: str = ""
     # "" | "enabled" | "disabled" — reasoning-model control (DeepSeek V4 etc.)
     thinking: str = ""
+    reasoning_max_tokens: int = 65536
 
 
 class LLMClient:
@@ -170,6 +171,7 @@ class LLMClient:
             fallback_url=fallback_url,
             fallback_api_key=fallback_api_key,
             thinking=getattr(rc_config.llm, "thinking", "") or "",
+            reasoning_max_tokens=getattr(rc_config.llm, "reasoning_max_tokens", 65536),
             timeout_sec=getattr(rc_config.llm, "timeout_sec", 600),
         )
         client = cls(config)
@@ -283,6 +285,8 @@ class LLMClient:
 
         models = [model] if model else self._model_chain
         max_tok = max_tokens or self.config.max_tokens
+        if self.config.thinking == "enabled":
+            max_tok = max(max_tok, self.config.reasoning_max_tokens)
         temp = temperature if temperature is not None else self.config.temperature
 
         last_error: Exception | None = None
@@ -291,6 +295,10 @@ class LLMClient:
             try:
                 resp = self._call_with_retry(m, messages, max_tok, temp, json_mode,
                     **({'on_content':on_content,'on_reset':on_reset} if on_content else {}))
+                from researchclaw.cost_tracker import get_global_tracker
+                get_global_tracker().record(resp, messages)
+                if self.config.thinking == "enabled" and (resp.truncated or not resp.content.strip()):
+                    raise ValueError("推理模型返回截断或空正文；未接受不完整产物，请扩大 reasoning_max_tokens")
                 if strip_thinking:
                     from researchclaw.utils.thinking_tags import strip_thinking_tags
 
@@ -304,8 +312,6 @@ class LLMClient:
                         truncated=resp.truncated,
                         raw=resp.raw,
                     )
-                from researchclaw.cost_tracker import get_global_tracker
-                get_global_tracker().record(resp, messages)
                 return resp
             except LLMStreamAborted:
                 raise

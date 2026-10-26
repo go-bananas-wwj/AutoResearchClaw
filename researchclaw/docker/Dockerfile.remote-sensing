@@ -26,6 +26,9 @@ ENV TORCHHOME=/opt/conda  \
     RASTERIO_ENABLED_DRIVER_OVERVIEW_HANDLER=TRUE
 
 WORKDIR /workspace
+# 本地适配：即使基底镜像尚未重建，也使用当前依赖失败即停止的入口。
+COPY entrypoint.sh /usr/local/bin/rc-entrypoint.sh
+RUN chmod +x /usr/local/bin/rc-entrypoint.sh
 USER researcher
 ENTRYPOINT ["/usr/local/bin/rc-entrypoint.sh"]
 CMD ["main.py"]

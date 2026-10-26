@@ -21,13 +21,15 @@ runtime:
 
 llm:
   provider: "openai-compatible"
-  base_url: "https://api.deepseek.com/v1"   # 百炼 OpenAI 兼容端点
+  base_url: "https://api.deepseek.com/v1"   # DeepSeek 官方端点
   api_key_env: "DEEPSEEK_API_KEY"
-  thinking: "disabled"   # 关推理，避免 max_tokens 被思考过程吃光
+  thinking: "enabled"
+  reasoning_max_tokens: 65536  # 思考与正文共享预算，不能沿用短输出阶段的 1024/4096
+  timeout_sec: 1200
   ideation_backend: "ideaspark"  # 官方执行器；其他科研阶段保持原有配置
   ideation_card_target: 12       # 每个独立运行产生一个方案，批量汇总
   ideation_workers: 3           # 独立候选并行，状态和用量串行合并
-  ideation_thinking: "disabled" # 默认快速推理；截断时扩大输出并保留独立审查
+  ideation_thinking: "enabled"
   primary_model: "deepseek-flash"     # 规划/写作主链（DeepSeek-V4.1-Flash，1M ctx，便宜档，2026-10 换用）
   fallback_models:
     - "deepseek-v4-pro"                          # 摘要/压缩等便宜档
@@ -43,6 +45,20 @@ experiment:
   scale: "pilot"               # 规模诚实标签：smoke(≤5min)/pilot(分钟-小时)/full(全尺寸)，论文强制声明
   time_budget_sec: 900         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
   max_iterations: 10
+  opencode:
+    enabled: true
+    required: true             # 必须由现成 agent 操作工具，失败不得静默降级
+    auto: true
+    complexity_threshold: 0.0  # 每个实验均交给 OpenCode
+    timeout_sec: 1800
+    max_retries: 1
+    workspace_cleanup: false   # 保留工具调用、失败代码与调试证据
+  execution_check:
+    enabled: true
+    max_plan_repairs: 2
+    max_code_repairs: 2
+    validation_timeout_sec: 180
+    data_roots: [data, datasets]
   cli_agent:
     max_budget_usd: 0.0       # 本地适配：后续科研也不施加美元上限
   metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致

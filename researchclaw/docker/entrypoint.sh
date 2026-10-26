@@ -8,7 +8,7 @@
 # Environment variables:
 #   RC_SETUP_ONLY_NETWORK=1  — disable network after Phase 1 (iptables/route)
 #   RC_ENTRY_POINT           — override entry point (default: first CLI arg or main.py)
-set -e
+set -eo pipefail
 
 WORKSPACE="/workspace"
 ENTRY_POINT="${RC_ENTRY_POINT:-${1:-main.py}}"

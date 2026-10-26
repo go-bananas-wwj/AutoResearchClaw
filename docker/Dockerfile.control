@@ -3,7 +3,13 @@
 # 由本容器通过 docker socket 调度（见 docker-compose.yml 注释）。
 # Build: docker build -f docker/Dockerfile.control -t researchclaw/control:latest .
 # 本地适配：固定 Debian 12，与下方 Docker bookworm 软件源保持一致。
+FROM node:22-bookworm-slim AS coding-agent
+# 本地适配：网页控制面实际调用 OpenCode，固定 CLI 版本并复制独立二进制。
+ARG OPENCODE_VERSION=1.18.31
+RUN npm install --prefix /opt/coding-agent opencode-ai@${OPENCODE_VERSION}
+
 FROM python:3.11-slim-bookworm
+COPY --from=coding-agent /opt/coding-agent/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/opencode
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 

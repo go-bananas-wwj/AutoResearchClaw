@@ -603,6 +603,14 @@ def _execute_experiment_design(
         except Exception:
             logger.debug("HITL guidance application failed (non-blocking)")
 
+    if config.experiment.execution_check.enabled:
+        from researchclaw.pipeline.execution_contract import ground_plan, ExecutionContractError
+        try:
+            plan = ground_plan(plan, config, run_dir, llm)
+        except ExecutionContractError as exc:
+            return StageResult(stage=Stage.EXPERIMENT_DESIGN, status=StageStatus.FAILED,
+                               artifacts=(), evidence_refs=(), error=str(exc))
+
     # --- HITL: Baseline Navigator data persistence ---
     try:
         from researchclaw.hitl.workshops.baseline import BaselineNavigator, BaselineCandidate

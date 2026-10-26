@@ -1,0 +1,65 @@
+# 创新点确认后的实验实施（本地 V100 适配，2026-10-26）
+
+本部署沿用 AutoResearchClaw 的阶段 9–23，实验实现改用 OpenCode 工具执行，再由宿主做独立验收。文献和创新点确认流程保持既有两轮审核语义。
+
+## 实际路径
+
+1. 阶段 9 从确认任务书提取方法要求，实测实验兄弟容器的 GPU 数量、名称和显存，读取容器内存上限、时间预算与配置的数据目录清单。
+2. 模型把计划落实为 `execution` 和 `method_requirements`。程序检查数字资源边界、本地文件是否存在、来源引文是否逐字对应任务书；另一次独立模型请求核对核心方法和终点覆盖。失败自动有限次修订，不能通过则保留具名原因并停止。
+3. 阶段 10 必须调用 OpenCode。该部署不再根据词频复杂度决定是否调用，也不在外部 agent 失败后静默退回提示词生成。
+4. OpenCode 可读写实验文件、操作终端，通过工作区的 `.rc_validate.py` 调用真实 Docker 兄弟沙箱。实验入口以 `RC_VALIDATION=1` 缩小数据量，但必须保留方法、基线和指标。`method_checks.py` 包含核心公式、接口和性质的断言。
+5. 所有代码后处理完成后，独立审查请求逐项把任务书要求对应到源码与测试，引用片段必须真实存在。宿主再次执行最终版本，检查有效目标指标、失败信号、实际数据文件、方法测试。失败时把证据交回 OpenCode，有限次修复后再完整验收。
+6. 阶段 11 从已验收计划生成实际单入口任务，不再另写一套脱离执行器的多卡资源安排。
+7. 阶段 12 校验代码、任务书和计划哈希，再运行正式实验。零指标、被捕获后正常退出的错误、依赖失败都不能通过。失败直接从阶段 12 日志构建诊断，不再要求尚未产生的阶段 14 汇总。
+8. 阶段 13 继续使用 OpenCode；每个修改版本都重新做方法审查、真实试跑和正式运行。仅在有效主指标改进时提升版本，未通过候选保留失败记录，原已验收实现可继续使用。
+
+## 配置
+
+`config.rc-remote-sensing.yaml`：
+
+- `llm.thinking: enabled`、`llm.ideation_thinking: enabled`。
+- `llm.reasoning_max_tokens: 65536` 为启用推理时的调用预算下限；实际阶段可以要求更多。正文为空或截断则拒绝，已消耗用量仍计入当前运行。
+- `experiment.opencode.required: true`、`complexity_threshold: 0.0`，固定 CLI 版本 `1.18.31` 安装在控制面镜像。
+- DeepSeek 使用 `@ai-sdk/deepseek` Chat Completions 适配与 `reasoning_content` 的工具调用历史处理。不能把官方 DeepSeek 端点当作 OpenAI Responses 端点。
+- `experiment.execution_check.enabled: true`，`max_plan_repairs`、`max_code_repairs` 限制自动修订次数，`validation_timeout_sec` 控制小规模验收超时。
+- `data_roots` 指向控制面可见且已挂载的真实数据目录。未盘点到的数据不能视为已具备；下载数据必须指定公开 URL，并在沙箱实际生成文件证据。
+- 美元预算沿用 `0` 不限额；时间预算仍为每次实验 900 秒。二者不是同一个限制。
+
+通用配置的新增验收默认关闭，以兼容已有其他领域后端；本部署显式开启。启用目前要求 `docker` 或 `sandbox`。
+
+## 证据文件
+
+- `stage-09/execution_resources.json`：实测资源与可见数据清单。
+- `stage-09/execution_plan_review_N.json`、`execution_coverage_N.json`：模型原始计划、覆盖审查及具名问题。
+- `stage-09/execution_contract.json`：来源、计划、实测资源绑定。
+- `stage-10/opencode_beast_*/`：agent 工作区和调试文件。
+- `stage-10/method_acceptance.json`：逐项方法实现与测试证据。
+- `stage-10/experiment/.rc-validation/`：真实执行输出、方法测试结果、数据文件大小和 SHA-256。
+- `stage-10/execution_acceptance.json`：最终代码、任务书和计划哈希。验收之后修改文件会阻止正式执行。
+- `stage-13/candidate-*/`：优化候选及各自验收；`refinement_log.json` 记录真实运行和是否提升。
+
+`data_manifest.json` 为实验实际输出的列表，每条包含计划中的 `id`、项目内相对文件 `path`；下载数据还包含 `source_url`。宿主对本次沙箱的文件重新检查和计算哈希，不相信模型口头宣称文件已存在。
+
+## 上游核对
+
+对照官方 `aiming-lab/AutoResearchClaw` 当前 main 提交 `be4ba4755bf1b52220f25e13b2293b5956590070`（2026-08-19）：
+
+- 上游本身已有 CodeAgent、OpenCode 可选路径和修复循环，不需要重新发明 agent 框架。
+- 上游 CodeAgent 的 `_exec_fix_loop` 仍以退出码 0 判断试跑成功；最终多轮审查之后没有强制最终版本执行。
+- 上游 `run_repair_loop` 要求阶段 14 的实验汇总，阶段 12 先崩溃时会返回 0 轮。
+- Python 默认提示词库已有硬件、时间限制；独立的 `prompts.default.yaml` 简化模板缺少这些占位符。本次同时补齐 YAML 模板，但当前故障不能归因于“模型完全没有看到资源约束”。
+- 本地原控制面镜像没有 OpenCode/Node，即使宿主机已经安装，网页执行进程仍不能调用。新版镜像复制固定版本的独立 CLI 二进制，无需运行时安装。
+
+因此本次同时修提示词、部署和程序验收。公开基准或仓库星数不能替代本题目的数据、计算资源与方法正确性验证。
+
+## 验证边界
+
+资源探测实测为 1 张 Tesla V100-PCIE-32GB，显存约 32494 MB；该数字来自本机沙箱，源码没有硬编码型号。
+
+回归测试覆盖资源越界、缺失数据、伪造源码证据、零指标正常退出、真实子进程方法断言、代码验收后修改、推理预算和截断、阶段 12 独立修复入口。真实 OpenCode 验证使用专门的工程样例，与原遥感研究项目分开保存；不能把样例成功当作遥感创新点有效。
+
+本轮相关回归 281 项通过。真实联调故意把最小二乘斜率改成 0：OpenCode 在约 53 秒内调用沙箱、修复错误并重跑；宿主独立方法审查、再次沙箱执行及数据文件验收通过，事件中有实际推理 token。初次从零生成样例虽完成运行和方法断言，但 agent 会话超时；因此额外补了整个子进程树清理与实时事件文件，并验证超时后没有运行中的遗留子进程。
+
+方法覆盖仍依赖模型审查，执行测试和哈希绑定能加强证据，但不能从一般程序中形式化证明任意科学方法正确。没有真实卫星与 GNSS 数据时，系统应明确标记合成 pilot 和待验证结论，不能假装完整研究已完成。
+
+依赖入口已启用 `pipefail`，防止 `pip install | tail` 把安装失败吞掉。控制面依赖改动需要重建并重建 dashboard 容器；Python 源码使用挂载后的 editable 安装。

@@ -446,15 +446,22 @@ def _promote_best_repair_code(run_dir: Path, run_id: str) -> bool:
 
     best_dir = None
     best_score = 0.0
-    for summary_path in sorted(
-        run_dir.glob("stage-14_repair_v*/experiment_summary.json")
-    ):
+    try:
+        current = json.loads((run_dir / "experiment_repair_result.json").read_text())
+        cycles = [entry["cycle"] for entry in current.get("cycle_history", [])
+                  if entry.get("repair_applied") and not entry.get("error")]
+    except (OSError, ValueError, KeyError):
+        return False
+    for cycle in cycles:
+        summary_path = run_dir / f"stage-14_repair_v{cycle}" / "experiment_summary.json"
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        metrics = summary.get("metrics_summary") or summary.get("metrics") or {}
-        if not metrics:
+        metrics = (summary.get("metrics_summary") or summary.get("metrics")
+                   or summary.get("best_run", {}).get("metrics") or {})
+        from researchclaw.pipeline.execution_contract import has_real_metric
+        if not has_real_metric(metrics):
             continue
         score = _summary_quality_score(summary)
         if score > best_score:
@@ -471,6 +478,10 @@ def _promote_best_repair_code(run_dir: Path, run_id: str) -> bool:
         shutil.copytree(target, backup)
     shutil.rmtree(target)
     shutil.copytree(repair_exp, target)
+    for name in ("execution_acceptance.json", "method_acceptance.json"):
+        source = best_dir / name
+        if source.is_file():
+            shutil.copy2(source, target.parent / name)
     logger.info(
         "[%s] Promoted repaired code from %s (score %.1f) to stage-10/experiment",
         run_id, best_dir, best_score,

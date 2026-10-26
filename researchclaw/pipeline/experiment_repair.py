@@ -304,6 +304,18 @@ def run_repair_loop(
     # Load initial experiment summary
     summary = _load_experiment_summary(run_dir)
     if not summary:
+        # Stage 12 may fail before Stage 14 exists. Diagnose its real run
+        # output directly; requiring a later summary makes repair unreachable.
+        runs = run_dir / "stage-12" / "runs"
+        for path in sorted(runs.glob("run-*.json"), reverse=True):
+            try:
+                raw = json.loads(path.read_text())
+                raw.setdefault("returncode", 0 if raw.get("status") == "completed" else 1)
+                summary = _build_experiment_summary_from_run(raw, {})
+                break
+            except (OSError, ValueError):
+                continue
+    if not summary:
         logger.warning("[%s] Repair loop: no experiment_summary.json found", run_id)
         return ExperimentRepairResult(
             success=False, total_cycles=0, final_mode=PaperMode.TECHNICAL_REPORT,
@@ -419,6 +431,15 @@ def run_repair_loop(
             run_id, cycle, len(fixed_code), exp_dir,
         )
 
+        if getattr(getattr(config.experiment, "execution_check", None), "enabled", False):
+            from researchclaw.pipeline.execution_contract import accept_final_code, ExecutionContractError
+            try:
+                accept_final_code(fixed_code, plan, config, run_dir, repair_dir, llm)
+            except ExecutionContractError as exc:
+                cycle_history.append(RepairCycleResult(cycle=cycle, diagnosis=diag,
+                    repair_applied=True, error=str(exc)))
+                continue
+
         # 5. Re-run experiment in sandbox
         sandbox_result = _run_experiment_in_sandbox(
             exp_dir, config, repair_dir,
@@ -522,7 +543,10 @@ def run_repair_loop(
 
 def _load_experiment_summary(run_dir: Path) -> dict | None:
     """Load the most recent experiment_summary.json."""
-    for candidate in sorted(run_dir.glob("stage-14*/experiment_summary.json"), reverse=True):
+    candidates = [run_dir / "stage-14" / "experiment_summary.json"]
+    if not (run_dir / "stage-12" / "runs").is_dir():
+        candidates += sorted(run_dir.glob("stage-14*/experiment_summary.json"), reverse=True)
+    for candidate in candidates:
         try:
             return json.loads(candidate.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -532,7 +556,7 @@ def _load_experiment_summary(run_dir: Path) -> dict | None:
 
 def _load_refinement_log(run_dir: Path) -> dict | None:
     """Load the most recent refinement_log.json."""
-    for candidate in sorted(run_dir.glob("stage-13*/refinement_log.json"), reverse=True):
+    for candidate in [run_dir / "stage-13" / "refinement_log.json"]:
         try:
             return json.loads(candidate.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -548,7 +572,7 @@ def _load_experiment_code(run_dir: Path) -> dict[str, str]:
     code: dict[str, str] = {}
 
     # Try refined code first
-    for refine_dir in sorted(run_dir.glob("stage-13*/experiment_final"), reverse=True):
+    for refine_dir in [run_dir / "stage-13" / "experiment_final"]:
         if refine_dir.is_dir():
             for py_file in sorted(refine_dir.glob("*.py")):
                 try:
@@ -567,7 +591,7 @@ def _load_experiment_code(run_dir: Path) -> dict[str, str]:
                 return code
 
     # Fall back to stage-10 experiment directory
-    for exp_dir in sorted(run_dir.glob("stage-10*/experiment"), reverse=True):
+    for exp_dir in [run_dir / "stage-10" / "experiment"]:
         if exp_dir.is_dir():
             for py_file in sorted(exp_dir.glob("*.py")):
                 try:
@@ -585,7 +609,7 @@ def _load_experiment_code(run_dir: Path) -> dict[str, str]:
                 return code
 
     # Last resort: any .py files in stage-10*
-    for stage_dir in sorted(run_dir.glob("stage-10*"), reverse=True):
+    for stage_dir in [run_dir / "stage-10"]:
         for py_file in sorted(stage_dir.glob("*.py")):
             try:
                 code[py_file.name] = py_file.read_text(encoding="utf-8")
@@ -612,7 +636,8 @@ def _collect_experiment_output(run_dir: Path) -> tuple[str, str]:
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
 
-    for stage_dir in sorted(run_dir.glob("stage-14*")):
+    # Prefer current-iteration run output, never old versioned directories.
+    for stage_dir in (run_dir / "stage-12", run_dir / "stage-13", run_dir / "stage-14"):
         runs_dir = stage_dir / "runs"
         if not runs_dir.is_dir():
             continue
@@ -652,6 +677,8 @@ def _get_repaired_code(
         result = _repair_via_opencode(repair_prompt, current_code, config, run_dir, cycle)
         if result:
             return result
+        if config.experiment.opencode.required:
+            return None
         logger.info("OpenCode repair unavailable, falling back to LLM")
 
     # LLM repair
@@ -671,13 +698,16 @@ def _repair_via_opencode(
 
         _oc_cfg = config.experiment.opencode
         bridge = OpenCodeBridge(
-            model=getattr(_oc_cfg, "model", "") or "",
+            model=getattr(_oc_cfg, "model", "") or config.llm.primary_model,
             llm_base_url=getattr(config.llm, "base_url", "") or "",
             api_key_env=getattr(config.llm, "api_key_env", "") or "",
             llm_provider=getattr(config.llm, "provider", "openai-compatible") or "openai-compatible",
             timeout_sec=getattr(_oc_cfg, "timeout_sec", 600),
             max_retries=getattr(_oc_cfg, "max_retries", 1),
             workspace_cleanup=getattr(_oc_cfg, "workspace_cleanup", True),
+            thinking=getattr(config.llm, "thinking", ""),
+            reasoning_max_tokens=getattr(config.llm, "reasoning_max_tokens", 65536),
+            experiment_config=config.experiment if getattr(getattr(config.experiment, "execution_check", None), "enabled", False) else None,
         )
         workspace = run_dir / f"_repair_opencode_v{cycle}"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -688,6 +718,7 @@ def _repair_via_opencode(
             exp_plan=repair_prompt,
             metric=getattr(config.experiment, "metric_key", "primary_metric"),
             time_budget_sec=getattr(config.experiment, "time_budget_sec", 2400),
+            initial_files=current_code,
         )
 
         if result.success and result.files:

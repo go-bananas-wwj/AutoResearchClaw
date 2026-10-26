@@ -207,6 +207,7 @@ class LlmConfig:
     # providers that support it (DeepSeek V4). Disabling keeps max_tokens for
     # actual output instead of spending it on hidden reasoning tokens.
     thinking: str = ""
+    reasoning_max_tokens: int = 65536
     timeout_sec: int = 600
     ideation_backend: str = "ideaspark"
     ideation_card_target: int = 12
@@ -500,6 +501,18 @@ class OpenCodeConfig:
     timeout_sec: int = 600  # Max seconds for opencode run
     max_retries: int = 1
     workspace_cleanup: bool = True
+    required: bool = False  # Fail instead of silently falling back to prompt-only coding.
+
+
+@dataclass(frozen=True)
+class ExecutionCheckConfig:
+    """Ground an experiment in measured resources and the confirmed method."""
+
+    enabled: bool = False
+    max_plan_repairs: int = 2
+    max_code_repairs: int = 2
+    validation_timeout_sec: int = 180
+    data_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -611,6 +624,7 @@ class ExperimentConfig:
     colab_drive: ColabDriveConfig = field(default_factory=ColabDriveConfig)
     code_agent: CodeAgentConfig = field(default_factory=CodeAgentConfig)
     opencode: OpenCodeConfig = field(default_factory=OpenCodeConfig)
+    execution_check: ExecutionCheckConfig = field(default_factory=ExecutionCheckConfig)
     benchmark_agent: BenchmarkAgentConfig = field(default_factory=BenchmarkAgentConfig)
     figure_agent: FigureAgentConfig = field(default_factory=FigureAgentConfig)
     repair: ExperimentRepairConfig = field(default_factory=ExperimentRepairConfig)
@@ -1192,6 +1206,11 @@ def validate_config(
     if not _is_blank(exp_direction) and exp_direction not in ("minimize", "maximize"):
         errors.append(f"Invalid experiment.metric_direction: {exp_direction}")
 
+    if _get_by_path(data, "experiment.opencode.required") is True and _get_by_path(data, "experiment.opencode.enabled") is False:
+        errors.append("experiment.opencode.required=true requires enabled=true")
+    if _get_by_path(data, "experiment.execution_check.enabled") is True and exp_mode not in ("docker", "sandbox"):
+        errors.append("experiment.execution_check requires docker or sandbox mode")
+
     cli_agent_provider = _get_by_path(data, "experiment.cli_agent.provider")
     if (
         not _is_blank(cli_agent_provider)
@@ -1228,6 +1247,7 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         s2_api_key=data.get("s2_api_key", ""),
         notes=data.get("notes", ""),
         thinking=str(data.get("thinking", "") or ""),
+        reasoning_max_tokens=_safe_int(data.get("reasoning_max_tokens"), 65536),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
         ideation_backend=str(data.get("ideation_backend", "ideaspark")),
         ideation_card_target=max(1, min(20, _safe_int(data.get("ideation_card_target"), 12))),
@@ -1465,6 +1485,13 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
         stat_agent=_parse_stat_agent_config(data.get("stat_agent") or {}),
         code_agent=_parse_code_agent_config(data.get("code_agent") or {}),
         opencode=_parse_opencode_config(data.get("opencode") or {}),
+        execution_check=ExecutionCheckConfig(
+            enabled=bool((data.get("execution_check") or {}).get("enabled", False)),
+            max_plan_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_plan_repairs"), 2)),
+            max_code_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_code_repairs"), 2)),
+            validation_timeout_sec=max(1, _safe_int((data.get("execution_check") or {}).get("validation_timeout_sec"), 180)),
+            data_roots=tuple((data.get("execution_check") or {}).get("data_roots") or ()),
+        ),
         benchmark_agent=_parse_benchmark_agent_config(
             data.get("benchmark_agent") or {}
         ),
@@ -1573,6 +1600,7 @@ def _parse_opencode_config(data: dict[str, Any]) -> OpenCodeConfig:
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
         max_retries=_safe_int(data.get("max_retries"), 1),
         workspace_cleanup=bool(data.get("workspace_cleanup", True)),
+        required=bool(data.get("required", False)),
     )
 
 

@@ -385,6 +385,27 @@ def _execute_code_generation(
 
     exp_plan = _read_prior_artifact(run_dir, "exp_plan.yaml") or ""
     metric = config.experiment.metric_key
+    _execution_plan = None
+    if config.experiment.execution_check.enabled:
+        from researchclaw.pipeline.execution_contract import ground_plan, ExecutionContractError
+        import yaml
+        try:
+            existing = yaml.safe_load(exp_plan) or {}
+            receipt = run_dir / "stage-09" / "execution_contract.json"
+            from researchclaw.pipeline.execution_contract import digest, confirmed_method, measure_resources, validate_plan
+            valid = False
+            if receipt.is_file():
+                saved = json.loads(receipt.read_text())
+                measured = measure_resources(config, run_dir)
+                valid = (saved.get("plan_hash") == digest(existing)
+                         and saved.get("source_hash") == digest(confirmed_method(run_dir, existing))
+                         and saved.get("resources") == measured
+                         and not validate_plan(existing, measured, confirmed_method(run_dir, existing)))
+            _execution_plan = existing if valid else ground_plan(existing, config, run_dir, llm)
+            exp_plan = yaml.safe_dump(_execution_plan, allow_unicode=True)
+        except (ExecutionContractError, ValueError, OSError) as exc:
+            return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                               artifacts=(), evidence_refs=(), error=str(exc))
     max_repair = 5  # BUG-14: Increased from 3 to give more chances for critical bugs
     files: dict[str, str] = {}
     validation_log: list[str] = []
@@ -671,7 +692,7 @@ def _execute_code_generation(
             encoding="utf-8",
         )
 
-        if _cplx.recommendation == "beast_mode":
+        if _oc_cfg.required or _cplx.recommendation == "beast_mode":
             _proceed = _oc_cfg.auto
             if not _proceed:
                 # Non-auto mode: check for HITL adapter
@@ -703,6 +724,9 @@ def _execute_code_generation(
                     timeout_sec=_oc_cfg.timeout_sec,
                     max_retries=_oc_cfg.max_retries,
                     workspace_cleanup=_oc_cfg.workspace_cleanup,
+                    thinking=config.llm.thinking,
+                    reasoning_max_tokens=config.llm.reasoning_max_tokens,
+                    experiment_config=config.experiment if config.experiment.execution_check.enabled else None,
                 )
 
                 logger.info(
@@ -747,6 +771,10 @@ def _execute_code_generation(
                         _oc_result.elapsed_sec,
                     )
                 else:
+                    if _oc_cfg.required:
+                        return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                            artifacts=("beast_mode_log.json",), evidence_refs=(),
+                            error="必需的 OpenCode 执行失败：" + (_oc_result.error or "未知错误"))
                     logger.warning(
                         "Beast mode: FAILED (%s) — falling back to CodeAgent",
                         _oc_result.error or "unknown error",
@@ -757,6 +785,10 @@ def _execute_code_generation(
                 _cplx.score,
                 _oc_cfg.complexity_threshold,
             )
+
+    if _oc_cfg.required and not _beast_mode_used:
+        return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+            artifacts=(), evidence_refs=(), error="当前配置要求 OpenCode，尚未完成必需的 agent 执行")
 
     if not _beast_mode_used and config.experiment.code_agent.enabled and llm is not None:
         # ── F-02: Advanced Code Agent path ────────────────────────────────
@@ -1644,6 +1676,42 @@ def _execute_code_generation(
         )
 
     # --- Write spec ---
+    if config.experiment.execution_check.enabled:
+        from researchclaw.pipeline.execution_contract import accept_final_code, ExecutionContractError
+        for attempt in range(config.experiment.execution_check.max_code_repairs + 1):
+            try:
+                accept_final_code(files, _execution_plan, config, run_dir, stage_dir, llm)
+                break
+            except ExecutionContractError as exc:
+                if attempt == config.experiment.execution_check.max_code_repairs:
+                    return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                        artifacts=("experiment/", "method_acceptance.json"), evidence_refs=(), error=str(exc))
+                from researchclaw.pipeline.opencode_bridge import OpenCodeBridge
+                feedback = str(exc)
+                for path in (stage_dir / "method_acceptance.json",
+                             exp_dir / ".rc-validation" / "execution.json",
+                             exp_dir / ".rc-validation" / "method_tests.json"):
+                    if path.is_file():
+                        feedback += "\n" + path.read_text()
+                agent = OpenCodeBridge(model=config.experiment.opencode.model or config.llm.primary_model,
+                    llm_base_url=config.llm.base_url, api_key_env=config.llm.api_key_env,
+                    thinking=config.llm.thinking, reasoning_max_tokens=config.llm.reasoning_max_tokens,
+                    experiment_config=config.experiment, timeout_sec=config.experiment.opencode.timeout_sec,
+                    workspace_cleanup=False, max_retries=0)
+                repaired = agent.generate(stage_dir=stage_dir, topic=config.research.topic,
+                    exp_plan=exp_plan, metric=metric, initial_files=files,
+                    extra_guidance="Repair these acceptance failures without changing the confirmed method:\n" + feedback,
+                    time_budget_sec=config.experiment.time_budget_sec)
+                if not repaired.success:
+                    return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                        artifacts=("experiment/",), evidence_refs=(), error="OpenCode 验收修复失败：" + repaired.error)
+                for name in files.keys() - repaired.files.keys():
+                    (exp_dir / name).unlink(missing_ok=True)
+                files = repaired.files
+                for name, content in files.items():
+                    (exp_dir / name).parent.mkdir(parents=True, exist_ok=True)
+                    (exp_dir / name).write_text(content)
+
     file_list = ", ".join(f"`{f}`" for f in sorted(files.keys()))
     main_validation = validate_code(files.get("main.py", ""))
     _align_status = "ALIGNED" if alignment_ok else f"MISALIGNED: {alignment_note}"

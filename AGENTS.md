@@ -67,3 +67,5 @@
 - **创新点确认与界面（2026-10-25）**：简化构思模式只展示一份候选列表和一个“创新点”书签；点击卡片查看详情，详情底部“启动科研项目”为唯一启动入口，流程图只展示进度。确认期间原地显示创建状态，错误留在弹窗内并允许重试，成功自动打开项目总览。`pipeline/start` 的幂等标识必须同时接受旧卡片 `rN-cX` 和 IdeaSpark 卡片 `rN-spark-X`；集成测试须经过真实启动接口的校验，只模拟实验执行，不能用整个 start_pipeline 替身掩盖编号不兼容。
 
 - **恢复运行与实时连接（2026-10-26）**：`_ensure_executable_entry` 必须接收当前 PromptManager，不能引用外层函数局部 `_pm`；缺入口仍经实际补全和校验，不跳过。`pipeline/start` 可用 resume_run_id + from_stage 恢复同一项目，不接受同时传新 brief/idempotency_key/题目，沿用已保存任务书的题目、指标和会议；不覆盖已有实验计划。项目状态优先当前运行，否则读取 pipeline_summary 的真实终态和失败原因，不能仅靠缺 status 的旧 checkpoint 显示 unknown。网页 WS 默认持续退避重连（最长间隔30秒）、25秒心跳，并在网络恢复/页面唤醒时重连；主动关闭须清理定时器和监听，保留 wsproto。
+
+- **推理与实验实施（2026-10-26，用户新要求覆盖此前关闭推理的部署默认值）**：遥感部署 `thinking` 与 `ideation_thinking` 均开启，`reasoning_max_tokens=65536` 为思考与正文共用预算下限，截断/空正文拒绝。控制面固定安装 OpenCode 1.18.31，`opencode.required=true` 不允许静默降级；DeepSeek 用专用 Chat Completions 适配保留工具调用所需 reasoning_content。`execution_check` 实测兄弟容器资源，阶段9/10检查数据来源和任务书方法，最终代码必须通过独立方法审查、实际沙箱运行、方法断言与数据文件哈希验收；阶段12绑定验收哈希，阶段13改码后同样验收。阶段12失败可直接进入修复，无需阶段14先产生。完整真实数据不可得时允许明确的同方法合成pilot，外部效度列为未验证，不能偷换成通用GRU或虚构数据。保持美元预算0、docker-sibling挂载翻译和wsproto。详见 `docs/EXPERIMENT_EXECUTION_CN.md`。

@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -244,8 +245,8 @@ Your task:
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
 3. main.py must be the entry point and print the primary metric as:
    {metric}: <value>
-4. Include numerical stability guards (gradient clipping, NaN detection, etc.).
-5. Use multi-seed evaluation (seeds 0, 1, 2) and report mean ± std.
+4. Preserve the EXACT scientific mechanisms and endpoints in the plan. Do not substitute a neural network, GRU, classifier, or generic training loop for filtering, marginalization, integration, or analytic algorithms.
+5. Use the seeds and validation scope in the accepted plan; report per-seed values and aggregates. Do not add unrelated methods or ablations.
 6. Each ablation/condition MUST be genuinely different — not copy-paste with a renamed variable.
 7. Implement a time guard: stop gracefully at 80% of the time budget ({time_budget_sec} seconds).
 8. Write requirements.txt listing any extra pip packages needed.
@@ -254,7 +255,9 @@ Your task:
 IMPORTANT CONSTRAINTS:
 - The code will run in an isolated Docker container with PyTorch, torchvision, and common ML packages pre-installed.
 - Do NOT use argparse or CLI arguments — hardcode all configuration.
-- All output must go to stdout (print statements).
+- Print metrics to stdout and save actual raw data, predictions and structured results required by the plan.
+- Read RC_VALIDATION from the environment for small-scale validation without changing the method.
+- Apply numerical stability checks appropriate to this algorithm. Gradient clipping is relevant only when gradient optimization is actually part of the plan.
 - Keep the experiment feasible within {time_budget_sec} seconds total.
 """
 
@@ -272,6 +275,9 @@ class OpenCodeBridge:
         timeout_sec: int = 600,
         max_retries: int = 1,
         workspace_cleanup: bool = True,
+        thinking: str = "",
+        reasoning_max_tokens: int = 65536,
+        experiment_config: Any | None = None,
     ) -> None:
         self._model = model
         self._llm_base_url = llm_base_url
@@ -280,6 +286,9 @@ class OpenCodeBridge:
         self._timeout_sec = timeout_sec
         self._max_retries = max_retries
         self._workspace_cleanup = workspace_cleanup
+        self._thinking = thinking
+        self._reasoning_max_tokens = reasoning_max_tokens
+        self._experiment_config = experiment_config
 
     # -- availability check ---------------------------------------------------
 
@@ -316,10 +325,17 @@ class OpenCodeBridge:
         pkg_hint: str,
         extra_guidance: str,
         time_budget_sec: int,
+        initial_files: dict[str, str] | None = None,
     ) -> Path:
         """Create a temporary workspace directory with context files."""
         ws = stage_dir / f"opencode_beast_{int(time.time())}_{time.monotonic_ns() % 100000}"
         ws.mkdir(parents=True, exist_ok=True)
+        for name, content in (initial_files or {}).items():
+            target = (ws / name).resolve()
+            if not target.is_relative_to(ws.resolve()) or target.suffix not in (".py", ".txt"):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
         # Write experiment plan
         (ws / "EXPERIMENT_PLAN.yaml").write_text(
@@ -347,6 +363,29 @@ class OpenCodeBridge:
         (ws / "opencode.json").write_text(
             json.dumps(opencode_cfg, indent=2), encoding="utf-8",
         )
+        if self._experiment_config is not None:
+            from researchclaw.pipeline.execution_contract import prepare_agent_tools
+            prepare_agent_tools(ws, self._experiment_config)
+            with (ws / "GUIDANCE.md").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "\n## Mandatory execution and method acceptance\n"
+                    "This control environment has no torch/GPU. Use the real sibling sandbox tool:\n"
+                    f"`{shlex.quote(sys.executable)} .rc_validate.py`\n"
+                    "The sandbox tool is already configured. Implement the experiment in this workspace first; "
+                    "do not spend turns inspecting the host repository or probing the environment again.\n"
+                    "Do NOT install torch in the control environment or merely claim a test passed.\n"
+                    "Implement method_checks.py with substantive assertions for EVERY method_requirements item.\n"
+                    "The checks must print RC_METHOD_CHECKS_OK only after all assertions pass.\n"
+                    "main.py must support RC_VALIDATION=1: reduce samples/steps, preserve ALL methods and metrics.\n"
+                    "Compute the exact configured primary metric; print namespaced per-condition metrics.\n"
+                    "No missing-data substitution: synthetic validation must be explicit in the plan and results.\n"
+                    "Save actual datasets inside the project, and write data_manifest.json as a list of "
+                    "{id: execution.datasets id, path: relative non-empty data file, source_url: URL for downloads}. "
+                    "The host hashes and verifies these actual sandbox files; include synthetic datasets too.\n"
+                    "Read .rc-validation/execution.json and method_tests.json and repair errors with this tool.\n"
+                    "After EVERY edit, re-run the tool; finish only with the final files passing.\n"
+                    "If blocked, report the exact unresolved issue; never replace the confirmed mechanism.\n"
+                )
 
         # OpenCode requires a git repository — initialise one with
         # a single commit so that ``opencode run`` doesn't hang.
@@ -395,6 +434,21 @@ class OpenCodeBridge:
             "$schema": "https://opencode.ai/config.json",
         }
 
+        if self._is_deepseek():
+            model = self._model.split("/")[-1]
+            cfg.update(model=f"deepseek/{model}", small_model=f"deepseek/{model}",
+                permission={"*": "allow"}, provider={"deepseek": {
+                    "npm": "@ai-sdk/deepseek",
+                    "options": {"baseURL": self._llm_base_url,
+                                "apiKey": f"{{env:{self._api_key_env}}}"},
+                    "models": {model: {"name": model, "tool_call": True,
+                        "reasoning": self._thinking == "enabled",
+                        "interleaved": {"field": "reasoning_content"},
+                        "limit": {"context": 1000000, "output": self._reasoning_max_tokens},
+                        "options": {"thinking": {"type": self._thinking or "enabled"},
+                                    "reasoningEffort": "high"}}}}})
+            return cfg
+
         if self._llm_base_url:
             if self._model:
                 cfg["model"] = (
@@ -432,6 +486,10 @@ class OpenCodeBridge:
 
         return cfg
 
+    def _is_deepseek(self) -> bool:
+        from urllib.parse import urlsplit
+        return urlsplit(self._llm_base_url).hostname == "api.deepseek.com"
+
     # -- model resolution -------------------------------------------------------
 
     def _resolve_opencode_model(self) -> str:
@@ -447,6 +505,8 @@ class OpenCodeBridge:
         """
         if not self._model:
             return "anthropic/claude-sonnet-4-6"
+        if self._is_deepseek():
+            return "deepseek/" + self._model.split("/")[-1]
         if "/" in self._model:
             return self._model
         return f"openai/{self._model}"
@@ -476,6 +536,23 @@ class OpenCodeBridge:
 
         t0 = time.monotonic()
         try:
+            if self._experiment_config is not None:
+                # Persist events while the agent runs. PTY wrappers can create
+                # a child session, so timeout must terminate the whole tree.
+                event_path = workspace / ".rc_agent_events.jsonl"
+                with event_path.open("w", encoding="utf-8") as events:
+                    process = subprocess.Popen(cmd, cwd=str(workspace), stdout=events,
+                        stderr=subprocess.STDOUT, env=env, start_new_session=True)
+                    try:
+                        returncode = process.wait(timeout=self._timeout_sec)
+                    except subprocess.TimeoutExpired:
+                        self._stop_process_tree(process)
+                        log = event_path.read_text(errors="replace")
+                        self._record_usage(log)
+                        return False, f"TIMEOUT after {time.monotonic()-t0:.1f}s\n" + log, time.monotonic()-t0
+                log = event_path.read_text(errors="replace")
+                self._record_usage(log)
+                return returncode == 0, log, time.monotonic() - t0
             result = subprocess.run(
                 cmd,
                 cwd=str(workspace),
@@ -488,6 +565,7 @@ class OpenCodeBridge:
             )
             elapsed = time.monotonic() - t0
             log = result.stdout + "\n" + result.stderr
+            self._record_usage(log)
             return result.returncode == 0, log, elapsed
         except subprocess.TimeoutExpired as exc:
             elapsed = time.monotonic() - t0
@@ -500,6 +578,62 @@ class OpenCodeBridge:
         except Exception as exc:  # noqa: BLE001
             elapsed = time.monotonic() - t0
             return False, f"Unexpected error: {exc}", elapsed
+
+    @staticmethod
+    def _stop_process_tree(process: Any) -> None:
+        descendants = []
+        if sys.platform.startswith("linux"):
+            parents = {}
+            for path in Path("/proc").iterdir():
+                if not path.name.isdigit():
+                    continue
+                try:
+                    stat = (path / "stat").read_text().rsplit(")", 1)[1].split()
+                    parents[int(path.name)] = int(stat[1])
+                except (OSError, ValueError, IndexError):
+                    continue
+            queue = [process.pid]
+            for parent in queue:
+                children = [pid for pid, ppid in parents.items() if ppid == parent]
+                descendants.extend(children)
+                queue.extend(children)
+        for pid in reversed(descendants):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        for pid in reversed(descendants):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def _record_usage(self, log: str) -> None:
+        """Keep actual external-agent token usage in this run's cost context."""
+        from researchclaw.cost_tracker import get_global_tracker
+        from researchclaw.llm.client import LLMResponse
+        for line in log.splitlines():
+            line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "step_finish":
+                continue
+            tokens = event.get("part", {}).get("tokens", {})
+            if not isinstance(tokens, dict):
+                continue
+            cache = tokens.get("cache", {})
+            inputs = int(tokens.get("input", 0)) + int(cache.get("read", 0)) + int(cache.get("write", 0))
+            outputs = int(tokens.get("output", 0)) + int(tokens.get("reasoning", 0))
+            get_global_tracker().record(LLMResponse(content="", model=self._model.split("/")[-1],
+                prompt_tokens=inputs, completion_tokens=outputs, total_tokens=inputs + outputs), [])
 
     @staticmethod
     def _build_opencode_command(
@@ -679,6 +813,7 @@ class OpenCodeBridge:
         pkg_hint: str = "",
         extra_guidance: str = "",
         time_budget_sec: int = 300,
+        initial_files: dict[str, str] | None = None,
     ) -> OpenCodeResult:
         """Run OpenCode to generate experiment code.
 
@@ -705,6 +840,7 @@ class OpenCodeBridge:
                     pkg_hint=pkg_hint,
                     extra_guidance=extra_guidance,
                     time_budget_sec=time_budget_sec,
+                    initial_files=initial_files,
                 )
             except OSError as exc:
                 last_error = f"Failed to prepare workspace: {exc}"
@@ -718,6 +854,12 @@ class OpenCodeBridge:
             ).replace(
                 "{time_budget_sec}", str(time_budget_sec)
             )
+            if self._experiment_config is not None:
+                prompt += (
+                    "\nRead the Mandatory execution and method acceptance section of GUIDANCE.md. "
+                    "Use .rc_validate.py to run in the real configured sandbox, and fix ALL failures. "
+                    "Do not rewrite the confirmed method to a generic model."
+                )
 
             logger.info(
                 "Beast mode: invoking OpenCode (attempt %d/%d, timeout=%ds)",

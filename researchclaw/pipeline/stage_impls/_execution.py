@@ -105,6 +105,18 @@ def _execute_resource_planning(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     exp_plan = _read_prior_artifact(run_dir, "exp_plan.yaml") or ""
+    if config.experiment.execution_check.enabled:
+        import yaml
+        plan = yaml.safe_load(exp_plan) or {}
+        execution = plan.get("execution", {})
+        schedule = {"tasks": [{"id": "sandbox-main", "name": "Execute accepted experiment plan",
+            "depends_on": [], "gpu_count": execution.get("gpu_count", 0),
+            "estimated_minutes": execution.get("estimated_runtime_sec", 0) / 60}],
+            "execution": execution, "generated": _utcnow_iso(),
+            "_meta": {"source": "accepted_execution_contract", "unit": "main.py owns condition/seed loop"}}
+        (stage_dir / "schedule.json").write_text(json.dumps(schedule, ensure_ascii=False, indent=2))
+        return StageResult(stage=Stage.RESOURCE_PLANNING, status=StageStatus.DONE,
+                           artifacts=("schedule.json",), evidence_refs=("stage-11/schedule.json",))
     schedule: dict[str, Any] | None = None
     schedule_source = "template"
     if llm is not None:
@@ -388,6 +400,13 @@ def _execute_experiment_run(
     # ── End ColliderAgent mode ──────────────────────────────────────────
 
     if mode in ("sandbox", "docker"):
+        if config.experiment.execution_check.enabled:
+            from researchclaw.pipeline.execution_contract import verify_accepted_code, ExecutionContractError
+            try:
+                verify_accepted_code(Path(exp_dir_path), run_dir)
+            except (ExecutionContractError, OSError, ValueError, TypeError) as exc:
+                return StageResult(stage=Stage.EXPERIMENT_RUN, status=StageStatus.FAILED,
+                                   artifacts=(), evidence_refs=(), error=str(exc))
         # P7: Auto-install missing dependencies before subprocess sandbox
         if mode == "sandbox":
             _all_code = code_text
@@ -409,6 +428,17 @@ def _execute_experiment_run(
             result = sandbox.run(
                 code_text, timeout_sec=config.experiment.time_budget_sec
             )
+        if config.experiment.execution_check.enabled:
+            from researchclaw.pipeline.execution_contract import read_sandbox_metrics, execution_failure
+            result = read_sandbox_metrics(sandbox, result, mode)
+            failure = execution_failure(result, config.experiment.metric_key)
+            if failure:
+                (runs_dir / "run-1.json").write_text(json.dumps({"status": "failed",
+                    "metrics": result.metrics, "returncode": result.returncode,
+                    "stdout": result.stdout, "stderr": result.stderr,
+                    "elapsed_sec": result.elapsed_sec, "timed_out": result.timed_out}, ensure_ascii=False))
+                return StageResult(stage=Stage.EXPERIMENT_RUN, status=StageStatus.FAILED,
+                    artifacts=("runs/",), evidence_refs=("stage-12/runs/",), error=failure)
         # Try to read structured results.json from sandbox working dir
         structured_results: dict[str, Any] | None = None
         sandbox_project = runs_dir / "sandbox" / "_project"
@@ -679,6 +709,17 @@ def _execute_iterative_refine(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     from researchclaw.experiment.factory import create_sandbox
+
+    if config.experiment.execution_check.enabled and config.experiment.opencode.required:
+        from researchclaw.pipeline.execution_contract import refine_with_opencode, ExecutionContractError
+        try:
+            refine_with_opencode(stage_dir, run_dir, config, llm)
+        except (ExecutionContractError, OSError, ValueError) as exc:
+            return StageResult(stage=Stage.ITERATIVE_REFINE, status=StageStatus.FAILED,
+                               artifacts=(), evidence_refs=(), error=str(exc))
+        return StageResult(stage=Stage.ITERATIVE_REFINE, status=StageStatus.DONE,
+            artifacts=("refinement_log.json", "experiment_final/"),
+            evidence_refs=("stage-13/refinement_log.json", "stage-13/experiment_final/"))
 
     def _to_float(value: Any) -> float | None:
         try:
