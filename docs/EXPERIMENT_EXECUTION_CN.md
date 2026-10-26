@@ -18,7 +18,7 @@
 `config.rc-remote-sensing.yaml`：
 
 - `llm.thinking: enabled`、`llm.ideation_thinking: enabled`。
-- `llm.reasoning_max_tokens: 65536` 为启用推理时的调用预算下限；实际阶段可以要求更多。正文为空或截断则拒绝，已消耗用量仍计入当前运行。
+- 普通模型调用不设置输出下限，严格传递调用方设置的 token 上限，不因开启推理而自动抬高。`llm.reasoning_max_tokens: 65536` 仅保留为 OpenCode 的输出容量上限。正文为空或截断则拒绝，已消耗用量仍计入当前运行。
 - `experiment.opencode.required: true`、`complexity_threshold: 0.0`，固定 CLI 版本 `1.18.31` 安装在控制面镜像。
 - DeepSeek 使用 `@ai-sdk/deepseek` Chat Completions 适配与 `reasoning_content` 的工具调用历史处理。不能把官方 DeepSeek 端点当作 OpenAI Responses 端点。
 - `experiment.execution_check.enabled: true`，`max_plan_repairs`、`max_code_repairs` 限制自动修订次数，`validation_timeout_sec` 控制小规模验收超时。
@@ -63,3 +63,15 @@
 方法覆盖仍依赖模型审查，执行测试和哈希绑定能加强证据，但不能从一般程序中形式化证明任意科学方法正确。没有真实卫星与 GNSS 数据时，系统应明确标记合成 pilot 和待验证结论，不能假装完整研究已完成。
 
 依赖入口已启用 `pipefail`，防止 `pip install | tail` 把安装失败吞掉。控制面依赖改动需要重建并重建 dashboard 容器；Python 源码使用挂载后的 editable 安装。
+
+## 项目实时运行记录（2026-10-26 后续更新）
+
+项目的总览和交互页均显示“智能体运行”：当前模型、正在执行的步骤、读写文件、命令、公开进展、实验输出、检查失败与修复原因。内容来自实际运行事件，折叠详情可展开；两秒增量获取，切换项目不串记录，刷新页面可回放。公开模型答复和工具记录会展示，内部推理块和认证信息会过滤。
+
+`agent_activity.jsonl` 保存项目活动，`GET /api/runs/{id}/activity?after=游标` 增量读取；原始 OpenCode 事件仍保存在工作区 `.rc_agent_events.jsonl`。Docker 实验执行时同步保存 stdout/stderr 并转发小段日志，测试和正式实验都能看进度。
+
+恢复原项目使用 `resume_run_id` 和 `from_stage`。恢复点及之后的旧阶段目录归档到 `recovery_history/`，任务书、题目、主指标和运行编号保留；未完成的计划可以按同一任务书哈希和实测资源继续修订。阶段是否完成依据状态文件，不能仅看目录存在。项目直达链接支持 `#project/<run_id>/overview` 和 `/interact`。
+
+真实重试发现原规划 16k 上限不足，因此复杂规划任务单独使用 32k 上限、方法覆盖复核使用 16k 上限；这不构成输出下限，也不改变其他调用的上限。失败阶段直接报告失败或进入修复，不把失败产物交给人批准；成功后的人工门控保持原有语义。
+
+本次后续验证：324 项相关回归通过；实际浏览器检查了总览/交互的事件展示、展开详情在轮询中保持、刷新恢复项目与 Tab、事件不重复、390px 手机布局无横向溢出，页面 JavaScript 无异常。原遥感项目沿用 `rc-20261025-145941-c30e99`，从阶段10恢复，科研是否完成以真实运行状态和检查结果为准。

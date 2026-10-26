@@ -207,7 +207,7 @@ class LlmConfig:
     # providers that support it (DeepSeek V4). Disabling keeps max_tokens for
     # actual output instead of spending it on hidden reasoning tokens.
     thinking: str = ""
-    reasoning_max_tokens: int = 65536
+    reasoning_max_tokens: int = 65536  # OpenCode output capacity only; never a floor for API calls.
     timeout_sec: int = 600
     ideation_backend: str = "ideaspark"
     ideation_card_target: int = 12

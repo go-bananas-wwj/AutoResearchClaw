@@ -535,7 +535,11 @@ def _repair_and_retry_experiment_run(
     return result
 
 
+from researchclaw.pipeline.activity import observed_run, emit as emit_activity
+
+
 @tracked_run
+@observed_run
 def execute_pipeline(
     *,
     run_dir: Path,
@@ -604,6 +608,9 @@ def execute_pipeline(
         stage_num = int(stage)
         prefix = f"[{run_id}] Stage {stage_num:02d}/{total_stages}"
         print(f"{prefix} {stage.name} — running...")
+        emit_activity("stage", f"开始阶段 {stage_num}：{stage.name}", status="running",
+                      phase="pipeline", stage=stage_num)
+        _write_heartbeat(run_dir, stage, run_id)
 
         # ── Event log: stage start ──
         if event_log:
@@ -645,6 +652,8 @@ def execute_pipeline(
             auto_approve_gates=auto_approve_gates,
         )
         elapsed = _time.monotonic() - t0
+        emit_activity("stage", f"阶段 {stage_num}：{result.status.value}", result.error or "",
+                      status=result.status.value, phase="pipeline", stage=stage_num)
 
         # ── Event log: stage end ──
         if event_log:

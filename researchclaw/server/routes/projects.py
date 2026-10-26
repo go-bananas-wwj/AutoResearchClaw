@@ -54,6 +54,8 @@ def _project_info(d: Path) -> dict[str, Any]:
             summary = json.loads(summary_file.read_text())
             if summary.get('final_status'):
                 proj['status'] = summary['final_status']
+            if proj['status'] in ('failed', 'blocked', 'paused'):
+                proj['current_stage'] = summary.get('final_stage', proj.get('current_stage'))
             failed = d / f"stage-{int(summary.get('final_stage', 0)):02d}" / 'decision.json'
             if failed.is_file() and proj['status'] == 'failed':
                 proj['reason'] = json.loads(failed.read_text()).get('error', '')
@@ -63,6 +65,13 @@ def _project_info(d: Path) -> dict[str, Any]:
     if _active_run and _active_run.get('run_id') == d.name:
         proj['status'] = _active_run['status']
         proj['reason'] = _active_run.get('reason') or _active_run.get('error', '')
+        if proj['status'] in ('running', 'stopping'):
+            try:
+                heartbeat = json.loads((d / 'heartbeat.json').read_text())
+                proj['current_stage'] = heartbeat['last_stage']
+                proj['stage_name'] = heartbeat.get('last_stage_name', '')
+            except (OSError, ValueError, KeyError):
+                proj['current_stage'] = (proj.get('current_stage') or 0) + 1
 
     proj["topic"] = _read_topic(d)
 

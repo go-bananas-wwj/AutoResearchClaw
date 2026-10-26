@@ -85,6 +85,39 @@ def _get_app_state() -> dict[str, Any]:
     return _app_state
 
 
+def _archive_resume_outputs(run_dir: Path, from_stage: Any) -> Path:
+    """Preserve previous evidence while isolating the next execution attempt."""
+    import shutil
+    from datetime import datetime, timezone
+    history = run_dir / "recovery_history" / datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    history.mkdir(parents=True)
+    for path in list(run_dir.iterdir()):
+        match = _re.match(r"^stage-(\d{2})(?:$|_)", path.name)
+        if match and int(match[1]) >= int(from_stage):
+            shutil.move(str(path), history / path.name)
+    for name in ("checkpoint.json", "pipeline_summary.json", "heartbeat.json", "experiment_repair_result.json"):
+        path = run_dir / name
+        if path.is_file():
+            shutil.copy2(path, history / name)
+            if name != "checkpoint.json":
+                path.unlink()
+    for name in ("deliverables", "experiment_summary_best.json", "experiment_diagnosis.json", "repair_prompt.txt"):
+        path = run_dir / name
+        if path.exists():
+            shutil.move(str(path), history / name)
+    plan = run_dir / "stage-09" / "exp_plan.yaml"
+    if plan.is_file():
+        shutil.copy2(plan, history / "exp_plan_before_resume.yaml")
+    if (run_dir / "hitl").is_dir():
+        shutil.move(str(run_dir / "hitl"), history / "hitl")
+    from researchclaw.pipeline.stages import Stage
+    previous = max(0, int(from_stage) - 1)
+    (run_dir / "checkpoint.json").write_text(json.dumps({"run_id": run_dir.name,
+        "last_completed_stage": previous, "last_completed_name": Stage(previous).name if previous else "",
+        "status": "running", "timestamp": datetime.now(timezone.utc).isoformat()}))
+    return history
+
+
 @router.post("/pipeline/start", response_model=PipelineStartResponse)
 async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
     """Start a new pipeline run."""
@@ -198,8 +231,13 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         run_dir = _validated_run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         if resume_dir is not None:
+            archived = _archive_resume_outputs(run_dir, forced_from_stage)
             with (run_dir / 'resume_history.jsonl').open('a') as history:
-                history.write(json.dumps({'at':datetime.now(timezone.utc).isoformat(), 'from_stage':forced_from_stage.name})+'\n')
+                history.write(json.dumps({'at':datetime.now(timezone.utc).isoformat(), 'from_stage':forced_from_stage.name,
+                                          'archived':str(archived.relative_to(run_dir))})+'\n')
+            from researchclaw.pipeline.activity import emit
+            emit("run", "正在恢复原项目", f"从阶段 {int(forced_from_stage)} 继续，原产物已保留在历史记录中。",
+                 run_dir=run_dir, status="running", phase="pipeline")
         if req.idempotency_key:
             (run_dir / "ideation_origin.json").write_text(json.dumps({"key": req.idempotency_key}))
         cancel_event = threading.Event()
@@ -391,7 +429,22 @@ async def get_run(run_id: str) -> dict[str, Any]:
     stage_dirs = sorted(
         [d.name for d in run_dir.iterdir() if d.is_dir() and d.name.startswith("stage-")]
     )
-    info["stages_completed"] = stage_dirs
+    statuses = {}
+    for name in stage_dirs:
+        if not _re.fullmatch(r"stage-\d{2}", name):
+            continue
+        for filename in ("stage_health.json", "decision.json"):
+            try:
+                status = json.loads((run_dir / name / filename).read_text()).get("status")
+                if status:
+                    statuses[name] = status
+                    break
+            except (OSError, ValueError):
+                continue
+    info["stage_statuses"] = statuses
+    info["stages_completed"] = [name for name, status in statuses.items() if status == "done"]
+    from researchclaw.server.routes.projects import _project_info
+    info["project"] = _project_info(run_dir)
 
     # Check for paper
     for pattern in ["paper.md", "paper.tex", "paper.pdf"]:
@@ -400,6 +453,18 @@ async def get_run(run_id: str) -> dict[str, Any]:
             info[f"has_{pattern.split('.')[1]}"] = True
 
     return info
+
+
+@router.get("/runs/{run_id}/activity")
+def run_activity(run_id: str, after: int = 0, limit: int = 100) -> dict[str, Any]:
+    root = _validated_run_dir(run_id)
+    if not root.is_dir():
+        raise HTTPException(404, detail="项目不存在")
+    if after < 0 or not 1 <= limit <= 100:
+        raise HTTPException(400, detail="无效的活动记录游标或条数")
+    from researchclaw.pipeline.activity import read_activity
+    from researchclaw.server.routes.projects import _project_info
+    return {"run_id": run_id, **read_activity(root, after, limit), "project": _project_info(root)}
 
 
 @router.get("/runs/{run_id}/metrics")

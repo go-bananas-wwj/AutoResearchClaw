@@ -308,15 +308,15 @@ class DockerSandbox:
         timed_out = False
         try:
             logger.debug("Docker run command: %s", cmd)
-            completed = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_sec,
-                check=False,
-            )
+            from researchclaw.pipeline.activity import run_from_path, run_with_output
+            activity_root = run_from_path(staging_dir)
+            if activity_root is not None:
+                completed = run_with_output(cmd, staging_dir, activity_root, timeout_sec, entry_point)
+            else:
+                completed = subprocess.run(
+                    cmd, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=timeout_sec, check=False,
+                )
             stdout = completed.stdout
             stderr = completed.stderr
             returncode = completed.returncode

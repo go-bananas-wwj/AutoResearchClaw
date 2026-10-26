@@ -118,12 +118,12 @@ def test_code_or_confirmed_method_change_invalidates_acceptance(tmp_path):
         verify_accepted_code(exp, tmp_path)
 
 
-def test_thinking_mode_reserves_tokens_and_rejects_incomplete_output():
+def test_thinking_mode_preserves_requested_budget_and_rejects_incomplete_output():
     client = LLMClient(LLMConfig(base_url="https://api.deepseek.com/v1", api_key="test",
         primary_model="deepseek-flash", fallback_models=[], thinking="enabled"))
     with patch.object(client, "_call_with_retry", return_value=LLMResponse(content="ok", model="deepseek-flash")) as request:
         client.chat(messages=[{"role": "user", "content": "x"}], max_tokens=1024)
-        assert request.call_args.args[2] >= 65536
+        assert request.call_args.args[2] == 1024
     with patch.object(client, "_call_with_retry", return_value=LLMResponse(content="partial", model="deepseek-flash", truncated=True)):
         with pytest.raises(RuntimeError, match="截断"):
             client.chat(messages=[{"role": "user", "content": "x"}])

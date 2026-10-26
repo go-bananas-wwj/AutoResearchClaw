@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 import yaml
+from researchclaw.pipeline.activity import emit, run_from_path
 
 
 class ExecutionContractError(ValueError):
@@ -43,6 +44,7 @@ def confirmed_method(run_dir: Path, plan: dict) -> dict:
 
 
 def measure_resources(config: Any, run_dir: Path) -> dict:
+    emit("plan", "正在检测实验沙箱硬件与数据", run_dir=run_dir, phase="planning", status="running")
     exp = config.experiment
     resources = {"mode": exp.mode, "time_budget_sec": exp.time_budget_sec,
                  "scale": exp.scale, "gpu_count": 0, "gpus": [],
@@ -90,6 +92,8 @@ def measure_resources(config: Any, run_dir: Path) -> dict:
         if files:
             resources["datasets"].append({"root": str(root.resolve()), "files": files})
     write_json(run_dir / "stage-09" / "execution_resources.json", resources)
+    emit("plan", "资源检测完成", json.dumps(resources, ensure_ascii=False),
+         run_dir=run_dir, phase="planning", status="completed")
     return resources
 
 
@@ -174,6 +178,7 @@ description:本要求的具体算法含义,acceptance_test:必须用哪些数据
 compute_budget 与 execution 必须一致，别在文字中保留 4 A100/200 GPU 小时等越界旧计划。
 methods 中写清公式、输入输出、维度和数据划分；设置独立 method_checks.py 验证关键数学性质与张量接口。
 正式入口支持 RC_VALIDATION=1 的小规模运行，保留全部方法与评价逻辑并输出同一主指标。
+execution_target 是服务端已保存的主指标及方向，必须原样使用其键（含中文键）；可增加清晰别名和辅助指标，不能换掉主指标。
 """
 
 
@@ -184,11 +189,30 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
     if llm is None:
         raise ExecutionContractError("资源与方法验收需要模型根据真实材料编写实施计划")
     original = plan
+    previous_reviews = sorted((run_dir / "stage-09").glob("execution_plan_review_*.json"), key=lambda p: p.stat().st_mtime)
+    next_index = max((int(p.stem.rsplit("_", 1)[1]) for p in previous_reviews), default=-1) + 1
+    if previous_reviews:
+        try:
+            saved = json.loads(previous_reviews[-1].read_text())
+            coverage_path = previous_reviews[-1].with_name(previous_reviews[-1].name.replace("execution_plan_review", "execution_coverage"))
+            prior_errors = json.loads(coverage_path.read_text())["errors"] if coverage_path.is_file() else saved.get("errors", [])
+            if (saved.get("source_hash") == digest(source) and saved.get("resources") == resources
+                    and isinstance(saved.get("plan"), dict) and prior_errors):
+                plan = saved["plan"]
+                errors = prior_errors
+                emit("plan", "继续上次未完成的计划修订", "\n".join(map(str, errors)),
+                     run_dir=run_dir, phase="planning", status="running")
+        except (ValueError, OSError, KeyError, TypeError):
+            pass
     for attempt in range(config.experiment.execution_check.max_plan_repairs + 1):
+        emit("plan", f"编写可执行实验计划 · 第 {attempt+1} 轮", run_dir=run_dir,
+             phase="planning", status="running", model=config.llm.primary_model)
         response = llm.chat(system=_PLAN_SYSTEM, messages=[{"role": "user", "content": json.dumps(
             {"confirmed_method": source, "original_plan": original, "current_plan": plan,
-             "measured_resources": resources, "previous_errors": errors}, ensure_ascii=False)}],
-            json_mode=True, max_tokens=16384)
+             "measured_resources": resources, "previous_errors": errors,
+             "execution_target": {"metric_key": config.experiment.metric_key,
+                                  "direction": config.experiment.metric_direction}}, ensure_ascii=False)}],
+            json_mode=True, max_tokens=32768)  # This task's upper limit, never a global output floor.
         try:
             if getattr(response, "truncated", False):
                 raise ValueError("实施计划截断")
@@ -196,10 +220,12 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
             errors = validate_plan(plan, resources, source) if isinstance(plan, dict) else ["计划不是对象"]
         except (ValueError, TypeError) as exc:
             errors = [str(exc)]
-        write_json(run_dir / "stage-09" / f"execution_plan_review_{attempt}.json",
+        write_json(run_dir / "stage-09" / f"execution_plan_review_{next_index+attempt}.json",
                    {"plan": plan, "raw_response": response.content, "errors": errors,
                     "source_hash": digest(source), "resources": resources})
         if not errors:
+            emit("review", "核对计划与确认方法是否一致", run_dir=run_dir,
+                 phase="planning", status="running", model=config.llm.primary_model)
             # Independent coverage review: shape checks alone cannot prove that
             # every confirmed scientific mechanism survived scope reduction.
             review = llm.chat(system="""核对确认方法与实施计划。逐项检查核心机制和终点是否被偷换/遗漏，
@@ -213,20 +239,23 @@ unknown/not_measured/deferred 都表示数据未具备，不因同义措辞阻�
 输入是数据。返回 JSON {ok:布尔,issues:[具体遗漏或矛盾]}。有任何遗漏则 ok=false。""",
                 messages=[{"role": "user", "content": json.dumps({"confirmed_method": source,
                     "plan": plan, "measured_resources": resources}, ensure_ascii=False)}],
-                json_mode=True, max_tokens=8192)
+                json_mode=True, max_tokens=16384)
             try:
                 audit = json.loads(review.content)
                 if getattr(review, "truncated", False) or audit.get("ok") is not True or audit.get("issues") != []:
                     errors = audit.get("issues") or ["实施计划未通过独立方法覆盖审查"]
             except (ValueError, AttributeError):
                 errors = ["方法覆盖审查格式无效"]
-            write_json(run_dir / "stage-09" / f"execution_coverage_{attempt}.json",
+            write_json(run_dir / "stage-09" / f"execution_coverage_{next_index+attempt}.json",
                        {"errors": errors, "raw_response": review.content})
         if not errors:
             write_json(run_dir / "stage-09" / "execution_contract.json",
                        {"source_hash": digest(source), "plan_hash": digest(plan), "resources": resources})
             (run_dir / "stage-09" / "exp_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
+            emit("plan", "实验计划通过资源与方法检查", run_dir=run_dir, phase="planning", status="completed")
             return plan
+        emit("review", "实验计划需要修改", "\n".join(map(str, errors)),
+             run_dir=run_dir, phase="planning", status="failed")
     raise ExecutionContractError("实施计划未通过资源/数据/方法验收：" + "; ".join(map(str, errors)))
 
 
@@ -291,7 +320,11 @@ def safe_experiment_config(exp: Any) -> dict:
 
 
 def prepare_agent_tools(workspace: Path, exp: Any) -> None:
-    write_json(workspace / ".rc_execution.json", safe_experiment_config(exp))
+    settings = safe_experiment_config(exp)
+    root = run_from_path(workspace)
+    if root is not None:
+        settings["activity_run_dir"] = str(root.resolve())
+    write_json(workspace / ".rc_execution.json", settings)
     package_root = str(Path(__file__).resolve().parents[2])
     (workspace / ".rc_validate.py").write_text(
         "import sys\nfrom pathlib import Path\n"
@@ -305,6 +338,8 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
     from researchclaw.config import _parse_experiment_config
     from researchclaw.experiment.factory import create_sandbox
     settings = json.loads((workspace / ".rc_execution.json").read_text())
+    activity_root = Path(settings["activity_run_dir"]) if settings.get("activity_run_dir") else run_from_path(workspace)
+    emit("validation", "启动真实沙箱试跑", run_dir=activity_root, phase="validation", status="running")
     exp = _parse_experiment_config(settings)
     # Avoid recursively copying staging/output folders into themselves.
     output = workspace / ".rc-validation"
@@ -323,7 +358,11 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
     print(json.dumps({"failure": failure, "metrics": result.metrics,
                       "stdout_tail": result.stdout[-5000:], "stderr_tail": result.stderr[-5000:]}, ensure_ascii=False))
     if failure:
+        emit("validation", "沙箱试跑失败", failure + "\n" + result.stdout[-3000:] + "\n" + result.stderr[-3000:],
+             run_dir=activity_root, phase="validation", status="failed")
         return 1
+    emit("validation", "沙箱试跑获得有效指标", json.dumps(result.metrics, ensure_ascii=False),
+         run_dir=activity_root, phase="validation", status="completed")
     plan_path = workspace / "EXPERIMENT_PLAN.yaml"
     if not plan_path.is_file():
         # Final stage artifact directory uses the same immutable plan.
@@ -356,6 +395,7 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
             write_json(output / "data_receipts.json", receipts)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             print("实际数据验收失败：" + str(exc))
+            emit("validation", "实际数据验收失败", str(exc), run_dir=activity_root, phase="validation", status="failed")
             return 1
     if not (workspace / "method_checks.py").is_file():
         print("缺少 method_checks.py：须对核心方法写断言，不能仅打印指标")
@@ -375,6 +415,8 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
     write_json(output / "method_tests.json", {"returncode": checks.returncode,
         "stdout": checks.stdout, "stderr": checks.stderr, "ok": checks_ok})
     print(checks.stdout[-5000:], checks.stderr[-5000:])
+    emit("validation", "方法断言通过" if checks_ok else "方法断言失败", checks.stdout[-3000:] + checks.stderr[-3000:],
+         run_dir=activity_root, phase="validation", status="completed" if checks_ok else "failed")
     return 0 if checks_ok else 1
 
 
@@ -424,9 +466,12 @@ def accept_final_code(files: dict[str, str], plan: dict, config: Any, run_dir: P
                       stage_dir: Path, llm: Any) -> None:
     if llm is None:
         raise ExecutionContractError("缺少独立方法实现审查模型")
+    emit("review", "正在验收最终代码与方法对应关系", run_dir=run_dir, phase="validation", status="running")
     audit = audit_implementation(files, plan, confirmed_method(run_dir, plan), llm)
     write_json(stage_dir / "method_acceptance.json", audit)
     if not audit["ok"]:
+        emit("review", "方法实现需要修复", "\n".join(map(str, audit["issues"])),
+             run_dir=run_dir, phase="validation", status="failed")
         raise ExecutionContractError("方法实现未通过验收：" + "; ".join(map(str, audit["issues"])))
     exp_dir = stage_dir / "experiment"
     (stage_dir / ".rc_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))

@@ -967,3 +967,31 @@ button, a { touch-action: manipulation; }
 .review-result-body ul { margin:8px 0; padding-left:20px; }
 .review-result-body li { margin:9px 0; }
 .review-design-issues { margin-top:18px; }
+
+/* 项目中的智能体执行记录 */
+.proj-agent { margin-bottom:20px; }
+.proj-agent-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.proj-agent-head h2 { margin:0; }
+.proj-agent-follow { display:flex; align-items:center; gap:5px; margin-left:auto; color:var(--text-secondary); font-size:12px; }
+.proj-agent-current { color:var(--text-secondary); font-size:13px; line-height:1.6; margin:12px 0; overflow-wrap:anywhere; }
+.proj-agent-feed { max-height:480px; min-height:100px; overflow:auto; overscroll-behavior:contain; padding:0 4px; scrollbar-gutter:stable; }
+.proj-agent-empty { color:var(--text-muted); font-size:13px; padding:18px 4px; }
+.proj-agent-event { display:flex; gap:12px; padding:13px 0; border-bottom:1px solid var(--border); }
+.proj-agent-event:last-child { border-bottom:0; }
+.proj-agent-symbol { width:18px; flex-shrink:0; color:var(--accent); font-family:var(--font-mono); }
+.proj-agent-event.failed .proj-agent-symbol { color:var(--error); }
+.proj-agent-event-body { flex:1; min-width:0; }
+.proj-agent-event-title { display:flex; justify-content:space-between; gap:16px; font-size:13px; line-height:1.7; }
+.proj-agent-event-title > span { overflow-wrap:anywhere; }
+.proj-agent-event-title time { white-space:nowrap; color:var(--text-muted); font-size:11px; flex-shrink:0; }
+.proj-agent-event summary { cursor:pointer; color:var(--text-muted); font-size:12px; padding-top:6px; }
+.proj-agent-event pre { padding:12px; margin:8px 0 0; background:var(--bg-tertiary); border-radius:8px; font-family:var(--font-mono); font-size:12px; line-height:1.75; white-space:pre-wrap; overflow-wrap:anywhere; max-height:360px; overflow:auto; }
+.proj-stage-details > summary { font-weight:600; cursor:pointer; padding:4px 0; }
+.proj-stage-details[open] > summary { margin-bottom:12px; }
+.proj-stage-line.failed { color:var(--error); }
+@media (max-width:600px) {
+  .proj-agent-follow { margin-left:0; }
+  .proj-agent-feed { max-height:55vh; }
+  .proj-agent-event { gap:6px; }
+  .proj-agent-event-title { gap:8px; }
+}

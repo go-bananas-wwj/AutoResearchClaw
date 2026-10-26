@@ -540,18 +540,33 @@ class OpenCodeBridge:
                 # Persist events while the agent runs. PTY wrappers can create
                 # a child session, so timeout must terminate the whole tree.
                 event_path = workspace / ".rc_agent_events.jsonl"
+                from researchclaw.pipeline.activity import emit, run_from_path, consume_events
+                activity_root = run_from_path(workspace)
+                emit("agent", "OpenCode 开始实施", status="running", phase="implementation",
+                     model=self._model, run_dir=activity_root)
+                event_offset = 0
                 with event_path.open("w", encoding="utf-8") as events:
                     process = subprocess.Popen(cmd, cwd=str(workspace), stdout=events,
                         stderr=subprocess.STDOUT, env=env, start_new_session=True)
-                    try:
-                        returncode = process.wait(timeout=self._timeout_sec)
-                    except subprocess.TimeoutExpired:
-                        self._stop_process_tree(process)
-                        log = event_path.read_text(errors="replace")
-                        self._record_usage(log)
-                        return False, f"TIMEOUT after {time.monotonic()-t0:.1f}s\n" + log, time.monotonic()-t0
+                    while True:
+                        event_offset = consume_events(event_path, event_offset, workspace, self._model)
+                        if time.monotonic() - t0 >= self._timeout_sec:
+                            self._stop_process_tree(process)
+                            consume_events(event_path, event_offset, workspace, self._model)
+                            log = event_path.read_text(errors="replace")
+                            self._record_usage(log)
+                            emit("error", "OpenCode 执行超时", status="failed", phase="implementation", run_dir=activity_root)
+                            return False, f"TIMEOUT after {time.monotonic()-t0:.1f}s\n" + log, time.monotonic()-t0
+                        try:
+                            returncode = process.wait(timeout=min(1, max(0.01, self._timeout_sec - (time.monotonic()-t0))))
+                            consume_events(event_path, event_offset, workspace, self._model)
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
                 log = event_path.read_text(errors="replace")
                 self._record_usage(log)
+                emit("agent", "OpenCode 本轮执行结束", status="completed" if returncode == 0 else "failed",
+                     phase="implementation", model=self._model, run_dir=activity_root)
                 return returncode == 0, log, time.monotonic() - t0
             result = subprocess.run(
                 cmd,

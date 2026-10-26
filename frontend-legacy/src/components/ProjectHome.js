@@ -46,6 +46,13 @@ const ProjectHome = {
   _runTimer: null,
   _onChatResp: null,
   _onChatErr: null,
+  _activityTimer: null,
+  _activityEvents: [],
+  _activityCursor: 0,
+  _activityOpen: {},
+  _activityBusy: false,
+  _activityEpoch: 0,
+  _activityFollow: true,
 
   // 历史版本目录（收进折叠区）：stage-XX_vN / stage-XX_repair_vN / archived_* / *_vN
   _histDirRe: /(?:^archived_|_v\d+$)/,
@@ -92,6 +99,8 @@ const ProjectHome = {
   },
 
   destroy() {
+    this._activityEpoch++;
+    this._activityBusy = false;
     this._clearTimers();
     this._detachChat();
   },
@@ -121,6 +130,9 @@ const ProjectHome = {
     this._filesList = null;
     this._expandedDirs = {};
     this._artsKey = '';
+    this._activityEvents = [];
+    this._activityCursor = 0;
+    this._activityOpen = {};
   },
 
   _startTimers() {
@@ -128,11 +140,14 @@ const ProjectHome = {
     if (!this.runId) return;
     this._waitingTimer = setInterval(() => this._refreshWaiting(), 5000);
     this._runTimer = setInterval(() => this._refreshRun(), 15000);
+    this._activityTimer = setInterval(() => this._refreshActivity(), 2000);
+    this._refreshActivity();
   },
 
   _clearTimers() {
     if (this._waitingTimer) { clearInterval(this._waitingTimer); this._waitingTimer = null; }
     if (this._runTimer) { clearInterval(this._runTimer); this._runTimer = null; }
+    if (this._activityTimer) { clearInterval(this._activityTimer); this._activityTimer = null; }
   },
 
   /* ================= 头部 / Tab 栏 ================= */
@@ -183,6 +198,7 @@ const ProjectHome = {
     if (!['overview', 'interact', 'manage'].includes(tab) || tab === this.tab) return;
     this.tab = tab;
     if (window.App) App.currentTab = tab;
+    if (this.runId) history.replaceState(null, '', '#project/' + this.runId + '/' + tab);
     const tabsEl = document.getElementById('proj-tabs');
     if (tabsEl) tabsEl.innerHTML = this._tabsHtml();
     this._renderBody();
@@ -201,7 +217,8 @@ const ProjectHome = {
     if (!body) return;
     body.innerHTML = `
       <div id="proj-banner-slot">${this._bannerHtml()}</div>
-      <div class="card"><h2>Stages</h2><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></div>
+      ${this._activityHtml()}
+      <details class="card proj-stage-details"><summary>${this._esc(I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
       <div class="proj-ov-grid">
         <div class="card"><h2>Key Metrics</h2><div id="proj-metrics"><p style="color:var(--text-muted)">Loading...</p></div></div>
         <div class="card"><h2>Paper</h2><div id="proj-paper-card"><p style="color:var(--text-muted)">Loading...</p></div></div>
@@ -209,6 +226,86 @@ const ProjectHome = {
     this._loadStages();
     this._loadMetrics();
     this._loadPaperCard();
+    this._renderActivityFeed();
+    this._refreshActivity();
+  },
+
+  _activityHtml() {
+    return `<section class="card proj-agent" aria-label="${this._esc(I18N.t('Agent activity'))}">
+      <div class="proj-agent-head"><h2>${this._esc(I18N.t('Agent activity'))}</h2>
+        <span id="proj-agent-status" class="proj-badge"></span>
+        <label class="proj-agent-follow"><input type="checkbox" ${this._activityFollow ? 'checked' : ''}
+          onchange="ProjectHome._activityFollow=this.checked"> ${this._esc(I18N.t('Follow latest'))}</label>
+        <button type="button" class="proj-btn" onclick="ProjectHome._refreshActivity()">${this._esc(I18N.t('Refresh'))}</button></div>
+      <p class="proj-agent-current" id="proj-agent-current"></p>
+      <div class="proj-agent-feed" id="proj-agent-feed" role="log" aria-label="${this._esc(I18N.t('Agent activity'))}"></div>
+    </section>`;
+  },
+
+  async _refreshActivity() {
+    if (!this.runId || this._activityBusy || !document.getElementById('proj-agent-feed')) return;
+    const runId = this.runId, epoch = this._activityEpoch;
+    this._activityBusy = true;
+    try {
+      const data = await API.runActivity(runId, this._activityCursor);
+      if (this.runId !== runId || epoch !== this._activityEpoch) return;
+      if (data.reset) this._activityEvents = [];
+      const known = new Set(this._activityEvents.map(e => e.id));
+      const incoming = (data.events || []).filter(e => !known.has(e.id));
+      this._activityEvents = [...this._activityEvents, ...incoming].slice(-160);
+      this._activityCursor = data.cursor || 0;
+      if (data.project) this.project = data.project;
+      this._updateHead();
+      const feed = document.getElementById('proj-agent-feed');
+      if (feed && (incoming.length || data.reset || !feed.childElementCount)) this._renderActivityFeed();
+      this._updateActivityStatus();
+      if (data.more) setTimeout(() => {
+        if (this.runId === runId && this._activityEpoch === epoch) this._refreshActivity();
+      }, 50);
+    } catch (e) {
+      if (epoch !== this._activityEpoch) return;
+      const status = document.getElementById('proj-agent-current');
+      if (status) status.textContent = I18N.t('Activity connection interrupted; retrying.');
+    } finally {
+      if (epoch === this._activityEpoch) this._activityBusy = false;
+    }
+  },
+
+  _updateActivityStatus() {
+    const badge = document.getElementById('proj-agent-status');
+    const current = document.getElementById('proj-agent-current');
+    if (!badge || !current) return;
+    const project = this.project || {};
+    const waiting = project.waiting || this._gate;
+    const status = waiting ? 'waiting' : project.status || 'idle';
+    badge.className = 'proj-badge ' + (status === 'running' ? 'running' : waiting ? 'waiting' : '');
+    badge.textContent = I18N.t(waiting ? 'Waiting' : status);
+    const last = this._activityEvents[this._activityEvents.length - 1];
+    const model = [...this._activityEvents].reverse().find(e => e.model);
+    current.textContent = [model && model.model, last && last.title,
+      last && this._ago(Date.parse(last.timestamp))].filter(Boolean).join(' · ');
+  },
+
+  _renderActivityFeed() {
+    const feed = document.getElementById('proj-agent-feed');
+    if (!feed) return;
+    const scroll = feed.scrollTop;
+    const atBottom = feed.scrollHeight - feed.clientHeight - scroll < 60;
+    const symbols = {tool: '↳', model: '◌', review: '◇', validation: '✓', error: '!', stage: '●', run: '●', plan: '◇', agent: '◆', message: '›', step: '·'};
+    feed.innerHTML = this._activityEvents.length ? this._activityEvents.map(e => {
+      const failed = ['failed', 'error'].includes(e.status) || e.kind === 'error';
+      const time = new Date(e.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
+      const detail = e.detail ? `<details ${this._activityOpen[e.id] ? 'open' : ''}
+        ontoggle="ProjectHome._activityOpen[${Number(e.id)}]=this.open"><summary>${this._esc(I18N.t('Details'))}</summary>
+        <pre>${this._esc(e.detail)}</pre></details>` : '';
+      return `<article class="proj-agent-event${failed ? ' failed' : ''}" data-event-id="${Number(e.id)}" data-no-i18n>
+        <span class="proj-agent-symbol" aria-hidden="true">${symbols[e.kind] || '·'}</span>
+        <div class="proj-agent-event-body"><div class="proj-agent-event-title"><span>${this._esc(e.title)}</span>
+          <time datetime="${this._esc(e.timestamp)}">${this._esc(time)}</time></div>${detail}</div></article>`;
+    }).join('') : `<p class="proj-agent-empty">${this._esc(I18N.t('No agent activity yet.'))}</p>`;
+    if (this._activityFollow && (atBottom || scroll === 0)) feed.scrollTop = feed.scrollHeight;
+    else feed.scrollTop = scroll;
+    this._updateActivityStatus();
   },
 
   _bannerHtml() {
@@ -238,7 +335,8 @@ const ProjectHome = {
       this._run = await API.getRun(this.runId);
     } catch (e) { return; }
     // 同步 App.projects 里的项目信息（轮询可能还没刷新到）
-    if (window.App && App.projects) {
+    if (this._run.project) this.project = this._run.project;
+    else if (window.App && App.projects) {
       const p = App.projects.find(x => x.id === this.runId);
       if (p) this.project = p;
     }
@@ -267,16 +365,17 @@ const ProjectHome = {
     }
     if (!document.getElementById('proj-stages')) return;
     const dirs = new Set((this._run && this._run.stages_completed) || []);
+    const statuses = (this._run && this._run.stage_statuses) || {};
     const ckpt = (this._run && this._run.checkpoint) || {};
     const lastDone = ckpt.last_completed_stage || 0;
     const status = (this.project && this.project.status) || ckpt.status || '';
     const curStage = this._gate ? this._gate.stage
-      : (status === 'running' ? lastDone + 1 : 0);
+      : (status === 'running' ? (this.project.current_stage || lastDone + 1) : 0);
     const nn = n => String(n).padStart(2, '0');
     el.innerHTML = this._stagesMeta.map(s => {
       const done = dirs.has(`stage-${nn(s.number)}`);
       const cur = !done && s.number === curStage;
-      const cls = done ? 'done' : cur ? 'cur' : 'todo';
+      const cls = cur ? 'cur' : statuses[`stage-${nn(s.number)}`] === 'failed' ? 'failed' : done ? 'done' : 'todo';
       return `<div class="proj-stage-line ${cls}"><span class="dot"></span><span class="num">${s.number}.</span> <span>${this._esc(s.label || s.name)}</span>${s.phase ? `<span class="phase">${this._esc(s.phase)}</span>` : ''}</div>`;
     }).join('') || '<p style="color:var(--text-muted)">Loading...</p>';
   },
@@ -354,6 +453,7 @@ const ProjectHome = {
     if (!body) return;
     body.innerHTML = `
       <div id="proj-gate-slot">${this.runId ? this._gateHtml() : ''}</div>
+      ${this.runId ? this._activityHtml() : ''}
       <div class="proj-chat" id="proj-chat-messages"></div>
       <div class="proj-chat-input">
         <input id="proj-chat-input" type="text" autocomplete="off"
@@ -378,6 +478,8 @@ const ProjectHome = {
     });
 
     if (this.runId) {
+      this._renderActivityFeed();
+      this._refreshActivity();
       this._renderGateSlot();
       this._updatePaper();
       this._paperFetchVersions();

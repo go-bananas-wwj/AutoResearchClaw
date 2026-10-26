@@ -24,7 +24,7 @@ llm:
   base_url: "https://api.deepseek.com/v1"   # DeepSeek 官方端点
   api_key_env: "DEEPSEEK_API_KEY"
   thinking: "enabled"
-  reasoning_max_tokens: 65536  # 思考与正文共享预算，不能沿用短输出阶段的 1024/4096
+  reasoning_max_tokens: 65536  # 仅为 OpenCode 可用输出上限；普通调用遵守各阶段上限，不设下限
   timeout_sec: 1200
   ideation_backend: "ideaspark"  # 官方执行器；其他科研阶段保持原有配置
   ideation_card_target: 12       # 每个独立运行产生一个方案，批量汇总

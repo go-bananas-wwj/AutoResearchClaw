@@ -265,6 +265,10 @@ def _run_hitl_post_stage(
     session = _get_hitl_session(adapters)
     if session is None:
         return result
+    if result.status == StageStatus.FAILED:
+        # A failed stage has no deliverable to approve; let the runner report
+        # the failure or enter its repair loop instead of blocking on approval.
+        return result
 
     # --- CostGuard: check budget thresholds ---
     stage_num = int(stage)

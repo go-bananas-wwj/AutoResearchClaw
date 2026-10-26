@@ -98,7 +98,7 @@
     },
 
     openProject(runId) {
-      history.replaceState(null, '', location.pathname + location.search);
+      history.replaceState(null, '', '#project/' + runId + '/' + this.currentTab);
       this.view = 'home';
       this.newMode = false;
       this.currentProject = runId;   // currentTab 保留（跨项目记住用户所在 tab）
@@ -274,6 +274,8 @@
   document.addEventListener('DOMContentLoaded', async () => {
     const intakeMatch = location.hash.match(/^#ideation\/(is-[a-f0-9]{20})$/);
     if (intakeMatch) { App.view = 'ideation'; App.currentIdeation = intakeMatch[1]; }
+    const projectMatch = location.hash.match(/^#project\/(rc-\d{8}-\d{6}-[a-f0-9]+)(?:\/(overview|interact|manage))?$/);
+    if (projectMatch) { App.view = 'home'; App.currentProject = projectMatch[1]; App.currentTab = projectMatch[2] || 'overview'; }
     document.getElementById('btn-new-research').addEventListener('click', () => App.startNewResearch());
     document.getElementById('nav-settings').addEventListener('click', (e) => {
       e.preventDefault();

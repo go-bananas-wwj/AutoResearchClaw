@@ -95,7 +95,7 @@ class LLMConfig:
     fallback_api_key: str = ""
     # "" | "enabled" | "disabled" — reasoning-model control (DeepSeek V4 etc.)
     thinking: str = ""
-    reasoning_max_tokens: int = 65536
+    reasoning_max_tokens: int = 65536  # Compatibility field; chat() never raises a requested token limit.
 
 
 class LLMClient:
@@ -285,20 +285,21 @@ class LLMClient:
 
         models = [model] if model else self._model_chain
         max_tok = max_tokens or self.config.max_tokens
-        if self.config.thinking == "enabled":
-            max_tok = max(max_tok, self.config.reasoning_max_tokens)
         temp = temperature if temperature is not None else self.config.temperature
 
         last_error: Exception | None = None
 
         for m in models:
             try:
+                from researchclaw.pipeline.activity import emit
+                emit("model", "正在请求模型", status="running", model=m, phase="model")
                 resp = self._call_with_retry(m, messages, max_tok, temp, json_mode,
                     **({'on_content':on_content,'on_reset':on_reset} if on_content else {}))
                 from researchclaw.cost_tracker import get_global_tracker
                 get_global_tracker().record(resp, messages)
+                emit("model", "模型响应已返回", status="completed", model=resp.model, phase="model")
                 if self.config.thinking == "enabled" and (resp.truncated or not resp.content.strip()):
-                    raise ValueError("推理模型返回截断或空正文；未接受不完整产物，请扩大 reasoning_max_tokens")
+                    raise ValueError("推理模型返回截断或空正文；未接受不完整产物，请检查该阶段的输出上限")
                 if strip_thinking:
                     from researchclaw.utils.thinking_tags import strip_thinking_tags
 
@@ -316,6 +317,9 @@ class LLMClient:
             except LLMStreamAborted:
                 raise
             except Exception as exc:  # noqa: BLE001
+                from researchclaw.pipeline.activity import emit
+                emit("error", "模型调用未完成，准备检查或切换模型", str(exc),
+                     status="failed", model=m, phase="model")
                 logger.warning("Model %s failed: %s. Trying next.", m, exc)
                 last_error = exc
 
@@ -521,8 +525,7 @@ class LLMClient:
 
                 # Use correct token parameter based on model
                 if any(model.startswith(prefix) for prefix in _NEW_PARAM_MODELS):
-                    reasoning_min = 32768
-                    body["max_completion_tokens"] = max(max_tokens, reasoning_min)
+                    body["max_completion_tokens"] = max_tokens
                 else:
                     body["max_tokens"] = max_tokens
 
