@@ -305,7 +305,9 @@ class CodeAgent:
             )
             self._log_event("  Injected domain context into blueprint prompt")
 
-        resp = self._chat(sp.system, sp.user, max_tokens=8192)
+        # Local reasoning-model adaptation: this is a complete implementation
+        # plan, not a short classifier response. Keep its own explicit cap.
+        resp = self._chat(sp.system, sp.user, max_tokens=32768)
 
         # Extract YAML block from response
         arch_spec = resp.content
@@ -1495,6 +1497,9 @@ class CodeAgent:
         """Log to both Python logger and the internal validation log."""
         logger.info("[CodeAgent] %s", msg)
         self._log.append(msg)
+        from researchclaw.pipeline.activity import emit, run_from_path
+        emit("implementation", "ResearchClaw 内置执行：" + msg, run_dir=run_from_path(self._stage_dir),
+             phase="implementation", status="running")
 
 
 # ---------------------------------------------------------------------------
