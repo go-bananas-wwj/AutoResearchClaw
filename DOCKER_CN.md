@@ -110,7 +110,7 @@ docker compose up -d dashboard      # 常驻，改代码/配置后 docker compos
 
 提示词参考 [IdeaSpark 调研与瓶颈诊断](https://github.com/microsoft/ResearchStudio/blob/main/ResearchStudio-Idea/skills/idea_spark/references/retrieval-runbook.md)、[Keshav 的三遍阅读方法](https://www.cl.cam.ac.uk/~ey204/teaching/ACS/R244_2025_2026/aid/keshav.pdf)及 [DeepSeek JSON 输出指南](https://api-docs.deepseek.com/guides/json_mode/)。精读重建方法、假设及验证逻辑，要求方法正文的逐字证据；缺口分析主动排查已有解决机制，构思围绕单一可证伪假设，查重识别换名、换场景及常规参数扫描。最近邻筛选使用单独短模板，不重复生成论文概览；每次调用记录模板哈希。
 
-当前主模型配置仍为官方 `deepseek-flash`，备用 `deepseek-v4-pro`，`thinking: disabled`。截至2026-10-22，[官方模型说明](https://api-docs.deepseek.com/quick_start/pricing/)将 `deepseek-flash` 映射到 DeepSeek-V4.1-Flash-1017；不要擅自将版本展示名写成 API 模型 ID。OpenAlex Key 已完成真实 PDF 下载验证，保存在未跟踪的 `.env`。
+2026-10-27 用户指定统一使用官方 `deepseek-flash`，遥感与 demo 配置均清空模型兜底链，禁止自动切换 Pro。遥感部署的 `thinking` 与 `ideation_thinking` 保持开启，复核和调研沿用 Flash。截至2026-10-22，[官方模型说明](https://api-docs.deepseek.com/quick_start/pricing/)将 `deepseek-flash` 映射到 DeepSeek-V4.1-Flash-1017；不要擅自将版本展示名写成 API 模型 ID。OpenAlex Key 已完成真实 PDF 下载验证，保存在未跟踪的 `.env`。
 
 本轮验证：387 项相关回归通过；实际原文接口返回 Geoderma LS 方法论文 PDF（HTTP 200），两条 WebSocket 均为101。DOM 模拟验证了原文补全按钮、本地原文链接及八个实际模板。47 篇相关文献的原文补全已在现有会话运行；该操作保留原版本与人工批准记录。原生浏览器视觉验收尚未完成。
 

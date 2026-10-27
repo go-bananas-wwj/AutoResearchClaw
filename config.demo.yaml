@@ -25,8 +25,7 @@ llm:
   api_key_env: "DEEPSEEK_API_KEY"
   thinking: "disabled"   # 关推理，避免 max_tokens 被思考过程吃光
   primary_model: "deepseek-flash"     # 规划/写作主链（DeepSeek-V4.1-Flash，1M ctx，便宜档，2026-10 换用）
-  fallback_models:
-    - "deepseek-v4-pro"                          # 摘要/压缩等便宜档
+  fallback_models: []           # 用户指定：所有阶段只用 Flash，不切换 Pro 或其他模型
 
 literature_search:
   sources: ["openalex", "semantic_scholar", "arxiv"]
