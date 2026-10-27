@@ -314,6 +314,12 @@ class CodeAgent:
             user += ("\nReturn the complete blueprint as one JSON object with the same files schema, "
                      "instead of YAML. No Markdown fences. Quote all pseudocode as JSON strings. "
                      "Keep all confirmed method requirements and generation_order/dependencies.\n")
+        if self._exp_config is not None and getattr(getattr(self._exp_config, "execution_check", None), "enabled", False):
+            user += ("\nInclude method_checks.py as a separate file after the method modules. "
+                     "It must assert every method_requirements acceptance_test against the actual "
+                     "implementation and print RC_METHOD_CHECKS_OK only after all assertions pass. "
+                     "main.py must materialize the planned datasets and write data_manifest.json "
+                     "with their exact IDs and relative paths. These are required execution artifacts.\n")
         resp = self._chat(sp.system, user, max_tokens=32768, json_mode=json_blueprint)
         # Persist completed blueprint output before later code generation can fail.
         (self._stage_dir / "architecture_response.txt").write_text(resp.content, encoding="utf-8")
@@ -383,6 +389,18 @@ class CodeAgent:
         values before parsing.
         """
         import yaml
+
+        # Some reasoning endpoints append a closing presentation tag even to
+        # an otherwise complete JSON object. Accept only that known wrapper,
+        # never an additional object or conflicting free-form instructions.
+        try:
+            data, end = json.JSONDecoder().raw_decode(yaml_text.lstrip())
+            remainder = yaml_text.lstrip()[end:].strip()
+            if (isinstance(data, dict) and "files" in data
+                    and (not remainder or re.fullmatch(r"</method>\s*", remainder))):
+                return data
+        except ValueError:
+            pass
 
         # Pre-process: sanitize values that contain Python type annotations,
         # unclosed quotes, or other patterns that break YAML parsing.

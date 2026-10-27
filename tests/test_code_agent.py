@@ -116,6 +116,12 @@ class TestCodeAgentConfig:
 
 
 class TestPhase1Architecture:
+    def test_blueprint_allows_only_known_json_closing_wrapper(self, stage_dir: Path, pm: PromptManager):
+        agent = CodeAgent(llm=FakeLLM(), prompts=pm, config=CodeAgentConfig(), stage_dir=stage_dir)
+        value = {'files':[{'name':'method.py','generation_order':1}, {'name':'main.py','generation_order':2}]}
+        assert agent._parse_blueprint(json.dumps(value)+'\n</method>') == value
+        assert agent._parse_blueprint(json.dumps(value)+'\n{"files": []}') is None
+
     def test_per_file_generation_preserves_requirements_at_end_of_plan(
         self, stage_dir: Path, pm: PromptManager,
     ) -> None:
