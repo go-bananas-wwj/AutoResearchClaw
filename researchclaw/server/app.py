@@ -126,7 +126,11 @@ def create_app(
         try:
             while True:
                 # Keep connection alive; client can send pings
-                await websocket.receive_text()
+                raw = await websocket.receive_text()
+                from researchclaw.server.websocket.heartbeat import is_heartbeat
+                if is_heartbeat(raw):
+                    from researchclaw.server.websocket.events import Event, EventType
+                    await event_manager.send_to(client_id, Event(type=EventType.HEARTBEAT, data={"status": "pong"}))
         except WebSocketDisconnect:
             event_manager.disconnect(client_id)
 

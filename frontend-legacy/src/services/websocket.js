@@ -36,7 +36,7 @@ class RCWebSocket {
       this._reconnects = 0;
       clearInterval(this._heartbeatTimer);
       if (this.heartbeatInterval > 0) this._heartbeatTimer = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) socket.send('ping');
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type: 'ping'}));
       }, this.heartbeatInterval);
       this._emit('open', {});
     };
@@ -44,6 +44,10 @@ class RCWebSocket {
     this.ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data);
+        if (data.type === 'heartbeat') {
+          this._emit('heartbeat', data.data, data.timestamp);
+          return;
+        }
         this._emit(data.type, data.data, data.timestamp);
         this._emit('message', data);
       } catch (e) {

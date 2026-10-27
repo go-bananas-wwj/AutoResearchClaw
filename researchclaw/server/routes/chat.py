@@ -9,6 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from researchclaw.server.websocket.events import Event, EventType
 from researchclaw.server.websocket.manager import ConnectionManager
+from researchclaw.server.websocket.heartbeat import is_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
+            if is_heartbeat(raw):
+                await manager.send_to(client_id, Event(type=EventType.HEARTBEAT, data={"status": "pong"}))
+                continue
             try:
                 from researchclaw.server.dialog.router import route_message
 

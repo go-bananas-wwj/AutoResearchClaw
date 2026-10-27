@@ -57,6 +57,7 @@ class CodeAgentConfig:
     # Phase 2: Sequential file generation (generate files one-by-one
     # following dependency order from blueprint, with CodeMem summaries)
     sequential_generation: bool = True
+    file_max_tokens: int = 8192
 
     # Phase 2.5: Hard validation gates (AST-based)
     hard_validation: bool = True
@@ -550,10 +551,10 @@ class CodeAgent:
                 dependency_summaries=dep_summaries,
                 dependency_code=dep_code,
                 topic=topic,
-                exp_plan=exp_plan[:4000],  # Truncate to avoid token overflow
+                exp_plan=exp_plan,  # Preserve the confirmed method/data requirements at the end too.
                 pkg_hint=pkg_hint,
             )
-            resp = self._chat(sp.system, sp.user, max_tokens=8192)
+            resp = self._chat(sp.system, sp.user, max_tokens=self._cfg.file_max_tokens)
 
             # Extract code from response
             code = self._extract_single_file_code(resp.content, file_name)
@@ -562,6 +563,12 @@ class CodeAgent:
                 continue
 
             generated_files[file_name] = code
+            draft_root = (self._stage_dir / "native_draft").resolve()
+            draft_path = (draft_root / file_name).resolve()
+            if not draft_path.is_relative_to(draft_root):
+                raise ValueError("Unsafe blueprint filename")
+            draft_path.parent.mkdir(parents=True, exist_ok=True)
+            draft_path.write_text(code, encoding="utf-8")
 
             # Build CodeMem summary via AST
             code_memory[file_name] = self._build_code_summary(

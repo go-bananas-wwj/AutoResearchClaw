@@ -116,6 +116,18 @@ class TestCodeAgentConfig:
 
 
 class TestPhase1Architecture:
+    def test_per_file_generation_preserves_requirements_at_end_of_plan(
+        self, stage_dir: Path, pm: PromptManager,
+    ) -> None:
+        llm = FakeLLM(responses=['```python\ndef estimate(): return 2\n```',
+                                 '```python\nfrom method import estimate\nprint(estimate())\n```'])
+        agent = CodeAgent(llm=llm, prompts=pm, config=CodeAgentConfig(), stage_dir=stage_dir)
+        plan = 'context ' * 1000 + '\nM12: preserve failure-time distribution and data manifest IDs'
+        agent._phase2_sequential_generate('topic', plan, 'crps', '', '', {'files': [
+            {'name':'method.py', 'generation_order':1, 'dependencies':[]},
+            {'name':'main.py', 'generation_order':2, 'dependencies':['method.py']}]})
+        assert all('M12: preserve failure-time distribution' in call['messages'][0]['content'] for call in llm.calls)
+
     def test_deepseek_blueprint_uses_structured_json_and_persists_completed_output(
         self, stage_dir: Path, pm: PromptManager,
     ) -> None:

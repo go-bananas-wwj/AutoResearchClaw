@@ -46,6 +46,8 @@ experiment:
   scale: "pilot"               # 规模诚实标签：smoke(≤5min)/pilot(分钟-小时)/full(全尺寸)，论文强制声明
   time_budget_sec: 900         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
   max_iterations: 10
+  code_agent:
+    file_max_tokens: 32768      # 复杂方法单文件的输出上限；不改变其他请求，不设全局下限
   opencode:
     enabled: false             # 本地适配：先使用 ResearchClaw 内置 CodeAgent 跑通
     required: false
