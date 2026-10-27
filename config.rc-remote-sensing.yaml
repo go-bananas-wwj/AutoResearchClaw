@@ -47,8 +47,8 @@ experiment:
   time_budget_sec: 900         # 遥感训练档：15 分钟/实验起步（默认 300s 是玩具设定）
   max_iterations: 10
   opencode:
-    enabled: true
-    required: true             # 必须由现成 agent 操作工具，失败不得静默降级
+    enabled: false             # 本地适配：先使用 ResearchClaw 内置 CodeAgent 跑通
+    required: false
     auto: true
     complexity_threshold: 0.0  # 每个实验均交给 OpenCode
     timeout_sec: 1800
@@ -85,6 +85,7 @@ experiment:
     max_memory_mb: 24576
   repair:
     enabled: true
+    use_opencode: false        # 验收与执行失败均由内置 LLM 修复，不启动外部 OpenCode
     max_cycles: 3
     min_completion_rate: 0.5
     min_conditions: 2

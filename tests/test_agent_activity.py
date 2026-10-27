@@ -66,6 +66,7 @@ async def test_project_activity_api_is_scoped_and_reports_running_stage(tmp_path
     root = tmp_path / "artifacts" / run_id
     (root / "stage-10").mkdir(parents=True)
     (root / "checkpoint.json").write_text(json.dumps({"last_completed_stage": 9}))
+    (root / "ideation_origin.json").write_text(json.dumps({"key": "is-fixture:1:r1-spark-1"}))
     (root / "heartbeat.json").write_text(json.dumps({"last_stage": 10, "last_stage_name": "CODE_GENERATION"}))
     emit("plan", "修订实验计划", "负对照需要修改", run_dir=root)
     monkeypatch.setattr(pipeline, "_active_run", {"run_id": run_id, "status": "running"})
@@ -78,6 +79,7 @@ async def test_project_activity_api_is_scoped_and_reports_running_stage(tmp_path
         assert response.status_code == 200
         data = response.json()
         assert data["project"]["current_stage"] == 10
+        assert data["project"]["research_entry_stage"] == 9
         assert data["events"][0]["title"] == "修订实验计划"
         replay = await client.get(f"/api/runs/{run_id}/activity?after={data['cursor']}")
         assert replay.json()["events"] == []

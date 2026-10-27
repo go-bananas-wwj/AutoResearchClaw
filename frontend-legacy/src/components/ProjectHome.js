@@ -152,12 +152,32 @@ const ProjectHome = {
 
   /* ================= 头部 / Tab 栏 ================= */
 
+  _hasConfirmedIdea() {
+    return ((this.project || {}).research_entry_stage ||
+      (this._run && this._run.project || {}).research_entry_stage) === 9;
+  },
+
+  _experimentPhases: [
+    {label: '实验设计', hint: '把创新点转为可检验假设、指标、基线和消融', stages: [9]},
+    {label: '方法实现', hint: '按现有资源实现方法，并检查代码与任务书是否一致', stages: [10, 11]},
+    {label: '实验验证', hint: '实际运行对照与消融，记录失败并修复', stages: [12, 13]},
+    {label: '结果与结论', hint: '分析结果能否支持假设，区分已验证与待验证', stages: [14, 15]},
+    {label: '论文整理', hint: '依据真实实验整理图表、论证和论文', stages: [16, 17, 18, 19, 20, 21, 22, 23]},
+  ],
+
   _headHtml() {
     const p = this.project || {};
     const ckpt = (this._run && this._run.checkpoint) || {};
     const total = (window.App && App.totalStages) || 23;
     const stage = p.current_stage || ckpt.last_completed_stage || 0;
-    const pct = Math.max(0, Math.min(100, Math.round(100 * stage / total)));
+    const ideaConfirmed = this._hasConfirmedIdea();
+    const completed = ((this._run && this._run.stages_completed) || [])
+      .filter(name => /^stage-\d+$/.test(name) && Number(name.slice(6)) >= 9).length;
+    const pct = Math.max(0, Math.min(100, Math.round(100 * (ideaConfirmed ? completed / 15 : stage / total))));
+    const phase = this._experimentPhases.find(item => item.stages.includes(stage));
+    const progressLabel = ideaConfirmed
+      ? `创新点已确认 · ${phase ? phase.label : '实验实施'} · 已完成 ${completed}/15 个执行环节`
+      : `Stage ${stage}/${total}`;
     const title = p.topic || this.runId || '';
     let status = p.status || ckpt.status || 'unknown';
     if ((status === 'unknown' || status === 'no_checkpoint') && stage >= total) status = 'completed';
@@ -175,7 +195,7 @@ const ProjectHome = {
       <div class="proj-head-sub">
         <span class="mono">${this._esc(this.runId || '')}</span>
         ${badge}
-        <span>Stage ${stage}/${total}</span>
+        <span data-no-i18n>${this._esc(progressLabel)}</span>
         <span>${updated}</span>
       </div>
       <div class="proj-pbar-lg ${barCls}"><div style="width:${pct}%"></div></div>
@@ -217,8 +237,8 @@ const ProjectHome = {
     if (!body) return;
     body.innerHTML = `
       <div id="proj-banner-slot">${this._bannerHtml()}</div>
+      <details class="card proj-stage-details" ${this._hasConfirmedIdea() ? 'open' : ''}><summary id="proj-stage-summary">${this._esc(this._hasConfirmedIdea() ? '实验实施' : I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
       ${this._activityHtml()}
-      <details class="card proj-stage-details"><summary>${this._esc(I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
       <div class="proj-ov-grid">
         <div class="card"><h2>Key Metrics</h2><div id="proj-metrics"><p style="color:var(--text-muted)">Loading...</p></div></div>
         <div class="card"><h2>Paper</h2><div id="proj-paper-card"><p style="color:var(--text-muted)">Loading...</p></div></div>
@@ -372,12 +392,27 @@ const ProjectHome = {
     const curStage = this._gate ? this._gate.stage
       : (status === 'running' ? (this.project.current_stage || lastDone + 1) : 0);
     const nn = n => String(n).padStart(2, '0');
-    el.innerHTML = this._stagesMeta.map(s => {
+    const stageHtml = this._stagesMeta.filter(s => !this._hasConfirmedIdea() || s.number >= 9).map(s => {
       const done = dirs.has(`stage-${nn(s.number)}`);
       const cur = !done && s.number === curStage;
       const cls = cur ? 'cur' : statuses[`stage-${nn(s.number)}`] === 'failed' ? 'failed' : done ? 'done' : 'todo';
       return `<div class="proj-stage-line ${cls}"><span class="dot"></span><span class="num">${s.number}.</span> <span>${this._esc(s.label || s.name)}</span>${s.phase ? `<span class="phase">${this._esc(s.phase)}</span>` : ''}</div>`;
     }).join('') || '<p style="color:var(--text-muted)">Loading...</p>';
+    if (!this._hasConfirmedIdea()) { el.innerHTML = stageHtml; return; }
+    const summary = document.getElementById('proj-stage-summary');
+    if (summary) summary.textContent = '实验实施';
+    const phases = this._experimentPhases.map((phase, i) => {
+      const done = phase.stages.every(n => dirs.has(`stage-${nn(n)}`));
+      const failed = phase.stages.some(n => statuses[`stage-${nn(n)}`] === 'failed');
+      const active = !done && phase.stages.includes(curStage);
+      const cls = failed ? 'failed' : done ? 'done' : active ? 'cur' : 'todo';
+      const state = failed ? '失败，需修复' : done ? '已完成' : active ? '进行中' : '待执行';
+      return `<div class="proj-stage-line ${cls}" data-no-i18n><span class="dot"></span>
+        <span class="num">${i + 1}.</span><span><strong>${this._esc(phase.label)}</strong> · ${state}<br>
+        <span>${this._esc(phase.hint)}</span></span></div>`;
+    }).join('');
+    el.innerHTML = `<p data-no-i18n>创新点已确认。接下来重点是把它实现为方法，并用实验检验科学主张。</p>
+      ${phases}<details><summary data-no-i18n>查看执行环节</summary>${stageHtml}</details>`;
   },
 
   async _loadMetrics() {

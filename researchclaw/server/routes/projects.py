@@ -74,6 +74,16 @@ def _project_info(d: Path) -> dict[str, Any]:
                 proj['current_stage'] = (proj.get('current_stage') or 0) + 1
 
     proj["topic"] = _read_topic(d)
+    # Confirmed ideation projects enter at experiment design; stages 1–8
+    # belong to the preceding literature/idea session, not unfinished work.
+    origin_file = d / "ideation_origin.json"
+    if origin_file.is_file():
+        try:
+            origin = json.loads(origin_file.read_text())
+            if isinstance(origin, dict) and origin.get("key"):
+                proj["research_entry_stage"] = 9
+        except (OSError, ValueError):
+            pass
 
     # 门控等待状态（读 hitl/waiting.json，项目卡片要亮"等门控"徽章）
     waiting_file = d / "hitl" / "waiting.json"

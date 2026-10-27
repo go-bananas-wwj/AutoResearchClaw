@@ -14,6 +14,7 @@ from researchclaw.llm.client import LLMClient, LLMConfig, LLMResponse
 from researchclaw.pipeline.execution_contract import (
     ExecutionContractError, audit_implementation, digest, execution_failure, has_real_metric,
     prepare_agent_tools, validate_plan, validate_workspace, verify_accepted_code,
+    repair_acceptance_code, accept_final_code,
 )
 from researchclaw.pipeline.opencode_bridge import OpenCodeBridge
 
@@ -27,6 +28,51 @@ def plan_fixture():
             "description": "实现正规方程", "acceptance_test": "无噪声恢复正确斜率"}]}
     resources = {"gpu_count": 1, "time_budget_sec": 900, "memory_limit_mb": 24576, "datasets": []}
     return plan, resources, source
+
+
+def test_disabled_opencode_repairs_via_native_llm_and_preserves_modules(tmp_path):
+    from researchclaw.prompts import PromptManager
+    from unittest.mock import Mock
+    config = SimpleNamespace(experiment=replace(ExperimentConfig(),
+        opencode=replace(ExperimentConfig().opencode, enabled=False)))
+    llm = Mock()
+    llm.chat.return_value = LLMResponse(content="```filename:main.py\nimport method\nprint('crps: 1')\n```", model="native")
+    with patch.object(OpenCodeBridge, "generate", side_effect=AssertionError("OpenCode must stay disabled")):
+        files = repair_acceptance_code({"main.py": "broken", "method.py": "slope = 2"},
+            "main entry is broken", config, llm, PromptManager(), tmp_path,
+            exp_plan="preserve the slope method", metric="crps")
+    assert files["main.py"].startswith("import method")
+    assert files["method.py"] == "slope = 2"
+    assert llm.chat.call_args.kwargs["max_tokens"] == 32768
+
+
+def test_native_acceptance_repair_without_code_fails(tmp_path):
+    from researchclaw.prompts import PromptManager
+    from unittest.mock import Mock
+    config = SimpleNamespace(experiment=replace(ExperimentConfig(),
+        opencode=replace(ExperimentConfig().opencode, enabled=False)))
+    llm = Mock()
+    llm.chat.return_value = LLMResponse(content="", model="native")
+    with pytest.raises(ExecutionContractError, match="内置模型验收修复失败"):
+        repair_acceptance_code({"main.py": "broken"}, "no entry", config, llm,
+            PromptManager(), tmp_path, exp_plan="same method", metric="crps")
+
+
+def test_refined_workspace_is_actually_validated_and_failure_is_rejected(tmp_path):
+    plan, _, source = plan_fixture()
+    workspace = tmp_path / "stage-13/experiment_v1"
+    workspace.mkdir(parents=True)
+    metadata = tmp_path / "stage-13/acceptance_v1"
+    metadata.mkdir()
+    config = SimpleNamespace(experiment=ExperimentConfig())
+    with patch("researchclaw.pipeline.execution_contract.audit_implementation", return_value={
+        "ok": True, "source_hash": digest(source)}), patch(
+        "researchclaw.pipeline.execution_contract.validate_workspace", return_value=1) as validate:
+        with pytest.raises(ExecutionContractError, match="实际执行"):
+            accept_final_code({"main.py": "pass"}, plan, config, tmp_path, metadata,
+                              object(), workspace=workspace)
+    assert validate.call_args.args[0] == workspace
+    assert not (metadata / "execution_acceptance.json").exists()
 
 
 def test_four_gpus_and_200_hours_cannot_pass_v100_plan():

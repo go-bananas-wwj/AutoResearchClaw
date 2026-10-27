@@ -1525,6 +1525,25 @@ def _execute_iterative_refine(
                     iter_record["metric"] = metric_val
                     iter_record["runtime_repaired"] = True
 
+            if config.experiment.execution_check.enabled:
+                from researchclaw.pipeline.execution_contract import accept_final_code, ExecutionContractError
+                import yaml
+                acceptance_dir = stage_dir / f"acceptance_v{iteration}"
+                acceptance_dir.mkdir(exist_ok=True)
+                plan = yaml.safe_load((run_dir / "stage-09/exp_plan.yaml").read_text())
+                try:
+                    # Runtime fixes above may change the candidate again. Only accepted
+                    # code can replace the best implementation or contribute metrics.
+                    accept_final_code(candidate_files, plan, config, run_dir,
+                                      acceptance_dir, llm, workspace=version_dir)
+                    iter_record["method_accepted"] = True
+                except ExecutionContractError as exc:
+                    iter_record["method_accepted"] = False
+                    iter_record["acceptance_error"] = str(exc)
+                    iter_record["metric"] = None
+                    metric_val = None
+                    logger.warning("Stage 13 candidate rejected: %s", exc)
+
             if metric_val is not None:
                 consecutive_no_metrics = 0
                 # R6-1: Only count toward no_improve_streak when we have real metrics

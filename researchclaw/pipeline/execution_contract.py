@@ -462,8 +462,37 @@ code_evidence:[{file,quote:逐字源码片段}],test_evidence:[{file,quote:逐�
     return audit
 
 
+def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, llm: Any,
+                           prompts: Any, stage_dir: Path, *, exp_plan: str, metric: str) -> dict[str, str]:
+    """Use the selected implementation backend for acceptance repairs as well."""
+    guidance = "Repair these acceptance failures without changing the confirmed method:\n" + feedback
+    if config.experiment.opencode.enabled:
+        from researchclaw.pipeline.opencode_bridge import OpenCodeBridge
+        agent = OpenCodeBridge(model=config.experiment.opencode.model or config.llm.primary_model,
+            llm_base_url=config.llm.base_url, api_key_env=config.llm.api_key_env,
+            thinking=config.llm.thinking, reasoning_max_tokens=config.llm.reasoning_max_tokens,
+            experiment_config=config.experiment, timeout_sec=config.experiment.opencode.timeout_sec,
+            workspace_cleanup=False, max_retries=0)
+        result = agent.generate(stage_dir=stage_dir, topic=config.research.topic,
+            exp_plan=exp_plan, metric=metric, initial_files=files, extra_guidance=guidance,
+            time_budget_sec=config.experiment.time_budget_sec)
+        if not result.success:
+            raise ExecutionContractError("OpenCode 验收修复失败：" + result.error)
+    else:
+        from researchclaw.experiment.code_agent import LlmCodeAgent
+        emit("repair", "ResearchClaw 内置模型正在修复验收问题", feedback,
+             run_dir=run_from_path(stage_dir), phase="implementation", status="running")
+        result = LlmCodeAgent(llm, prompts, config).repair(files=files,
+            issues=guidance + "\nExperiment plan:\n" + exp_plan,
+            workdir=stage_dir / "experiment")
+        if result.error or not result.files:
+            raise ExecutionContractError("内置模型验收修复失败：" + (result.error or "未返回代码"))
+    # A repair may return only the changed module. Preserve its dependencies.
+    return {**files, **result.files}
+
+
 def accept_final_code(files: dict[str, str], plan: dict, config: Any, run_dir: Path,
-                      stage_dir: Path, llm: Any) -> None:
+                      stage_dir: Path, llm: Any, *, workspace: Path | None = None) -> None:
     if llm is None:
         raise ExecutionContractError("缺少独立方法实现审查模型")
     emit("review", "正在验收最终代码与方法对应关系", run_dir=run_dir, phase="validation", status="running")
@@ -473,8 +502,8 @@ def accept_final_code(files: dict[str, str], plan: dict, config: Any, run_dir: P
         emit("review", "方法实现需要修复", "\n".join(map(str, audit["issues"])),
              run_dir=run_dir, phase="validation", status="failed")
         raise ExecutionContractError("方法实现未通过验收：" + "; ".join(map(str, audit["issues"])))
-    exp_dir = stage_dir / "experiment"
-    (stage_dir / ".rc_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
+    exp_dir = workspace if workspace is not None else stage_dir / "experiment"
+    (exp_dir.parent / ".rc_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
     prepare_agent_tools(exp_dir, config.experiment)
     timeout = config.experiment.execution_check.validation_timeout_sec
     if validate_workspace(exp_dir, timeout=timeout) != 0:

@@ -652,6 +652,19 @@ def _execute_code_generation(
 
     # --- Reproduced baseline guidance (research brief materialize 放的 baseline_repo/) ---
     extra_guidance += _baseline_repo_guidance(run_dir)
+    if config.experiment.execution_check.enabled:
+        extra_guidance += (
+            "\nEXECUTION ACCEPTANCE REQUIREMENTS:\n"
+            "- Implement every method_requirements item in the supplied plan.\n"
+            "- Provide method_checks.py with executable assertions exercising the actual "
+            "implementation for every requirement; print RC_METHOD_CHECKS_OK only after all pass.\n"
+            "- main.py must materialize each execution.datasets item and write data_manifest.json "
+            "as a list of {id, path}, with sandbox-relative nonempty data files; for downloads "
+            "include the exact source_url. Synthetic data must retain the planned mechanism.\n"
+            "- Honor RC_VALIDATION=1 for a small deterministic run using the same method, "
+            "with the configured primary metric; the full run must obey the time budget.\n"
+            "- A successful process exit without a real primary metric is a failure.\n"
+        )
 
     # --- Code generation: Beast Mode → CodeAgent → Legacy single-shot ---
     _code_agent_active = False
@@ -1686,28 +1699,19 @@ def _execute_code_generation(
                 if attempt == config.experiment.execution_check.max_code_repairs:
                     return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
                         artifacts=("experiment/", "method_acceptance.json"), evidence_refs=(), error=str(exc))
-                from researchclaw.pipeline.opencode_bridge import OpenCodeBridge
                 feedback = str(exc)
                 for path in (stage_dir / "method_acceptance.json",
                              exp_dir / ".rc-validation" / "execution.json",
                              exp_dir / ".rc-validation" / "method_tests.json"):
                     if path.is_file():
                         feedback += "\n" + path.read_text()
-                agent = OpenCodeBridge(model=config.experiment.opencode.model or config.llm.primary_model,
-                    llm_base_url=config.llm.base_url, api_key_env=config.llm.api_key_env,
-                    thinking=config.llm.thinking, reasoning_max_tokens=config.llm.reasoning_max_tokens,
-                    experiment_config=config.experiment, timeout_sec=config.experiment.opencode.timeout_sec,
-                    workspace_cleanup=False, max_retries=0)
-                repaired = agent.generate(stage_dir=stage_dir, topic=config.research.topic,
-                    exp_plan=exp_plan, metric=metric, initial_files=files,
-                    extra_guidance="Repair these acceptance failures without changing the confirmed method:\n" + feedback,
-                    time_budget_sec=config.experiment.time_budget_sec)
-                if not repaired.success:
+                from researchclaw.pipeline.execution_contract import repair_acceptance_code
+                try:
+                    files = repair_acceptance_code(files, feedback, config, llm, _pm,
+                        stage_dir, exp_plan=exp_plan, metric=metric)
+                except ExecutionContractError as repair_error:
                     return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
-                        artifacts=("experiment/",), evidence_refs=(), error="OpenCode 验收修复失败：" + repaired.error)
-                for name in files.keys() - repaired.files.keys():
-                    (exp_dir / name).unlink(missing_ok=True)
-                files = repaired.files
+                        artifacts=("experiment/",), evidence_refs=(), error=str(repair_error))
                 for name, content in files.items():
                     (exp_dir / name).parent.mkdir(parents=True, exist_ok=True)
                     (exp_dir / name).write_text(content)
