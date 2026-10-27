@@ -489,6 +489,27 @@ def research_workspace(run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, **workspace_evidence(root)}
 
 
+@router.get("/runs/{run_id}/implementation")
+def implementation_status(run_id: str) -> dict[str, Any]:
+    root = _validated_run_dir(run_id)
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    from researchclaw.server.implementation import implementation_evidence
+    from researchclaw.server.routes.projects import _project_info
+    return {"run_id": run_id, **implementation_evidence(root, _project_info(root))}
+
+
+@router.get("/runs/{run_id}/implementation/file")
+def implementation_artifact(run_id: str, path: str, sha256: str) -> dict[str, Any]:
+    from researchclaw.server.implementation import implementation_file
+    try:
+        return implementation_file(_validated_run_dir(run_id), path, sha256)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="本轮没有该实施产物") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @router.get("/runs/{run_id}/metrics")
 async def get_run_metrics(run_id: str) -> dict[str, Any]:
     """Get experiment metrics for a run."""

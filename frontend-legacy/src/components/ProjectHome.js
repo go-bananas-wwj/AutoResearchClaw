@@ -58,6 +58,10 @@ const ProjectHome = {
   _workspaceBusy: false,
   _executionPhase: null,
   _stageAutoOpened: false,
+  _implementation: null,
+  _implementationBusy: false,
+  _implementationFile: null,
+  _implementationFileToken: 0,
 
   // 历史版本目录（收进折叠区）：stage-XX_vN / stage-XX_repair_vN / archived_* / *_vN
   _histDirRe: /(?:^archived_|_v\d+$)/,
@@ -142,6 +146,9 @@ const ProjectHome = {
     this._workspace = null;
     this._executionPhase = null;
     this._stageAutoOpened = false;
+    this._implementation = null;
+    this._implementationFile = null;
+    this._implementationFileToken++;
   },
 
   _startTimers() {
@@ -246,6 +253,10 @@ const ProjectHome = {
     if (!body) return;
     body.innerHTML = `
       <div id="proj-banner-slot">${this._bannerHtml()}</div>
+      <section class="card proj-implementation" id="proj-implementation" data-no-i18n>
+        <div id="proj-impl-live"><p class="proj-empty">正在读取最新实施记录…</p></div>
+        <div id="proj-impl-body"></div><div id="proj-impl-file" hidden></div>
+      </section>
       <section class="card proj-research" id="proj-research"><p class="proj-empty">正在读取已确认的研究材料…</p></section>
       <details class="card proj-stage-details" ${this._hasConfirmedIdea() ? 'open' : ''}><summary id="proj-stage-summary">${this._esc(this._hasConfirmedIdea() ? '实验实施' : I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
       <section class="card"><div class="proj-section-head"><h2 data-no-i18n>实验与证据</h2><span class="proj-caption" data-no-i18n>仅展示本轮正式运行</span></div><div id="proj-experiments"><p class="proj-empty">正在读取实验记录…</p></div></section>
@@ -254,6 +265,10 @@ const ProjectHome = {
         <div class="card"><h2>Paper</h2><div id="proj-paper-card"><p style="color:var(--text-muted)">Loading...</p></div></div>
       </div>
       ${this._activityHtml()}`;
+    this._renderImplementation();
+    this._renderImplementationFile();
+    this._loadImplementation();
+    this._renderWorkspace();
     this._loadWorkspace();
     this._loadStages();
     this._loadMetrics();
@@ -327,7 +342,7 @@ const ProjectHome = {
     try {
       const data = await API.researchWorkspace(runId);
       if (this.runId !== runId || !document.getElementById('proj-research')) return;
-      if (JSON.stringify(data) === JSON.stringify(this._workspace)) return;
+      if (JSON.stringify(data) === JSON.stringify(this._workspace) && document.getElementById('proj-research').dataset.loaded === 'true') return;
       this._workspace = data;
       this._renderWorkspace();
     } catch (error) {
@@ -344,10 +359,137 @@ const ProjectHome = {
     return String(value);
   },
 
+  async _loadImplementation() {
+    const runId = this.runId;
+    if (!runId || this._implementationBusy === runId || !document.getElementById('proj-implementation')) return;
+    this._implementationBusy = runId;
+    try {
+      const data = await API.implementation(runId);
+      if (this.runId !== runId) return;
+      this._implementation = data;
+      this._renderImplementation();
+    } catch (error) {
+      if (this.runId !== runId) return;
+      const el = document.getElementById('proj-impl-live');
+      if (el) {
+        if (!this._implementation) el.innerHTML = `<p class="ideation-alert">实施记录读取失败：${this._esc(this._errDetail(error))}。稍后自动重试。</p>`;
+        else {
+          const status = document.getElementById('proj-impl-freshness');
+          if (status) status.textContent = '连接暂时中断，当前显示上次记录';
+        }
+      }
+    } finally { if (this._implementationBusy === runId) this._implementationBusy = false; }
+  },
+
+  _implementationLink(artifact, label, line = 0) {
+    if (!artifact) return '';
+    return `<button type="button" class="proj-evidence-link" data-impl-path="${this._esc(artifact.path)}" data-impl-hash="${this._esc(artifact.sha256)}" data-impl-line="${Number(line)}">${this._esc(label)}</button>`;
+  },
+
+  _renderImplementation() {
+    const root = document.getElementById('proj-implementation');
+    if (!root || !this._implementation) return;
+    const data = this._implementation, latest = data.latest || {}, live = data.live;
+    const methods = data.methods || [], files = data.files || [];
+    const state = data.project.waiting ? 'waiting' : data.project.status;
+    const active = ['running','stopping'].includes(state);
+    const awaitingCode = active && Number(data.project.current_stage) === 10 && (!live || ['requesting','generating'].includes(live.status));
+    const status = {failed:'已停止，需修复',blocked:'已阻塞',running:'实施中',waiting:'等待审阅',paused:'已暂停',completed:'本轮已结束'}[state] || I18N.t(state || 'unknown');
+    const target = latest.target_file || '尚无文件生成记录';
+    const accepted = methods.filter(item => item.status === 'accepted').length;
+    const drafts = files.filter(item => item.role === 'draft' || item.role === 'code');
+    const recent = [...drafts].sort((a,b) => b.updated_at-a.updated_at)[0];
+    const liveEl = document.getElementById('proj-impl-live');
+    const liveKey = JSON.stringify([latest,live,state,accepted,drafts.length,data.formal_runs,recent && recent.sha256]);
+    if (liveEl.dataset.signature !== liveKey) {
+      const follow = document.getElementById('proj-impl-stream');
+      const open = follow ? follow.open : !!(live && live.status === 'generating');
+      const preview = live && live.content && live.status !== 'saved' ? `<details id="proj-impl-stream" ${open ? 'open' : ''}><summary>${live.status === 'failed' ? '已中断的代码预览 · 未保存为完整文件' : '生成中的公开代码 · 未保存、未验收'}</summary><pre>${this._esc(live.content.slice(-12000))}</pre></details>` : '';
+      liveEl.innerHTML = `<div class="proj-section-head"><div><p class="proj-eyebrow">创新点 → 实现 → 验收</p><h2>方法实施与验收</h2></div>
+        <button type="button" class="proj-btn" onclick="ProjectHome._loadImplementation()">刷新</button></div>
+        <div class="proj-impl-latest"><span class="proj-badge ${active ? 'running' : state === 'failed' ? 'impl-failed' : ''}">${this._esc(status)}</span>
+          <strong>${this._esc(target)}</strong><span class="proj-caption">${this._esc(latest.model || '模型尚未调用')}</span></div>
+        <p class="proj-caption" id="proj-impl-freshness"></p>
+        ${latest.error && ['failed','blocked'].includes(state) ? `<p class="proj-impl-error" role="alert">${this._esc(this._trunc(latest.error.replace(/^All models failed\. Last error:\s*/, ''), 280))}</p>` : ''}
+        ${awaitingCode && (!live || !live.content) ? '<p class="proj-caption">请求处理中，尚无新的公开代码正文；下方保留最近已保存的产物。</p>' : ''}
+        <div class="proj-impl-counts"><span><strong>${accepted}/${methods.length}</strong> 项实现已验收</span><span><strong>${drafts.length}</strong> 份已保存代码</span><span><strong>${Number(data.formal_runs || 0)}</strong> 次正式实验记录</span></div>
+        ${recent ? `<div class="proj-impl-recent"><span>最近保存</span>${this._implementationLink(recent, recent.name + ' · 查看代码')}<span>${recent.lines} 行 · ${recent.role === 'draft' ? '草稿待验收' : data.acceptance.ok ? '已验收版本' : '代码待验收'}</span></div>` : ''}${preview}`;
+      liveEl.dataset.signature = liveKey;
+    }
+    const freshness = document.getElementById('proj-impl-freshness');
+    if (freshness) {
+      const age = latest.updated_at ? this._ago(Date.parse(latest.updated_at)) : '尚无记录';
+      const seconds = latest.started_at ? Math.max(0, Math.round((Date.now() - Date.parse(latest.started_at)) / 1000)) : 0;
+      freshness.textContent = `最近真实更新：${age}${awaitingCode && seconds ? ` · 当前文件已等待 ${seconds} 秒` : ''}`;
+    }
+    const body = document.getElementById('proj-impl-body');
+    const bodyKey = JSON.stringify([methods,files,data.planned_files,data.acceptance]);
+    if (body.dataset.signature !== bodyKey) {
+      const opened = new Set([...body.querySelectorAll('details[open][data-method-id]')].map(el => el.dataset.methodId));
+      const evidence = entries => entries.length ? entries.map(item => this._implementationLink(item, `${item.path.split('/').pop()}:${item.line}`, item.line)).join(' ') : '<span class="proj-caption">尚无已核对证据</span>';
+      const labels = {accepted:'实现已验收',reviewed:'源码已复核，待试跑',needs_work:'需要修复',pending:'待验收'};
+      body.innerHTML = `<div class="proj-impl-matrix"><table class="proj-research-table"><thead><tr><th>要落实的方法</th><th>对应代码与断言</th><th>实现状态</th></tr></thead><tbody>
+        ${methods.map(item => `<tr><td><span class="proj-caption">${this._esc(item.id)}</span><details class="proj-method" data-method-id="${this._esc(item.id)}" ${opened.has(item.id) ? 'open' : ''}>
+          <summary>${this._esc(this._trunc(item.source_quote || item.description, 64))}</summary><p>${this._esc(item.description)}</p><strong>要求的验收方式</strong><p>${this._esc(item.acceptance_test)}</p></details></td>
+          <td><p class="proj-caption">实现代码</p>${evidence(item.code || [])}<p class="proj-caption proj-test-label">方法断言</p>${evidence(item.tests || [])}</td>
+          <td><span class="${item.status === 'accepted' ? 'proj-impl-accepted' : ''}">${labels[item.status] || '待验收'}</span><p class="proj-caption">科学结论另需实验检验</p></td></tr>`).join('') || '<tr><td colspan="3">尚未生成方法要求，已有产物仍可在下方查看。</td></tr>'}
+        </tbody></table></div>
+        <div class="proj-section-head proj-impl-artifacts-head"><h3>本轮实现产物</h3><span class="proj-caption">保存文件不代表方法验收通过</span></div>
+        <div class="proj-impl-artifacts">${drafts.map(item => `<div>${this._implementationLink(item, item.name)}<span>${item.lines} 行 · ${item.role === 'draft' ? '代码草稿' : data.acceptance.ok ? '已验收版本' : '代码待验收'} · ${this._esc(item.sha256.slice(0,8))}</span></div>`).join('') || '<p class="proj-empty">当前轮次尚无已保存代码。</p>'}</div>
+        ${(data.planned_files || []).length ? `<details class="proj-material"><summary>蓝图中的文件与当前保存状态</summary><ul>${data.planned_files.map(item => `<li>${this._esc(item.name)} · ${item.artifact ? '已有保存件' : '尚无保存件'}${item.purpose ? `<p class="proj-caption">蓝图描述：${this._esc(item.purpose)}</p>` : ''}</li>`).join('')}</ul></details>` : ''}
+        <div class="proj-impl-sources">${(data.sources || []).map(item => this._implementationLink(item, ({blueprint:'实现蓝图',plan:'原实验计划',review:'独立方法审查',receipt:'代码验收凭证',execution:'沙箱试跑记录',tests:'方法测试记录',data:'数据文件凭证',failure:'失败详情'})[item.role] || item.name)).join(' ')}</div>
+        ${data.acceptance.error ? `<p class="proj-impl-error">验收凭证已失效：${this._esc(data.acceptance.error)}</p>` : ''}`;
+      body.dataset.signature = bodyKey;
+    }
+    root.onclick = event => {
+      const button = event.target.closest('[data-impl-path]');
+      if (button) this._openImplementationFile(button.dataset.implPath, button.dataset.implHash, Number(button.dataset.implLine));
+    };
+    const notice = document.getElementById('proj-impl-file-version');
+    if (notice && this._implementationFile) {
+      const current = files.find(item => item.path === this._implementationFile.path);
+      notice.textContent = !current ? '该产物不在当前轮次；这里保留的是先前打开的预览，不作为本轮证据。' : current.sha256 !== this._implementationFile.sha256 ? '该文件已有新版本；当前预览保留所选版本，请重新点击产物打开最新版本。' : '本轮文件 · 按内容哈希绑定版本';
+    }
+  },
+
+  async _openImplementationFile(path, hash, line = 0) {
+    const runId = this.runId, token = ++this._implementationFileToken;
+    this._implementationFile = {path,sha256:hash,line,loading:true};
+    this._renderImplementationFile();
+    try {
+      const data = await API.implementationFile(runId, path, hash);
+      if (this.runId !== runId || token !== this._implementationFileToken) return;
+      this._implementationFile = {...data,line};
+    } catch (error) {
+      if (this.runId !== runId || token !== this._implementationFileToken) return;
+      this._implementationFile = {path,sha256:hash,line,error:this._errDetail(error)};
+      this._loadImplementation();
+    }
+    this._renderImplementationFile(true);
+  },
+
+  _renderImplementationFile(scroll = false) {
+    const el = document.getElementById('proj-impl-file');
+    if (!el) return;
+    const file = this._implementationFile;
+    el.hidden = !file;
+    if (!file) return;
+    el.innerHTML = `<div class="proj-section-head"><h3>${this._esc(file.path)}</h3><button type="button" class="proj-btn" onclick="ProjectHome._implementationFile=null;ProjectHome._implementationFileToken++;ProjectHome._renderImplementationFile()">关闭预览</button></div>
+      <p class="proj-caption" id="proj-impl-file-version">所选文件版本 · ${this._esc((file.sha256 || '').slice(0,12))}</p>
+      ${file.loading ? '<p class="proj-empty">正在读取所选版本…</p>' : file.error ? `<p class="proj-impl-error" role="alert">${this._esc(file.error)}</p>` : `<p class="proj-caption">${file.redacted ? '预览已过滤凭据、推理标记或首尾空白，行号对应源文件。' : ''}${file.truncated ? '文件较长，当前仅显示正文预览。' : ''}</p>
+      <pre class="proj-code-preview">${(file.content || '').split('\n').map((text,index) => {const number = (file.line_numbers || [])[index] || index+1; return `<span class="proj-code-line${file.line === number ? ' selected' : ''}" data-code-line="${number}"><span>${number}</span><code>${this._esc(text) || ' '}</code></span>`;}).join('')}</pre>`}`;
+    if (scroll && !file.loading) {
+      const selected = el.querySelector('.proj-code-line.selected');
+      if (selected) selected.scrollIntoView({block:'center'});
+      else el.scrollIntoView({block:'nearest'});
+    }
+  },
+
   _renderWorkspace() {
     const el = document.getElementById('proj-research');
     if (!el || !this._workspace) return;
     this._workspaceEntry = this._hasConfirmedIdea();
+    el.dataset.loaded = 'true';
     const {brief = {}, plan = {}, resources = {}, acceptance = {}, target = {}} = this._workspace;
     const execution = plan.execution || {};
     const requirements = Array.isArray(plan.method_requirements) ? plan.method_requirements : [];
@@ -370,12 +512,7 @@ const ProjectHome = {
       </aside></div>
       <div class="proj-design-grid"><details class="proj-material"><summary>基线对照 · ${(plan.baselines || []).length}</summary><ul>${list(plan.baselines) || '<li>尚未设计</li>'}</ul></details>
       <details class="proj-material"><summary>消融实验 · ${(plan.ablations || []).length}</summary><ul>${list(plan.ablations) || '<li>尚未设计</li>'}</ul></details></div>
-      <details class="proj-material proj-claims"><summary>创新点如何验收 · ${requirements.length} 项</summary>
-        <div class="proj-table-wrap"><table class="proj-research-table"><thead><tr><th>方法要求</th><th>验证方式</th><th>实现证据</th></tr></thead><tbody>
-        ${requirements.map(row => `<tr><td><span class="proj-caption">${this._esc(row.id || '')}</span><p>${this._esc(this._materialText(row.description))}</p></td>
-          <td><details><summary>查看方法断言要求</summary><p>${this._esc(this._materialText(row.acceptance_test))}</p></details></td>
-          <td>${acceptance.ok ? '实现已验收' : '待验收'}<br><span class="proj-caption">科学主张待实验检验</span></td></tr>`).join('') || '<tr><td colspan="3">尚未生成方法验收要求</td></tr>'}
-        </tbody></table></div></details>`;
+`;
     const runs = Array.isArray(this._workspace.runs) ? this._workspace.runs : [];
     const experiments = document.getElementById('proj-experiments');
     if (experiments) experiments.innerHTML = runs.length ? `<div class="proj-table-wrap"><table class="proj-research-table"><thead><tr><th>实验运行</th><th>状态</th><th>实际指标</th></tr></thead><tbody>
@@ -400,6 +537,7 @@ const ProjectHome = {
       const feed = document.getElementById('proj-agent-feed');
       if (feed && (incoming.length || data.reset || !feed.childElementCount)) this._renderActivityFeed();
       this._updateActivityStatus();
+      this._loadImplementation();
       if (data.more) setTimeout(() => {
         if (this.runId === runId && this._activityEpoch === epoch) this._refreshActivity();
       }, 50);

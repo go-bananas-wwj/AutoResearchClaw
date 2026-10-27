@@ -45,6 +45,8 @@ const API = {
   listRuns() { return this.get('/runs'); },
   getRun(id) { return this.get(`/runs/${id}`); },
   researchWorkspace(id) { return this.get(`/runs/${id}/research-workspace`); },
+  implementation(id) { return this.get(`/runs/${id}/implementation`); },
+  implementationFile(id, path, sha256) { return this.get(`/runs/${id}/implementation/file?path=${encodeURIComponent(path)}&sha256=${encodeURIComponent(sha256)}`); },
   runActivity(id, after = 0) { return this.get(`/runs/${id}/activity?after=${after}`); },
   runFiles(id) { return this.get(`/runs/${id}/files`); },
   getMetrics(id) { return this.get(`/runs/${id}/metrics`); },

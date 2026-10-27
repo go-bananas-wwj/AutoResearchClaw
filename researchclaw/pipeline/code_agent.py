@@ -572,11 +572,19 @@ class CodeAgent:
                 exp_plan=exp_plan,  # Preserve the confirmed method/data requirements at the end too.
                 pkg_hint=pkg_hint,
             )
-            resp = self._chat(sp.system, sp.user, max_tokens=self._cfg.file_max_tokens)
+            from researchclaw.pipeline.generation_preview import GenerationPreview
+            preview = GenerationPreview(self._stage_dir, file_name)
+            try:
+                resp = self._chat(sp.system, sp.user, max_tokens=self._cfg.file_max_tokens,
+                                  preview=preview)
+            except Exception as exc:
+                preview.write("failed", force=True, error=str(exc))
+                raise
 
             # Extract code from response
             code = self._extract_single_file_code(resp.content, file_name)
             if not code:
+                preview.write("failed", force=True, error="没有提取到完整代码")
                 self._log_event(f"  WARNING: Empty code for {file_name}")
                 continue
 
@@ -587,6 +595,7 @@ class CodeAgent:
                 raise ValueError("Unsafe blueprint filename")
             draft_path.parent.mkdir(parents=True, exist_ok=True)
             draft_path.write_text(code, encoding="utf-8")
+            preview.write("saved", force=True, code=code)
 
             # Build CodeMem summary via AST
             code_memory[file_name] = self._build_code_summary(
@@ -1419,15 +1428,19 @@ class CodeAgent:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _chat(self, system: str, user: str, max_tokens: int = 8192, *, json_mode: bool = False) -> Any:
+    def _chat(self, system: str, user: str, max_tokens: int = 8192, *, json_mode: bool = False,
+              preview: Any = None) -> Any:
         """Make an LLM call and track count."""
         self._calls += 1
         messages = [{"role": "user", "content": user}]
+        from researchclaw.llm.client import LLMClient
+        streaming = {"on_content": preview.content, "on_reset": preview.reset} if preview is not None and isinstance(self._llm, LLMClient) else {}
         return self._llm.chat(
             messages=messages,
             system=system,
             max_tokens=max_tokens,
             **({"json_mode": True} if json_mode else {}),
+            **streaming,
         )
 
     def _get_or_create_sandbox(self) -> _SandboxLike:

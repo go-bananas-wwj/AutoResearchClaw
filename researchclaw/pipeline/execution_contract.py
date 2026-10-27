@@ -458,7 +458,8 @@ code_evidence:[{file,quote:逐字源码片段}],test_evidence:[{file,quote:逐�
                     issues.append("审查证据无法逐字匹配实际源码")
     audit["ok"] = audit.get("ok") is True and not issues
     audit["issues"] = issues
-    audit.update(code_hash=digest(files), plan_hash=digest(plan), source_hash=digest(source))
+    audit.update(code_hash=digest(files), plan_hash=digest(plan), source_hash=digest(source),
+                 files={name: hashlib.sha256(content.encode()).hexdigest() for name, content in files.items()})
     return audit
 
 

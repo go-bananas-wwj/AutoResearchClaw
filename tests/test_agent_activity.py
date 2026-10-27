@@ -90,6 +90,10 @@ async def test_project_activity_api_is_scoped_and_reports_running_stage(tmp_path
         assert workspace.status_code == 200
         assert workspace.json()["run_id"] == run_id
         assert workspace.json()["runs"] == []
+        implementation = await client.get(f"/api/runs/{run_id}/implementation")
+        assert implementation.status_code == 200
+        assert implementation.json()["methods"] == []
+        assert (await client.get(f"/api/runs/{run_id}/implementation/file", params={"path":"../secret", "sha256":"x"})).status_code == 404
         assert (await client.get('/api/runs/not-a-run/research-workspace')).status_code == 400
 
 
