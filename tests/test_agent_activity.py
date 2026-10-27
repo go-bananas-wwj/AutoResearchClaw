@@ -86,6 +86,11 @@ async def test_project_activity_api_is_scoped_and_reports_running_stage(tmp_path
         assert (await client.get(f"/api/runs/{run_id}/activity?after=-1")).status_code == 400
         run = (await client.get(f"/api/runs/{run_id}")).json()
         assert "stage-10" not in run["stages_completed"]  # An existing directory is not a completed stage.
+        workspace = await client.get(f"/api/runs/{run_id}/research-workspace")
+        assert workspace.status_code == 200
+        assert workspace.json()["run_id"] == run_id
+        assert workspace.json()["runs"] == []
+        assert (await client.get('/api/runs/not-a-run/research-workspace')).status_code == 400
 
 
 def test_resume_archives_failed_outputs_and_keeps_confirmed_plan(tmp_path):

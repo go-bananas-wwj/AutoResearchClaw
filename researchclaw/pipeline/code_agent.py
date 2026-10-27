@@ -307,7 +307,15 @@ class CodeAgent:
 
         # Local reasoning-model adaptation: this is a complete implementation
         # plan, not a short classifier response. Keep its own explicit cap.
-        resp = self._chat(sp.system, sp.user, max_tokens=32768)
+        json_blueprint = "api.deepseek.com" in str(getattr(getattr(self._llm, "config", None), "base_url", ""))
+        user = sp.user
+        if json_blueprint:
+            user += ("\nReturn the complete blueprint as one JSON object with the same files schema, "
+                     "instead of YAML. No Markdown fences. Quote all pseudocode as JSON strings. "
+                     "Keep all confirmed method requirements and generation_order/dependencies.\n")
+        resp = self._chat(sp.system, user, max_tokens=32768, json_mode=json_blueprint)
+        # Persist completed blueprint output before later code generation can fail.
+        (self._stage_dir / "architecture_response.txt").write_text(resp.content, encoding="utf-8")
 
         # Extract YAML block from response
         arch_spec = resp.content
@@ -1375,7 +1383,7 @@ class CodeAgent:
                 "including unchanged files."
             )
             sys_prompt = self._pm.system("code_generation")
-            fix_resp = self._chat(sys_prompt, fix_prompt, max_tokens=16384)
+            fix_resp = self._chat(sys_prompt, fix_prompt, max_tokens=32768)
 
             fixed = self._extract_files(fix_resp.content)
             if fixed:
@@ -1386,7 +1394,7 @@ class CodeAgent:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _chat(self, system: str, user: str, max_tokens: int = 8192) -> Any:
+    def _chat(self, system: str, user: str, max_tokens: int = 8192, *, json_mode: bool = False) -> Any:
         """Make an LLM call and track count."""
         self._calls += 1
         messages = [{"role": "user", "content": user}]
@@ -1394,6 +1402,7 @@ class CodeAgent:
             messages=messages,
             system=system,
             max_tokens=max_tokens,
+            **({"json_mode": True} if json_mode else {}),
         )
 
     def _get_or_create_sandbox(self) -> _SandboxLike:

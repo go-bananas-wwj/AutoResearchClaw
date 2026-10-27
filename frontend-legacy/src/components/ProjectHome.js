@@ -53,6 +53,11 @@ const ProjectHome = {
   _activityBusy: false,
   _activityEpoch: 0,
   _activityFollow: true,
+  _activityFilter: 'all',
+  _workspace: null,
+  _workspaceBusy: false,
+  _executionPhase: null,
+  _stageAutoOpened: false,
 
   // 历史版本目录（收进折叠区）：stage-XX_vN / stage-XX_repair_vN / archived_* / *_vN
   _histDirRe: /(?:^archived_|_v\d+$)/,
@@ -133,6 +138,10 @@ const ProjectHome = {
     this._activityEvents = [];
     this._activityCursor = 0;
     this._activityOpen = {};
+    this._activityFilter = 'all';
+    this._workspace = null;
+    this._executionPhase = null;
+    this._stageAutoOpened = false;
   },
 
   _startTimers() {
@@ -237,12 +246,15 @@ const ProjectHome = {
     if (!body) return;
     body.innerHTML = `
       <div id="proj-banner-slot">${this._bannerHtml()}</div>
+      <section class="card proj-research" id="proj-research"><p class="proj-empty">正在读取已确认的研究材料…</p></section>
       <details class="card proj-stage-details" ${this._hasConfirmedIdea() ? 'open' : ''}><summary id="proj-stage-summary">${this._esc(this._hasConfirmedIdea() ? '实验实施' : I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
-      ${this._activityHtml()}
+      <section class="card"><div class="proj-section-head"><h2 data-no-i18n>实验与证据</h2><span class="proj-caption" data-no-i18n>仅展示本轮正式运行</span></div><div id="proj-experiments"><p class="proj-empty">正在读取实验记录…</p></div></section>
       <div class="proj-ov-grid">
         <div class="card"><h2>Key Metrics</h2><div id="proj-metrics"><p style="color:var(--text-muted)">Loading...</p></div></div>
         <div class="card"><h2>Paper</h2><div id="proj-paper-card"><p style="color:var(--text-muted)">Loading...</p></div></div>
-      </div>`;
+      </div>
+      ${this._activityHtml()}`;
+    this._loadWorkspace();
     this._loadStages();
     this._loadMetrics();
     this._loadPaperCard();
@@ -251,15 +263,124 @@ const ProjectHome = {
   },
 
   _activityHtml() {
-    return `<section class="card proj-agent" aria-label="${this._esc(I18N.t('Agent activity'))}">
-      <div class="proj-agent-head"><h2>${this._esc(I18N.t('Agent activity'))}</h2>
+    return `<section class="card proj-agent" aria-label="运行详情" data-no-i18n>
+      <div class="proj-agent-head"><h2>运行详情</h2>
         <span id="proj-agent-status" class="proj-badge"></span>
         <label class="proj-agent-follow"><input type="checkbox" ${this._activityFollow ? 'checked' : ''}
           onchange="ProjectHome._activityFollow=this.checked"> ${this._esc(I18N.t('Follow latest'))}</label>
         <button type="button" class="proj-btn" onclick="ProjectHome._refreshActivity()">${this._esc(I18N.t('Refresh'))}</button></div>
       <p class="proj-agent-current" id="proj-agent-current"></p>
-      <div class="proj-agent-feed" id="proj-agent-feed" role="log" aria-label="${this._esc(I18N.t('Agent activity'))}"></div>
+      <details class="proj-run-details"><summary>查看本轮执行步骤</summary>
+        <div class="proj-activity-filters" role="group" aria-label="筛选运行记录">
+          ${[['all','全部'],['implementation','实施'],['validation','检查'],['output','沙箱输出']].map(([key,label]) =>
+            `<button type="button" class="proj-btn" data-activity-filter="${key}" aria-pressed="${this._activityFilter === key}" onclick="ProjectHome._filterActivity('${key}')">${label}</button>`).join('')}
+        </div>
+        <div class="proj-agent-feed" id="proj-agent-feed" role="log" aria-label="本轮执行记录"></div>
+      </details>
     </section>`;
+  },
+
+  _filterActivity(filter) {
+    this._activityFilter = filter;
+    document.querySelectorAll('[data-activity-filter]').forEach(el => el.setAttribute('aria-pressed', el.dataset.activityFilter === filter));
+    this._renderActivityFeed();
+  },
+
+  _currentActivity() {
+    let start = 0;
+    this._activityEvents.forEach((event, index) => {
+      if (event.kind === 'run' && event.status === 'running') start = index;
+    });
+    return this._activityEvents.slice(start);
+  },
+
+  _activityLabel(event) {
+    if (event.kind === 'tool') return '工具调用 · ' + this._trunc((event.title || '').split(/[·：:]/)[0], 28);
+    if (event.kind === 'output') return '沙箱输出';
+    const title = event.title || '';
+    if (/Review dialog/.test(title)) return '复核实验实现';
+    if (/Tree search/.test(title)) return '比较候选实现';
+    if (/Blueprint spec:/.test(title)) return '实现蓝图已返回';
+    if (/Blueprint YAML parse error|Could not parse blueprint/.test(title)) return '蓝图格式检查未通过';
+    if (/blueprint invalid|blueprint.*falling back/.test(title)) return '蓝图格式未通过，改用内置单次生成';
+    if (/Hard validation passed/.test(title)) return '代码结构检查通过';
+    if (/Hard validation found/.test(title)) return '代码结构检查发现问题，准备修复';
+    if (/Targeted repair/.test(title)) return '正在修复代码检查问题';
+    const repaired = title.match(/Repair updated (\d+) file/);
+    if (repaired) return `已更新 ${repaired[1]} 个代码文件`;
+    const reviewed = title.match(/Review round (\d+): verdict=(\w+)/);
+    if (reviewed) return `第 ${reviewed[1]} 轮代码复核：${reviewed[2] === 'APPROVE' ? '通过' : '需要修改'}`;
+    if (/Exec-fix.*code runs OK/.test(title)) return '代码试跑已退出，等待方法验收';
+    if (event.kind === 'implementation' && /CRITICAL:/.test(title)) return '代码检查发现阻塞问题';
+    if (event.kind === 'implementation' && /WARNING:/.test(title)) return '代码检查提示';
+    const phaseNames = {'1': '拆解方法与实现蓝图', '2': '生成实验代码', '2.5': '检查代码结构', '3': '试跑与修复', '4': '比较候选实现', '5': '复核实验实现'};
+    const phase = title.match(/Phase (\d+(?:\.\d+)?):/);
+    if (phase && phaseNames[phase[1]]) return phaseNames[phase[1]];
+    if (title.includes('CodeAgent.generate()')) return '开始实现已确认的方法';
+    return this._trunc(title, 100);
+  },
+
+  async _loadWorkspace() {
+    if (!this.runId || this._workspaceBusy || !document.getElementById('proj-research')) return;
+    const runId = this.runId;
+    this._workspaceBusy = true;
+    try {
+      const data = await API.researchWorkspace(runId);
+      if (this.runId !== runId || !document.getElementById('proj-research')) return;
+      if (JSON.stringify(data) === JSON.stringify(this._workspace)) return;
+      this._workspace = data;
+      this._renderWorkspace();
+    } catch (error) {
+      if (this.runId !== runId) return;
+      const el = document.getElementById('proj-research');
+      if (el && !this._workspace) el.innerHTML = `<p class="proj-empty">研究材料暂未读到。${this._esc(this._errDetail(error))}</p>`;
+    } finally { this._workspaceBusy = false; }
+  },
+
+  _materialText(value) {
+    if (typeof value === 'string') return value;
+    if (value == null) return '';
+    if (typeof value === 'object') return value.name || value.description || value.metric_key || JSON.stringify(value, null, 2);
+    return String(value);
+  },
+
+  _renderWorkspace() {
+    const el = document.getElementById('proj-research');
+    if (!el || !this._workspace) return;
+    this._workspaceEntry = this._hasConfirmedIdea();
+    const {brief = {}, plan = {}, resources = {}, acceptance = {}, target = {}} = this._workspace;
+    const execution = plan.execution || {};
+    const requirements = Array.isArray(plan.method_requirements) ? plan.method_requirements : [];
+    const level = {synthetic:'合成 pilot', mixed:'混合数据验证', real:'真实数据验证'}[execution.validation_level] || '尚未确定';
+    const gpus = resources && resources.gpus || [];
+    const hardware = gpus.length ? gpus.map(g => g.name).join('、') : '资源待检测';
+    const metric = target.metric_key || (brief.metrics && brief.metrics[0] && brief.metrics[0].metric_key);
+    const direction = {minimize:'越低越好',maximize:'越高越好'}[target.direction] || '方向待确认';
+    const list = values => (Array.isArray(values) ? values : []).map(value => `<li>${this._esc(this._materialText(value))}</li>`).join('');
+    el.innerHTML = `<div class="proj-section-head"><h2>研究与验证</h2><span class="proj-badge">${this._hasConfirmedIdea() ? '创新点已确认' : '研究材料'}</span></div>
+      <div class="proj-research-grid"><div>
+        <p class="proj-eyebrow">要检验的科学问题</p>
+        <p class="proj-question">${this._esc(brief.scientific_question || '尚未保存研究任务书，请在交互页确认研究问题。')}</p>
+        <div class="proj-research-facts"><span>主指标 <strong>${this._esc(metric || '待确定')}</strong></span><span>${this._esc(direction)}</span><span>${requirements.length} 项方法验收要求</span></div>
+        ${brief.experiment_scope ? `<details class="proj-material"><summary>查看已确认的方法与实验范围</summary><p>${this._esc(this._materialText(brief.experiment_scope))}</p></details>` : ''}
+      </div><aside class="proj-scope"><p class="proj-eyebrow">本轮验证范围</p><strong>${this._esc(level)}</strong>
+        <p>${this._esc(hardware)}</p><p>${resources && resources.time_budget_sec ? `每次实验 ${Number(resources.time_budget_sec)} 秒` : '执行预算待检测'}</p>
+        <p>${acceptance.ok ? '方法实现已验收，科学结论以正式实验为准' : '方法实现尚未完成验收'}</p>
+        ${Array.isArray(execution.deferred_validation) && execution.deferred_validation.length ? `<details class="proj-material"><summary>尚未验证的范围</summary><ul>${list(execution.deferred_validation)}</ul></details>` : ''}
+      </aside></div>
+      <div class="proj-design-grid"><details class="proj-material"><summary>基线对照 · ${(plan.baselines || []).length}</summary><ul>${list(plan.baselines) || '<li>尚未设计</li>'}</ul></details>
+      <details class="proj-material"><summary>消融实验 · ${(plan.ablations || []).length}</summary><ul>${list(plan.ablations) || '<li>尚未设计</li>'}</ul></details></div>
+      <details class="proj-material proj-claims"><summary>创新点如何验收 · ${requirements.length} 项</summary>
+        <div class="proj-table-wrap"><table class="proj-research-table"><thead><tr><th>方法要求</th><th>验证方式</th><th>实现证据</th></tr></thead><tbody>
+        ${requirements.map(row => `<tr><td><span class="proj-caption">${this._esc(row.id || '')}</span><p>${this._esc(this._materialText(row.description))}</p></td>
+          <td><details><summary>查看方法断言要求</summary><p>${this._esc(this._materialText(row.acceptance_test))}</p></details></td>
+          <td>${acceptance.ok ? '实现已验收' : '待验收'}<br><span class="proj-caption">科学主张待实验检验</span></td></tr>`).join('') || '<tr><td colspan="3">尚未生成方法验收要求</td></tr>'}
+        </tbody></table></div></details>`;
+    const runs = Array.isArray(this._workspace.runs) ? this._workspace.runs : [];
+    const experiments = document.getElementById('proj-experiments');
+    if (experiments) experiments.innerHTML = runs.length ? `<div class="proj-table-wrap"><table class="proj-research-table"><thead><tr><th>实验运行</th><th>状态</th><th>实际指标</th></tr></thead><tbody>
+      ${runs.map(run => `<tr><td>${this._esc(run.id)}</td><td>${this._esc(I18N.t(run.status || 'unknown'))}</td><td><pre>${this._esc(JSON.stringify(run.metrics || {}, null, 2))}</pre></td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="proj-evidence-empty"><strong>尚无正式实验结果</strong><p>先完成方法实现与验收，再运行基线、消融和主实验。调试试跑不会充当正式结果。</p></div>';
   },
 
   async _refreshActivity() {
@@ -300,9 +421,11 @@ const ProjectHome = {
     const status = waiting ? 'waiting' : project.status || 'idle';
     badge.className = 'proj-badge ' + (status === 'running' ? 'running' : waiting ? 'waiting' : '');
     badge.textContent = I18N.t(waiting ? 'Waiting' : status);
-    const last = this._activityEvents[this._activityEvents.length - 1];
-    const model = [...this._activityEvents].reverse().find(e => e.model);
-    current.textContent = [model && model.model, last && last.title,
+    const events = this._currentActivity();
+    const last = events[events.length - 1];
+    const model = [...events].reverse().find(e => e.model);
+    const step = [...events].reverse().find(e => e.kind === 'implementation' && /Phase \d/.test(e.title || ''));
+    current.textContent = [model && model.model, step && this._activityLabel(step), last && this._activityLabel(last),
       last && this._ago(Date.parse(last.timestamp))].filter(Boolean).join(' · ');
   },
 
@@ -311,16 +434,20 @@ const ProjectHome = {
     if (!feed) return;
     const scroll = feed.scrollTop;
     const atBottom = feed.scrollHeight - feed.clientHeight - scroll < 60;
-    const symbols = {tool: '↳', model: '◌', review: '◇', validation: '✓', error: '!', stage: '●', run: '●', plan: '◇', agent: '◆', message: '›', step: '·'};
-    feed.innerHTML = this._activityEvents.length ? this._activityEvents.map(e => {
+    const events = this._currentActivity().filter(e => this._activityFilter === 'all' ||
+      (this._activityFilter === 'implementation' ? ['implementation','tool','agent'].includes(e.kind)
+        : this._activityFilter === 'validation' ? ['validation','review','error'].includes(e.kind) : e.kind === 'output'));
+    feed.innerHTML = events.length ? events.map(e => {
       const failed = ['failed', 'error'].includes(e.status) || e.kind === 'error';
       const time = new Date(e.timestamp).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
-      const detail = e.detail ? `<details ${this._activityOpen[e.id] ? 'open' : ''}
+      const label = this._activityLabel(e);
+      const raw = [label !== e.title ? e.title : '', e.detail || ''].filter(Boolean).join('\n\n');
+      const detail = raw ? `<details ${this._activityOpen[e.id] ? 'open' : ''}
         ontoggle="ProjectHome._activityOpen[${Number(e.id)}]=this.open"><summary>${this._esc(I18N.t('Details'))}</summary>
-        <pre>${this._esc(e.detail)}</pre></details>` : '';
+        <pre>${this._esc(raw)}</pre></details>` : '';
       return `<article class="proj-agent-event${failed ? ' failed' : ''}" data-event-id="${Number(e.id)}" data-no-i18n>
-        <span class="proj-agent-symbol" aria-hidden="true">${symbols[e.kind] || '·'}</span>
-        <div class="proj-agent-event-body"><div class="proj-agent-event-title"><span>${this._esc(e.title)}</span>
+        <span class="proj-event-state">${failed ? '失败' : e.status === 'completed' ? '完成' : '记录'}</span>
+        <div class="proj-agent-event-body"><div class="proj-agent-event-title"><span>${this._esc(label)}</span>
           <time datetime="${this._esc(e.timestamp)}">${this._esc(time)}</time></div>${detail}</div></article>`;
     }).join('') : `<p class="proj-agent-empty">${this._esc(I18N.t('No agent activity yet.'))}</p>`;
     if (this._activityFollow && (atBottom || scroll === 0)) feed.scrollTop = feed.scrollHeight;
@@ -363,6 +490,8 @@ const ProjectHome = {
     this._updateHead();
     if (this.tab === 'overview') {
       this._loadStages();
+      this._loadWorkspace();
+      this._loadMetrics();
       this._loadPaperCard();
     } else if (this.tab === 'manage') {
       // 文件列表顶层目录签名变化才重渲染（不收叠用户展开的目录/查看器）
@@ -399,20 +528,36 @@ const ProjectHome = {
       return `<div class="proj-stage-line ${cls}"><span class="dot"></span><span class="num">${s.number}.</span> <span>${this._esc(s.label || s.name)}</span>${s.phase ? `<span class="phase">${this._esc(s.phase)}</span>` : ''}</div>`;
     }).join('') || '<p style="color:var(--text-muted)">Loading...</p>';
     if (!this._hasConfirmedIdea()) { el.innerHTML = stageHtml; return; }
+    if (this._workspace && this._workspaceEntry !== this._hasConfirmedIdea()) this._renderWorkspace();
     const summary = document.getElementById('proj-stage-summary');
-    if (summary) summary.textContent = '实验实施';
+    if (summary) {
+      summary.textContent = '实验实施';
+      if (!this._stageAutoOpened && summary.parentElement) {
+        summary.parentElement.open = true;
+        this._stageAutoOpened = true;
+      }
+    }
+    const selected = this._executionPhase == null ? Math.max(0, this._experimentPhases.findIndex(phase => phase.stages.includes((this.project || {}).current_stage || lastDone + 1))) : this._executionPhase;
     const phases = this._experimentPhases.map((phase, i) => {
       const done = phase.stages.every(n => dirs.has(`stage-${nn(n)}`));
       const failed = phase.stages.some(n => statuses[`stage-${nn(n)}`] === 'failed');
       const active = !done && phase.stages.includes(curStage);
       const cls = failed ? 'failed' : done ? 'done' : active ? 'cur' : 'todo';
       const state = failed ? '失败，需修复' : done ? '已完成' : active ? '进行中' : '待执行';
-      return `<div class="proj-stage-line ${cls}" data-no-i18n><span class="dot"></span>
-        <span class="num">${i + 1}.</span><span><strong>${this._esc(phase.label)}</strong> · ${state}<br>
-        <span>${this._esc(phase.hint)}</span></span></div>`;
+      return `<li class="${cls}"><button type="button" aria-pressed="${selected === i}" onclick="ProjectHome._executionPhase=${i};ProjectHome._loadStages()">
+        <span class="proj-flow-index">${i + 1}</span><strong>${this._esc(phase.label)}</strong><span>${state}</span></button></li>`;
     }).join('');
-    el.innerHTML = `<p data-no-i18n>创新点已确认。接下来重点是把它实现为方法，并用实验检验科学主张。</p>
-      ${phases}<details><summary data-no-i18n>查看执行环节</summary>${stageHtml}</details>`;
+    const phase = this._experimentPhases[selected];
+    const tasks = this._stagesMeta.filter(s => phase.stages.includes(s.number)).map(s => {
+      const key = `stage-${nn(s.number)}`;
+      const state = dirs.has(key) ? '已完成' : statuses[key] === 'failed' ? '失败，需修复' : s.number === curStage ? '进行中' : '待执行';
+      const labels = {9:'设计实验',10:'生成并验收方法实现',11:'落实资源与执行安排',12:'运行正式实验',13:'修复与优化',14:'分析指标与误差',15:'核对科学主张'};
+      return `<li><span>${this._esc(labels[s.number] || I18N.t(s.label || s.name))}</span><span>${state}</span></li>`;
+    }).join('');
+    el.innerHTML = `<ol class="proj-flow" data-no-i18n>${phases}</ol><div class="proj-flow-detail" data-no-i18n>
+      <p>${this._esc(phase.hint)}</p><ul>${tasks}</ul>
+      <button type="button" class="proj-btn" onclick="ProjectHome.switchTab('interact')">进入交互与运行详情</button></div>
+      <details class="proj-material"><summary data-no-i18n>全部执行环节</summary>${stageHtml}</details>`;
   },
 
   async _loadMetrics() {

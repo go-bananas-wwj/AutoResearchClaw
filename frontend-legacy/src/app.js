@@ -64,7 +64,7 @@
               : `<span class="proj-badge">● ${this._esc(I18N.t(st))}</span>`;
         const barCls = p.waiting ? 'waiting' : (st === 'completed' ? 'done' : '');
         const papers = [p.has_paper_zh && I18N.t('Chinese'), p.has_paper_en && I18N.t('English')].filter(Boolean).join(' / ');
-        const meta = st === 'completed' && papers
+        const meta = p.research_entry_stage === 9 ? this._researchPhase(p) : st === 'completed' && papers
           ? `${stage}/${this.totalStages} · ${papers}`
           : `Stage ${stage}/${this.totalStages}`;
         return `
@@ -72,7 +72,7 @@
                onclick="App.openProject('${this._escAttr(p.id)}')">
             <span class="proj-card-title" data-no-i18n>${this._esc(p.topic || p.id)}</span>
             <span class="proj-card-row">${badge}<span>${this._esc(meta)}</span></span>
-            <span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>
+            ${p.research_entry_stage === 9 ? '' : `<span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>`}
           </button>`;
       }).join('');
     },
@@ -197,8 +197,8 @@
         return `
           <button type="button" class="proj-big-card" onclick="App.openProject('${this._escAttr(p.id)}')">
             <span class="proj-big-card-title" data-no-i18n>${this._esc(p.topic || p.id)}</span>
-            <span class="proj-card-row">${badge}<span>Stage ${stage}/${this.totalStages}</span></span>
-            <span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>
+            <span class="proj-card-row">${badge}<span>${p.research_entry_stage === 9 ? this._esc(this._researchPhase(p)) : `Stage ${stage}/${this.totalStages}`}</span></span>
+            ${p.research_entry_stage === 9 ? '' : `<span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>`}
           </button>`;
       }).join('');
       main.innerHTML = `
@@ -244,6 +244,14 @@
     /* ---------- 工具 ---------- */
 
     // checkpoint 可能缺 status 字段（老 run）：阶段已满则按已完成展示
+    _researchPhase(p) {
+      const stage = Number(p.current_stage || 0);
+      const phase = stage === 9 ? '实验设计' : stage <= 11 && stage >= 10 ? '方法实现'
+        : stage <= 13 && stage >= 12 ? '实验验证' : stage <= 15 && stage >= 14 ? '结果与结论'
+          : stage >= 16 ? '论文整理' : '创新点已确认';
+      return '实验实施 · ' + phase;
+    },
+
     _statusOf(p) {
       const s = (p && p.status) || 'unknown';
       if ((s === 'unknown' || s === 'no_checkpoint') && p && (p.current_stage || 0) >= this.totalStages) {

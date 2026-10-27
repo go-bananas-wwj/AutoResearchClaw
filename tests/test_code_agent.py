@@ -116,6 +116,21 @@ class TestCodeAgentConfig:
 
 
 class TestPhase1Architecture:
+    def test_deepseek_blueprint_uses_structured_json_and_persists_completed_output(
+        self, stage_dir: Path, pm: PromptManager,
+    ) -> None:
+        from types import SimpleNamespace
+        content = json.dumps({"files": [
+            {"name": "method.py", "generation_order": 1, "dependencies": []},
+            {"name": "main.py", "generation_order": 2, "dependencies": ["method.py"]}]})
+        llm = FakeLLM(responses=[content])
+        llm.config = SimpleNamespace(base_url="https://api.deepseek.com/v1")
+        agent = CodeAgent(llm=llm, prompts=pm, config=CodeAgentConfig(), stage_dir=stage_dir)
+        _, blueprint = agent._phase1_blueprint("topic", "plan", "crps")
+        assert agent._is_valid_blueprint(blueprint)
+        assert llm.calls[0]["json_mode"] is True
+        assert (stage_dir / "architecture_response.txt").read_text() == content
+
     def test_architecture_planning_produces_spec(
         self, stage_dir: Path, pm: PromptManager,
     ) -> None:

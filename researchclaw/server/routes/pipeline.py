@@ -480,6 +480,15 @@ def run_activity(run_id: str, after: int = 0, limit: int = 100) -> dict[str, Any
     return {"run_id": run_id, **read_activity(root, after, limit), "project": _project_info(root)}
 
 
+@router.get("/runs/{run_id}/research-workspace")
+def research_workspace(run_id: str) -> dict[str, Any]:
+    root = _validated_run_dir(run_id)
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    from researchclaw.server.research_workspace import workspace_evidence
+    return {"run_id": run_id, **workspace_evidence(root)}
+
+
 @router.get("/runs/{run_id}/metrics")
 async def get_run_metrics(run_id: str) -> dict[str, Any]:
     """Get experiment metrics for a run."""
