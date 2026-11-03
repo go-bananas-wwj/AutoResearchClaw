@@ -779,7 +779,15 @@ def _chat_with_prompt(
     messages = [{"role": "user", "content": user}]
     last_exc: Exception | None = None
     _effective_json_mode = json_mode
-    for attempt in range(1 + retries):
+    # 本地适配：仅在确认截断时按 ideation 的做法把本次上限翻倍重试（最多 3 次、封顶
+    # reasoning_max_tokens）；不是全局下限，截断输出仍不被接受。
+    _cfg = getattr(llm, "config", None)
+    _cap = int(getattr(_cfg, "reasoning_max_tokens", 0) or 0)
+    _escalations = 0
+    _attempts = 1 + retries
+    attempt = -1
+    while attempt + 1 < _attempts:
+        attempt += 1
         try:
             if _effective_json_mode and max_tokens is not None:
                 return llm.chat(messages, system=system, json_mode=True, max_tokens=max_tokens, strip_thinking=strip_thinking)
@@ -790,8 +798,16 @@ def _chat_with_prompt(
             return llm.chat(messages, system=system, strip_thinking=strip_thinking)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
-            # Auto-disable json_mode on HTTP 400 — likely provider incompatibility
             _err_str = str(exc)
+            if "截断" in _err_str and _cap and _escalations < 3:
+                current = max_tokens or int(getattr(_cfg, "max_tokens", 4096) or 4096)
+                if current < _cap:
+                    max_tokens = min(_cap, current * 2)
+                    _escalations += 1
+                    _attempts += 1
+                    logger.warning("LLM output truncated; retrying this call with max_tokens=%d", max_tokens)
+                    continue
+            # Auto-disable json_mode on HTTP 400 — likely provider incompatibility
             if _effective_json_mode and "400" in _err_str:
                 logger.warning(
                     "HTTP 400 with json_mode=True — disabling json_mode for retry "

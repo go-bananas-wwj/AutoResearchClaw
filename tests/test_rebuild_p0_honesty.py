@@ -77,3 +77,34 @@ def test_paper_draft_part_fails_instead_of_placeholder():
     for llm in (Fails(), Cut()):
         with pytest.raises(PaperDraftError):
             _draft_part(llm, 'sys', 'user', 1000, 'Part 2')
+
+
+def test_truncation_escalates_only_that_call():
+    from types import SimpleNamespace
+
+    from researchclaw.pipeline._helpers import _chat_with_prompt
+
+    class LLM:
+        config = SimpleNamespace(max_tokens=4096, reasoning_max_tokens=65536)
+
+        def __init__(self):
+            self.seen = []
+
+        def chat(self, messages, **kw):
+            self.seen.append(kw.get('max_tokens'))
+            if (kw.get('max_tokens') or 4096) < 16384:
+                raise RuntimeError('All models failed. Last error: 推理模型返回截断或空正文')
+            return LLMResponse(content='ok', model='m', finish_reason='stop')
+
+    llm = LLM()
+    assert _chat_with_prompt(llm, 's', 'u').content == 'ok'
+    assert llm.seen == [None, 8192, 16384]
+
+    class Always(LLM):
+        def chat(self, messages, **kw):
+            self.seen.append(kw.get('max_tokens'))
+            raise RuntimeError('推理模型返回截断或空正文')
+    always = Always()
+    with pytest.raises(RuntimeError):
+        _chat_with_prompt(always, 's', 'u')
+    assert always.seen == [None, 8192, 16384, 32768]  # bounded, truncated output never accepted
