@@ -142,7 +142,8 @@ class AsfInsarBurst:
     """Sentinel-1 burst interferograms (wrapped phase, coherence, geometry) via ASF HyP3."""
 
     name = "asf_insar_burst"
-    describe = ("Sentinel-1 IW 突发（burst）干涉对，经 ASF HyP3 INSAR_ISCE_BURST 生成地理编码的缠绕相位、"
+    describe = ("Sentinel-1 IW 突发（burst）干涉对，按所属 target 的 lat/lon 自动检索覆盖该点的 burst（每个飞行方向取影像最多者），"
+                "经 ASF HyP3 INSAR_ISCE_BURST 生成地理编码的缠绕相位、"
                 "相干性、解缠相位、连通分量、入射/方位角与 DEM（约 40 m@10x2）。参数：start,end(YYYY-MM-DD，"
                 "2014-10 之后)，directions(ASCENDING/DESCENDING 列表，可选)，full_burst_ids(可选)，"
                 "neighbours(每景与后续 1–3 景组对)，looks('10x2'|'20x4'|'5x1')。每对消耗 1 credit。")

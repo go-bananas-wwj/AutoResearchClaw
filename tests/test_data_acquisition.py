@@ -156,3 +156,13 @@ def test_no_project_specific_choices_in_sources():
     text = inspect.getsource(sources) + inspect.getsource(planner)
     for word in ('Xinmo', 'Baige', 'Mud Creek', 'Brienz', '103.665', '272973'):
         assert word not in text
+
+
+def test_targets_too_close_are_not_independent(tmp_path, monkeypatch):
+    run = _run_with_paper(tmp_path)
+    monkeypatch.setitem(sources.REGISTRY, 'fake', FakeTool())
+    plan = json.loads(json.dumps(PLAN))
+    twin = dict(plan['targets'][0], id='twin', lat=32.0705, lon=103.6605)
+    plan['targets'].append(twin)
+    errors, _ = planner.validate(plan, run, {'max_credits': 10, 'max_gb': 1})
+    assert any('不能作为独立研究对象' in e for e in errors)

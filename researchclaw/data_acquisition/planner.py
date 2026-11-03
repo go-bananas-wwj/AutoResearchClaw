@@ -108,6 +108,18 @@ def validate(plan: Any, run_dir: Path, budget: dict[str, float]) -> tuple[list[s
         quote = ref.get("quote", "")
         if len(norm(quote)) < 6 or norm(quote) not in norm(fulltext(run_dir, ref.get("paper_id", ""))):
             errors.append(f"{tid}: reference.quote 未在论文 {ref.get('paper_id')!r} 的全文中逐字找到；请从 fulltext 复制连续原文")
+    # 独立性：彼此相距不足 min_separation_km 的对象在留一/交叉验证中不是独立样本
+    import math
+    pts = [(tid, float(t["lat"]), float(t["lon"])) for tid, t in targets.items()
+           if isinstance(t.get("lat"), (int, float)) and isinstance(t.get("lon"), (int, float))]
+    sep = float(budget.get("min_separation_km", 1.0))
+    for i, (a, la, lo) in enumerate(pts):
+        for b, lb, lob in pts[i + 1:]:
+            dlat, dlon = math.radians(lb - la), math.radians(lob - lo)
+            h = math.sin(dlat / 2) ** 2 + math.cos(math.radians(la)) * math.cos(math.radians(lb)) * math.sin(dlon / 2) ** 2
+            km = 12742 * math.asin(math.sqrt(h))
+            if km < sep:
+                errors.append(f"{a} 与 {b} 相距约 {km:.2f} km（< {sep} km），不能作为独立研究对象；合并或换成其他对象")
     credits = gb = 0.0
     acquisitions = [a for a in plan.get("acquisitions") or [] if isinstance(a, dict)]
     if not acquisitions:
