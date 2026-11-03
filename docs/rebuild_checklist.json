@@ -6,8 +6,8 @@
       "criterion": "不怕重启",
       "item": "流水线在独立 worker 进程中执行，Web 进程只投递任务与读状态",
       "verify": "实验进行中 docker compose restart dashboard，worker 中 run 的 heartbeat 持续更新且阶段继续推进",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "2026-11-03 真实 run rc-20261025-145941-c30e99：04:37:37 执行 docker compose restart dashboard，rc-worker 子进程 pid 117 仍存活，job.json state=running/auto_resumes=0；重启后 04:37:41 agent_activity.jsonl 继续记录阶段9模型调用（截断翻倍重试），新 dashboard 的 /api/pipeline/status 与 /api/projects 显示 running、阶段9。"
     },
     {
       "id": "R2",
