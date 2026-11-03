@@ -45,8 +45,14 @@ def fetch(url: str, dest: Path, *, headers: dict[str, str] | None = None,
             req_headers["Range"] = f"bytes={have}-"
         try:
             with http.get(url, headers=req_headers, stream=True, timeout=timeout) as resp:
-                if resp.status_code == 416:  # already complete
-                    break
+                if resp.status_code == 416:  # Range 越过末尾：用 HEAD 拿真实大小核对 .part 是否已完整
+                    head = http.head(url, headers=headers or {}, timeout=timeout, allow_redirects=True)
+                    length = head.headers.get("Content-Length")
+                    if length and length.isdigit() and part.stat().st_size == int(length):
+                        part.replace(dest)
+                        return dest
+                    part.unlink(missing_ok=True)
+                    raise OSError("断点续传越界且大小无法核对，已丢弃 .part 重下")
                 resp.raise_for_status()
                 if have and resp.status_code != 206:
                     have = 0  # server ignored Range: restart this file
