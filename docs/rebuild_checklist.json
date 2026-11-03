@@ -30,8 +30,8 @@
       "criterion": "不怕截断",
       "item": "代码生成以补丁式小步编辑执行，单步截断只重试该步",
       "verify": "单元测试：模拟某一步截断，仅该步重试，其余步骤结果保留",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "tests/test_patch_agent.py::test_truncated_step_retried_alone（截断/推理截断异常只重试 req:M1，layout 与 wire 各调用一次）、test_bad_search_feedback_then_fix；researchclaw/pipeline/patch_agent.py"
     },
     {
       "id": "T2",
@@ -70,8 +70,8 @@
       "criterion": "实验可信",
       "item": "best 只在全部通过且主指标改进时更新（棘轮）",
       "verify": "测试：未通过或指标变差的节点不改变 best",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "tests/test_experiment_tree.py::test_ratchet_minimize（变差节点、review 关卡失败节点均不能改变 best；改进节点成为 best 且 git 提交内容可还原）"
     },
     {
       "id": "P1",

@@ -585,6 +585,123 @@ class DockerSandbox:
 
         return detected
 
+    # ------------------------------------------------------------------
+    # 本地适配：detached 正式运行（训练期零 LLM 调用、可在进程中断后重新接上）
+    # ------------------------------------------------------------------
+    def run_project_detached(
+        self,
+        project_dir: Path,
+        *,
+        run_key: str,
+        state_root: Path,
+        entry_point: str = "main.py",
+        timeout_sec: int = 300,
+        poll_sec: float = 30.0,
+        env_overrides: dict[str, str] | None = None,
+    ) -> SandboxResult:
+        """Run ``project_dir`` in a detached container named after ``run_key``.
+
+        The staging dir and ``state.json`` live under ``state_root`` (outside
+        archived stage dirs).  If a container for ``run_key`` already exists —
+        the executing process was killed and the stage resumed — it is
+        re-attached instead of launching a duplicate.  While it runs only
+        ``docker inspect``/``docker logs`` are used (no model calls).
+        """
+        safe = re.sub(r"[^a-zA-Z0-9_.-]", "-", run_key)[:50]
+        name = f"rc-formal-{safe}"
+        staging = state_root / safe
+        state_path = staging.parent / f"{safe}.state.json"
+        state = None
+        if state_path.is_file():
+            try:
+                state = json.loads(state_path.read_text())
+            except ValueError:
+                state = None
+        status = self._inspect(name) if state else None
+        if state is None or status is None:
+            if staging.exists():
+                shutil.rmtree(staging)
+            staging.mkdir(parents=True, exist_ok=True)
+            self._inject_harness(staging)
+            for src_item in project_dir.iterdir():
+                if src_item.name == "experiment_harness.py":
+                    continue
+                dest = staging / src_item.name
+                if src_item.is_file():
+                    dest.write_bytes(src_item.read_bytes())
+                elif src_item.is_dir() and not src_item.name.startswith((".", "__")):
+                    shutil.copytree(src_item, dest, dirs_exist_ok=True)
+            err = validate_entry_point_resolved(staging, entry_point)
+            if err or not (staging / entry_point).exists():
+                return SandboxResult(returncode=-1, stdout="", stderr=err or f"Entry point {entry_point} not found",
+                                     elapsed_sec=0.0, metrics={})
+            if self.config.network_policy in ("pip_only", "setup_only", "full"):
+                self._write_requirements_txt(staging)
+            self._remove_container(name)
+            cmd = self._build_run_command(staging, entry_point=entry_point, container_name=name,
+                                          env_overrides=env_overrides)
+            cmd = [c for c in cmd if c != "--rm"]
+            cmd.insert(cmd.index("run") + 1, "-d")
+            launched = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
+            if launched.returncode != 0:
+                return SandboxResult(returncode=-1, stdout="", stderr=f"docker run -d failed: {launched.stderr}",
+                                     elapsed_sec=0.0, metrics={})
+            state = {"container": name, "started_at": time.time(), "timeout_sec": timeout_sec,
+                     "staging": str(staging), "entry_point": entry_point}
+            state_path.write_text(json.dumps(state))
+        from researchclaw.pipeline.activity import emit, run_from_path
+        activity_root = run_from_path(state_root)
+        timed_out = False
+        last_tail = ""
+        while True:
+            status = self._inspect(name)
+            if status is None or status[0] not in ("running", "created", "restarting"):
+                break
+            if time.time() - state["started_at"] > state["timeout_sec"]:
+                timed_out = True
+                self._kill_container(name)
+                break
+            tail = subprocess.run(["docker", "logs", "--tail", "15", name], capture_output=True,
+                                  text=True, errors="replace", check=False).stdout
+            if activity_root is not None and tail and tail != last_tail:
+                emit("experiment", "正式实验运行中", tail[-2000:], run_dir=activity_root,
+                     phase="experiment", status="running")
+                last_tail = tail
+            time.sleep(poll_sec)
+        status = self._inspect(name)
+        logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True,
+                              errors="replace", check=False)
+        returncode = -1 if timed_out or status is None else status[1]
+        if not self.config.keep_containers:
+            self._remove_container(name)
+        state_path.unlink(missing_ok=True)
+        metrics = parse_metrics(logs.stdout)
+        results_json_path = staging / "results.json"
+        if results_json_path.exists():
+            try:
+                structured = json.loads(results_json_path.read_text(encoding="utf-8"))
+                if isinstance(structured, dict):
+                    for k, v in structured.items():
+                        if k not in metrics:
+                            try:
+                                metrics[k] = float(v)
+                            except (TypeError, ValueError):
+                                pass
+            except (json.JSONDecodeError, OSError):
+                pass
+        return SandboxResult(returncode=returncode, stdout=logs.stdout, stderr=logs.stderr,
+                             elapsed_sec=time.time() - state["started_at"], metrics=metrics,
+                             timed_out=timed_out)
+
+    @staticmethod
+    def _inspect(name: str) -> tuple[str, int] | None:
+        out = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", name],
+                             capture_output=True, text=True, check=False)
+        if out.returncode != 0:
+            return None
+        status, _, code = out.stdout.strip().partition(" ")
+        return status, int(code or -1)
+
     @staticmethod
     def _kill_container(name: str) -> None:
         try:

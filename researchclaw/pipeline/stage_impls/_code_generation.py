@@ -807,7 +807,30 @@ def _execute_code_generation(
         return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
             artifacts=(), evidence_refs=(), error="当前配置要求 OpenCode，尚未完成必需的 agent 执行")
 
-    if not _beast_mode_used and config.experiment.code_agent.enabled and llm is not None:
+    if (not _beast_mode_used and llm is not None
+            and getattr(config.experiment.code_agent, "backend", "blueprint") == "patch"):
+        # ── 本地适配：ExperimentSpec 驱动的补丁式小步实现 ───────────────────
+        from researchclaw.pipeline.activity import emit as _emit
+        from researchclaw.pipeline.experiment_spec import load_spec
+        from researchclaw.pipeline.patch_agent import PatchCodeAgent, PatchError
+
+        _spec = load_spec(run_dir)
+        if _spec is None:
+            return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED, artifacts=(),
+                               evidence_refs=(), error="缺少 stage-09/experiment_spec.json，请从 EXPERIMENT_DESIGN 恢复")
+        _patch = PatchCodeAgent(
+            llm, run_dir=run_dir, stage_dir=stage_dir, spec=_spec, plan_text=exp_plan,
+            step_max_tokens=config.experiment.code_agent.step_max_tokens,
+            emit=lambda kind, title, detail="": _emit(kind, title, detail, run_dir=run_dir,
+                                                      phase="implementation", status="running"))
+        try:
+            files = _patch.generate()
+        except PatchError as exc:
+            return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED, artifacts=("patch_steps.json",),
+                               evidence_refs=(), error=f"补丁式实现未完成：{exc}")
+        _code_agent_active = True
+        logger.info("PatchCodeAgent: %d model calls, %d steps", _patch.model_calls, len(_patch.records))
+    elif not _beast_mode_used and config.experiment.code_agent.enabled and llm is not None:
         # ── F-02: Advanced Code Agent path ────────────────────────────────
         from researchclaw.pipeline.code_agent import CodeAgent as _CodeAgent
 

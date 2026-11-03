@@ -419,8 +419,21 @@ def _execute_experiment_run(
             _ensure_sandbox_deps(_all_code, config.experiment.sandbox.python_path)
 
         sandbox = create_sandbox(config.experiment, runs_dir / "sandbox")
+        _formal_node, _formal_project = None, None
+        try:
+            _formal_node = json.loads((Path(exp_dir_path).parent / "execution_acceptance.json").read_text()).get("node")
+        except (OSError, ValueError, TypeError):
+            pass
         # Use run_project for multi-file, run for single-file
-        if exp_dir_path and Path(exp_dir_path).is_dir():
+        if exp_dir_path and Path(exp_dir_path).is_dir() and hasattr(sandbox, "run_project_detached"):
+            # 本地适配：正式运行用 detached 容器，执行进程中断后恢复会重新接上而不是重复启动
+            _key = f"{run_dir.name[-6:]}-{_formal_node or 'legacy'}"
+            _state_root = run_dir / ".formal_runs"
+            _formal_project = _state_root / _key
+            result = sandbox.run_project_detached(
+                Path(exp_dir_path), run_key=_key, state_root=_state_root,
+                timeout_sec=config.experiment.time_budget_sec)
+        elif exp_dir_path and Path(exp_dir_path).is_dir():
             result = sandbox.run_project(
                 Path(exp_dir_path), timeout_sec=config.experiment.time_budget_sec
             )
@@ -429,8 +442,17 @@ def _execute_experiment_run(
                 code_text, timeout_sec=config.experiment.time_budget_sec
             )
         if config.experiment.execution_check.enabled:
-            from researchclaw.pipeline.execution_contract import read_sandbox_metrics, execution_failure
-            result = read_sandbox_metrics(sandbox, result, mode)
+            from researchclaw.pipeline.execution_contract import read_sandbox_metrics, execution_failure, _tree
+            result = read_sandbox_metrics(sandbox, result, mode, project=_formal_project)
+            if _formal_node:
+                # 实验树：正式运行结果写入同一节点；全部关卡通过且主指标改进才成为 best
+                _t = _tree(run_dir, config)
+                _fail = execution_failure(result, config.experiment.metric_key)
+                _t.gate(_formal_node, "formal", not _fail, _fail or "")
+                if not _fail:
+                    from researchclaw.pipeline.experiment_tree import primary_value
+                    _t.set_metric(_formal_node, primary_value(result.metrics, config.experiment.metric_key))
+                    _t.promote(_formal_node)
             failure = execution_failure(result, config.experiment.metric_key)
             if failure:
                 (runs_dir / "run-1.json").write_text(json.dumps({"status": "failed",
@@ -1279,36 +1301,52 @@ def _execute_iterative_refine(
                 timeout_refine_attempts,
             )
 
-        try:
-            response = _chat_with_prompt(
-                llm,
-                ip.system,
-                user_prompt,
-                max_tokens=ip.max_tokens or 8192,
-            )
-        except RuntimeError as exc:
-            if "ACP prompt timed out after" in str(exc):
-                logger.warning(
-                    "Stage 13: ACP prompt timed out during iteration %d; pausing for resume",
-                    iteration,
+        _patch_mode = getattr(config.experiment.code_agent, "backend", "blueprint") == "patch"
+        if _patch_mode:
+            # 本地适配：改进同样以补丁步骤生成（小步编辑、单步截断只重试该步、可复用）
+            from researchclaw.pipeline.experiment_spec import load_spec
+            from researchclaw.pipeline.patch_agent import PatchCodeAgent, PatchError
+            _spec13 = load_spec(run_dir) or {}
+            _pa = PatchCodeAgent(llm, run_dir=run_dir, stage_dir=stage_dir, spec=_spec13,
+                                 plan_text=_exp_plan_anchor or "",
+                                 step_max_tokens=config.experiment.code_agent.step_max_tokens)
+            try:
+                candidate_files = _pa.step(f"improve:{iteration}", user_prompt, dict(best_files))
+            except PatchError as exc:
+                logger.warning("Stage 13: patch improvement %d not applied: %s", iteration, exc)
+                candidate_files = dict(best_files)
+            extracted_files = {k: v for k, v in candidate_files.items() if best_files.get(k) != v}
+        else:
+            try:
+                response = _chat_with_prompt(
+                    llm,
+                    ip.system,
+                    user_prompt,
+                    max_tokens=ip.max_tokens or 8192,
                 )
-                return _pause_refinement(
-                    reason=str(exc),
-                    stop_reason="acp_prompt_timeout",
-                    iteration=iteration,
-                )
-            raise
-        extracted_files = _extract_multi_file_blocks(response.content)
-        # If LLM returns only single block, treat as main.py update
-        if not extracted_files:
-            single_code = _extract_code_block(response.content)
-            if single_code.strip():
-                extracted_files = {"main.py": single_code}
-        # R8-2: Merge with best_files to preserve supporting modules
-        # (e.g., graphs.py, game.py) that the LLM didn't rewrite
-        candidate_files = dict(best_files)
-        if extracted_files:
-            candidate_files.update(extracted_files)
+            except RuntimeError as exc:
+                if "ACP prompt timed out after" in str(exc):
+                    logger.warning(
+                        "Stage 13: ACP prompt timed out during iteration %d; pausing for resume",
+                        iteration,
+                    )
+                    return _pause_refinement(
+                        reason=str(exc),
+                        stop_reason="acp_prompt_timeout",
+                        iteration=iteration,
+                    )
+                raise
+            extracted_files = _extract_multi_file_blocks(response.content)
+            # If LLM returns only single block, treat as main.py update
+            if not extracted_files:
+                single_code = _extract_code_block(response.content)
+                if single_code.strip():
+                    extracted_files = {"main.py": single_code}
+            # R8-2: Merge with best_files to preserve supporting modules
+            # (e.g., graphs.py, game.py) that the LLM didn't rewrite
+            candidate_files = dict(best_files)
+            if extracted_files:
+                candidate_files.update(extracted_files)
         # If LLM returned nothing at all, candidate_files == best_files (unchanged)
 
         # BUG-R6-02: Preserve entry point when LLM strips main() function.
@@ -1534,9 +1572,21 @@ def _execute_iterative_refine(
                 try:
                     # Runtime fixes above may change the candidate again. Only accepted
                     # code can replace the best implementation or contribute metrics.
-                    accept_final_code(candidate_files, plan, config, run_dir,
-                                      acceptance_dir, llm, workspace=version_dir)
+                    from researchclaw.pipeline.execution_contract import _tree
+                    _t13 = _tree(run_dir, config)
+                    _parent = (_t13.best() or {}).get("node")
+                    _node = accept_final_code(candidate_files, plan, config, run_dir,
+                                              acceptance_dir, llm, workspace=version_dir,
+                                              tree_parent=_parent, tree_action="improve", stage=13)
                     iter_record["method_accepted"] = True
+                    iter_record["node"] = _node
+                    # 候选的完整运行即其 formal 关卡；能否成为 best 只由实验树棘轮决定
+                    _t13.gate(_node, "formal", metric_val is not None, "" if metric_val is not None else "候选完整运行没有主指标")
+                    _t13.set_metric(_node, metric_val)
+                    _promoted, _why = _t13.promote(_node)
+                    iter_record["tree_promotion"] = _why
+                    if not _promoted:
+                        iter_record["ratchet_blocked"] = True
                 except ExecutionContractError as exc:
                     iter_record["method_accepted"] = False
                     iter_record["acceptance_error"] = str(exc)
@@ -1547,7 +1597,7 @@ def _execute_iterative_refine(
             if metric_val is not None:
                 consecutive_no_metrics = 0
                 # R6-1: Only count toward no_improve_streak when we have real metrics
-                if _is_better(metric_val, best_metric):
+                if _is_better(metric_val, best_metric) and not iter_record.get("ratchet_blocked"):
                     best_metric = metric_val
                     best_files = dict(candidate_files)
                     best_version = f"experiment_v{iteration}/"

@@ -236,10 +236,13 @@ def submit_missing(root: Path, hyp3: Hyp3, state: dict[str, Any]) -> int:
     return submitted
 
 
-def collect(root: Path, hyp3: Hyp3, state: dict[str, Any]) -> dict[str, int]:
-    """Download and extract finished products; returns counts by status."""
+def collect(root: Path, hyp3: Hyp3, state: dict[str, Any], *, workers: int = 4) -> dict[str, int]:
+    """Download (parallel) and extract (sequential) finished products; returns counts by status."""
+    from concurrent.futures import ThreadPoolExecutor
+
     manifest = Manifest(root)
     counts: dict[str, int] = {}
+    todo = []
     for key, track in state["tracks"].items():
         wanted = {tuple(p) for p in track["pairs"]}
         for job in hyp3.jobs(track["name"]):
@@ -252,12 +255,23 @@ def collect(root: Path, hyp3: Hyp3, state: dict[str, Any]) -> dict[str, int]:
                 continue
             pair_id = f"{pair[0][14:22]}_{pair[1][14:22]}"
             product_dir = root / "products" / track["site"] / track["burst"] / pair_id
-            done_flag = product_dir / ".complete"
-            if done_flag.is_file():
+            if (product_dir / ".complete").is_file():
+                continue
+            todo.append((key, track, job, pair, pair_id, product_dir))
+
+    def download(item):
+        info = item[2]["files"][0]
+        return fetch(info["url"], root / "downloads" / info["filename"], expected_size=int(info["size"]))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [(item, pool.submit(download, item)) for item in todo]
+        for (key, track, job, pair, pair_id, product_dir), future in futures:
+            try:
+                zpath = future.result()
+            except OSError as exc:  # only this product is retried next round
+                logger.warning("product %s/%s not downloaded: %s", key, pair_id, exc)
                 continue
             info = job["files"][0]
-            zpath = root / "downloads" / info["filename"]
-            fetch(info["url"], zpath, expected_size=int(info["size"]))
             product_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(zpath) as archive:
                 for member in archive.namelist():
@@ -271,7 +285,7 @@ def collect(root: Path, hyp3: Hyp3, state: dict[str, Any]) -> dict[str, int]:
                                           site=track["site"], burst=track["burst"], hyp3_job_id=job["job_id"],
                                           granules=list(pair), looks=LOOKS)
             manifest.save()
-            done_flag.write_text(job["job_id"])
+            (product_dir / ".complete").write_text(job["job_id"])
             zpath.unlink(missing_ok=True)  # extracted files are hashed; the zip is not reused
     return counts
 
@@ -282,11 +296,20 @@ def run(root: Path, *, poll_sec: float = 600.0, once: bool = False) -> dict[str,
     state = plan(root)
     record_references(root)
     hyp3 = Hyp3(earthdata_token())
-    submit_missing(root, hyp3, state)  # HyP3 处理需数小时，先提交再在等待期间取 DEM
-    try:
-        download_dem(root)
-    except Exception as exc:  # noqa: BLE001 - DEM 失败只记录，下一轮重试，不阻塞产物收集
-        logger.warning("DEM download incomplete, will retry: %s", exc)
+    submit_missing(root, hyp3, state)  # HyP3 处理需数小时，先提交
+
+    import threading
+
+    def dem_worker() -> None:  # DEM 源较慢：后台下载，不阻塞产物收集
+        for _ in range(20):
+            try:
+                download_dem(root)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("DEM download incomplete, will retry: %s", exc)
+                time.sleep(60)
+    dem_thread = threading.Thread(target=dem_worker, daemon=True)
+    dem_thread.start()
     while True:
         counts = collect(root, hyp3, state)
         total = sum(len(t["pairs"]) for t in state["tracks"].values())
@@ -294,13 +317,6 @@ def run(root: Path, *, poll_sec: float = 600.0, once: bool = False) -> dict[str,
         (root / "acquisition_status.json").write_text(json.dumps(
             {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "counts": counts, "pairs": total}))
         pending = sum(v for k, v in counts.items() if k in ("PENDING", "RUNNING"))
-        dem_ok = all((root / "dem" / site.key).is_dir() and not list((root / "dem" / site.key).glob("*.part"))
-                     for site in SITES)
-        if not dem_ok:
-            try:
-                download_dem(root)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("DEM download incomplete, will retry: %s", exc)
-        if once or not pending:
+        if once or (not pending and not dem_thread.is_alive()):
             return {"counts": counts, "pairs": total, "verify": Manifest(root).verify()}
         time.sleep(poll_sec)

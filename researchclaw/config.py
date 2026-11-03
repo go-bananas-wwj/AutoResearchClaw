@@ -477,6 +477,9 @@ class CodeAgentConfig:
     # Phase 2: Sequential file generation (one-by-one following blueprint)
     sequential_generation: bool = True
     file_max_tokens: int = 8192  # Per-file output cap; not a global request minimum.
+    # 本地适配：blueprint=上游蓝图+整文件生成；patch=按 ExperimentSpec 小步补丁编辑（单步截断只重试该步）
+    backend: str = "blueprint"
+    step_max_tokens: int = 16384
     # Phase 2.5: Hard validation gates (AST-based)
     hard_validation: bool = True
     hard_validation_max_repairs: int = 4
@@ -1589,6 +1592,8 @@ def _parse_code_agent_config(data: dict[str, Any]) -> CodeAgentConfig:
         architecture_planning=bool(data.get("architecture_planning", True)),
         sequential_generation=bool(data.get("sequential_generation", True)),
         file_max_tokens=max(1, _safe_int(data.get("file_max_tokens"), 8192)),
+        backend=str(data.get("backend", "blueprint")),
+        step_max_tokens=max(1, _safe_int(data.get("step_max_tokens"), 16384)),
         hard_validation=bool(data.get("hard_validation", True)),
         hard_validation_max_repairs=_safe_int(
             data.get("hard_validation_max_repairs"), 4

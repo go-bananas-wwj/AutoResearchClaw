@@ -319,10 +319,11 @@ def execution_failure(result: Any, metric: str = "") -> str:
     return ""
 
 
-def read_sandbox_metrics(sandbox: Any, result: Any, mode: str) -> Any:
+def read_sandbox_metrics(sandbox: Any, result: Any, mode: str, project: Path | None = None) -> Any:
     """Merge only results emitted by this sandbox invocation, including Unicode keys."""
-    number = sandbox._run_counter
-    project = sandbox.workdir / (f"_docker_project_{number}" if mode == "docker" else f"_project_{number}")
+    if project is None:
+        number = sandbox._run_counter
+        project = sandbox.workdir / (f"_docker_project_{number}" if mode == "docker" else f"_project_{number}")
     path = project / "results.json"
     if path.is_file():
         try:
@@ -377,12 +378,38 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
     output = workspace / ".rc-validation"
     output.mkdir(exist_ok=True)
     sandbox = create_sandbox(exp, output / "sandbox")
+    # 关卡顺序：方法断言（便宜、定位准）→ RC_VALIDATION 小规模 dry-run → 数据回执；模型审查在此之后
+    if not (workspace / "method_checks.py").is_file():
+        print("缺少 method_checks.py：须对核心方法写断言，不能仅打印指标")
+        return 1
+    try:
+        tree = ast.parse((workspace / "method_checks.py").read_text())
+        assertions = [n for n in ast.walk(tree) if isinstance(n, ast.Assert) or
+            (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr.startswith("assert"))]
+        if not assertions:
+            raise ValueError("没有可执行断言")
+    except (SyntaxError, ValueError) as exc:
+        print("方法测试无效：" + str(exc))
+        return 1
+    checks = sandbox.run_project(workspace, entry_point="method_checks.py", timeout_sec=timeout)
+    checks_ok = checks.returncode == 0 and not checks.timed_out and bool(re.search(
+        r"\bRC_METHOD_CHECKS_OK\b", checks.stdout))
+    write_json(output / "method_tests.json", {"returncode": checks.returncode,
+        "stdout": checks.stdout, "stderr": checks.stderr, "ok": checks_ok})
+    print(checks.stdout[-5000:], checks.stderr[-5000:])
+    emit("validation", "方法断言通过" if checks_ok else "方法断言失败", checks.stdout[-3000:] + checks.stderr[-3000:],
+         run_dir=activity_root, phase="validation", status="completed" if checks_ok else "failed")
+    if not checks_ok:
+        return 1
+    emit("validation", "开始小规模 dry-run（RC_VALIDATION=1）", run_dir=activity_root, phase="validation", status="running")
     result = sandbox.run_project(workspace, timeout_sec=min(timeout, exp.time_budget_sec),
                                  env_overrides={"RC_VALIDATION": "1"})
     result = read_sandbox_metrics(sandbox, result, exp.mode)
     # Chinese metric keys and nested condition results need not match the
     # legacy stdout regex; read the actual output file from this execution.
-    project = sandbox.workdir / ("_docker_project_1" if exp.mode == "docker" else "_project_1")
+    # 本次 dry-run 的暂存目录（方法断言已先占用一次运行编号）
+    run_no = getattr(sandbox, "_run_counter", 1)
+    project = sandbox.workdir / (f"_docker_project_{run_no}" if exp.mode == "docker" else f"_project_{run_no}")
     failure = execution_failure(result, exp.metric_key)
     write_json(output / "execution.json", {"returncode": result.returncode,
         "stdout": result.stdout, "stderr": result.stderr, "metrics": result.metrics,
@@ -429,27 +456,7 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
             print("实际数据验收失败：" + str(exc))
             emit("validation", "实际数据验收失败", str(exc), run_dir=activity_root, phase="validation", status="failed")
             return 1
-    if not (workspace / "method_checks.py").is_file():
-        print("缺少 method_checks.py：须对核心方法写断言，不能仅打印指标")
-        return 1
-    try:
-        tree = ast.parse((workspace / "method_checks.py").read_text())
-        assertions = [n for n in ast.walk(tree) if isinstance(n, ast.Assert) or
-            (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr.startswith("assert"))]
-        if not assertions:
-            raise ValueError("没有可执行断言")
-    except (SyntaxError, ValueError) as exc:
-        print("方法测试无效：" + str(exc))
-        return 1
-    checks = sandbox.run_project(workspace, entry_point="method_checks.py", timeout_sec=timeout)
-    checks_ok = checks.returncode == 0 and not checks.timed_out and bool(re.search(
-        r"\bRC_METHOD_CHECKS_OK\b", checks.stdout))
-    write_json(output / "method_tests.json", {"returncode": checks.returncode,
-        "stdout": checks.stdout, "stderr": checks.stderr, "ok": checks_ok})
-    print(checks.stdout[-5000:], checks.stderr[-5000:])
-    emit("validation", "方法断言通过" if checks_ok else "方法断言失败", checks.stdout[-3000:] + checks.stderr[-3000:],
-         run_dir=activity_root, phase="validation", status="completed" if checks_ok else "failed")
-    return 0 if checks_ok else 1
+    return 0
 
 
 def audit_implementation(files: dict[str, str], plan: dict, source: dict, llm: Any) -> dict:
@@ -511,6 +518,21 @@ def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, ll
             time_budget_sec=config.experiment.time_budget_sec)
         if not result.success:
             raise ExecutionContractError("OpenCode 验收修复失败：" + result.error)
+    elif getattr(config.experiment.code_agent, "backend", "blueprint") == "patch":
+        # 补丁式修复：只输出编辑块，单步截断只重试本步，不整文件重写
+        from researchclaw.pipeline.experiment_spec import load_spec
+        from researchclaw.pipeline.patch_agent import PatchCodeAgent, PatchError
+        run_dir = run_from_path(stage_dir) or stage_dir.parent
+        spec = load_spec(run_dir)
+        if spec is None:
+            raise ExecutionContractError("缺少 ExperimentSpec，无法进行补丁式修复")
+        emit("repair", "补丁式修复验收问题", feedback, run_dir=run_dir, phase="implementation", status="running")
+        agent = PatchCodeAgent(llm, run_dir=run_dir, stage_dir=stage_dir, spec=spec, plan_text=exp_plan,
+                               step_max_tokens=config.experiment.code_agent.step_max_tokens)
+        try:
+            return agent.step("repair:" + digest(feedback)[:8], guidance, files)
+        except PatchError as exc:
+            raise ExecutionContractError("补丁式验收修复失败：" + str(exc)) from exc
     else:
         from researchclaw.experiment.code_agent import LlmCodeAgent
         emit("repair", "ResearchClaw 内置模型正在修复验收问题", feedback,
@@ -524,26 +546,68 @@ def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, ll
     return {**files, **result.files}
 
 
+def _tree(run_dir: Path, config: Any):
+    from researchclaw.pipeline.experiment_spec import primary_direction
+    from researchclaw.pipeline.experiment_tree import ExperimentTree
+    return ExperimentTree(run_dir, primary_direction(run_dir, config.experiment.metric_direction))
+
+
 def accept_final_code(files: dict[str, str], plan: dict, config: Any, run_dir: Path,
-                      stage_dir: Path, llm: Any, *, workspace: Path | None = None) -> None:
+                      stage_dir: Path, llm: Any, *, workspace: Path | None = None,
+                      tree_parent: str | None = None, tree_action: str = "implement", stage: int = 10) -> str:
+    """Gate a candidate and record it as an experiment-tree node; returns the node id."""
     if llm is None:
         raise ExecutionContractError("缺少独立方法实现审查模型")
+    exp_dir = workspace if workspace is not None else stage_dir / "experiment"
+    # 清掉上一轮验收输出，失败反馈只能来自本轮
+    for stale in (stage_dir / "method_acceptance.json", stage_dir / "execution_acceptance.json",
+                  *(exp_dir / ".rc-validation").glob("*.json")):
+        stale.unlink(missing_ok=True)
+    tree = _tree(run_dir, config)
+    node = tree.add(files, action=tree_action, parent=tree_parent, stage=stage)["id"]
+    syntax = []
+    for name, code in files.items():
+        if name.endswith(".py"):
+            try:
+                ast.parse(code)
+            except SyntaxError as exc:
+                syntax.append(f"{name}:{exc.lineno}: {exc.msg}")
+    tree.gate(node, "syntax", not syntax, "; ".join(syntax))
+    if syntax:
+        raise ExecutionContractError("语法检查未通过：" + "; ".join(syntax))
+    (exp_dir.parent / ".rc_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
+    prepare_agent_tools(exp_dir, config.experiment)
+    timeout = config.experiment.execution_check.validation_timeout_sec
+    # 先实际执行（方法断言 → dry-run → 数据回执），再做模型审查：能跑通的代码才值得审
+    code = validate_workspace(exp_dir, timeout=timeout)
+    out = exp_dir / ".rc-validation"
+    def _read(name: str) -> dict:
+        try:
+            return json.loads((out / name).read_text())
+        except (OSError, ValueError):
+            return {}
+    checks, dry = _read("method_tests.json"), _read("execution.json")
+    tree.gate(node, "method_checks", bool(checks.get("ok")), (checks.get("stdout") or "")[-1500:])
+    if checks.get("ok"):
+        tree.gate(node, "dry_run", bool(dry) and not dry.get("failure"), dry.get("failure") or "")
+    if code == 0:
+        tree.gate(node, "data_hash", (out / "data_receipts.json").is_file() or not plan.get("execution", {}).get("datasets"),
+                  "data_receipts.json")
+    if code != 0:
+        raise ExecutionContractError("最终代码未通过实际执行/方法断言，见 experiment/.rc-validation/")
     emit("review", "正在验收最终代码与方法对应关系", run_dir=run_dir, phase="validation", status="running")
     audit = audit_implementation(files, plan, confirmed_method(run_dir, plan), llm)
     write_json(stage_dir / "method_acceptance.json", audit)
+    tree.gate(node, "review", audit["ok"], "; ".join(map(str, audit["issues"])))
     if not audit["ok"]:
         emit("review", "方法实现需要修复", "\n".join(map(str, audit["issues"])),
              run_dir=run_dir, phase="validation", status="failed")
         raise ExecutionContractError("方法实现未通过验收：" + "; ".join(map(str, audit["issues"])))
-    exp_dir = workspace if workspace is not None else stage_dir / "experiment"
-    (exp_dir.parent / ".rc_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
-    prepare_agent_tools(exp_dir, config.experiment)
-    timeout = config.experiment.execution_check.validation_timeout_sec
-    if validate_workspace(exp_dir, timeout=timeout) != 0:
-        raise ExecutionContractError("最终代码未通过实际执行/方法断言，见 experiment/.rc-validation/")
     write_json(stage_dir / "execution_acceptance.json", {"ok": True, "code_hash": digest(files),
         "files": {name: hashlib.sha256(content.encode()).hexdigest() for name, content in files.items()},
-        "plan_hash": digest(plan), "source_hash": audit["source_hash"], "validation_level": plan["execution"]["validation_level"]})
+        "plan_hash": digest(plan), "source_hash": audit["source_hash"], "validation_level": plan["execution"]["validation_level"],
+        "node": node})
+    return node
 
 
 def verify_accepted_code(exp_dir: Path, run_dir: Path) -> None:

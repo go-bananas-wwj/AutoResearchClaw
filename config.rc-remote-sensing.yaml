@@ -47,6 +47,8 @@ experiment:
   max_iterations: 10
   code_agent:
     file_max_tokens: 32768      # 复杂方法单文件的输出上限；不改变其他请求，不设全局下限
+    backend: "patch"            # 按 ExperimentSpec 小步补丁编辑，避免整文件一次输出被截断
+    step_max_tokens: 16384      # 单步编辑输出上限（非全局下限）
   opencode:
     enabled: false             # 本地适配：先使用 ResearchClaw 内置 CodeAgent 跑通
     required: false
