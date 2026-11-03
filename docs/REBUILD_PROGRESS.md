@@ -18,5 +18,8 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 - 数据：HyP3 914 对已提交（每对 1 credit），产物 4 路并行下载（CloudFront 实测 12.7 MB/s）；Planetary Computer DEM 很慢，改后台线程。
 - 2026-11-03：P3——证据账本 writing/ledger.py（result/setting/reference/literature，均带来源位置）；阶段17初稿注入账本数字表；VerifiedRegistry 并入账本数值（修复超参被消毒为 ---）；阶段23 主张校验（数字与 \cite 均须在账本有出处，否则阶段失败并写 claim_check.json，不自动改正文）。全量 3271 通过。
 
+- 2026-11-03：用户纠正——科研决策必须由 DeepSeek Flash 在框架内产出，协作者只设计框架（AGENTS.md 规则 3）。删除硬编码选点模块 insar_landslide.py，改为 planner（模型起草 data_plan.json + 宿主校验）+ sources（通用工具）；已下载产物迁入 /home/wwj/rc-data/shared 复用；停止并将从阶段9重新运行，由模型自行规划。
+- 待办：协同（非 auto_approve）模式下 data_plan 的人工确认门控尚未接入（本次运行为用户选择的全自动）。
+
 ## 待办（P0 剩余）
 - R1–R3 真机实测已通过（见清单证据）。

@@ -782,7 +782,8 @@ def _chat_with_prompt(
     # 本地适配：仅在确认截断时按 ideation 的做法把本次上限翻倍重试（最多 3 次、封顶
     # reasoning_max_tokens）；不是全局下限，截断输出仍不被接受。
     _cfg = getattr(llm, "config", None)
-    _cap = int(getattr(_cfg, "reasoning_max_tokens", 0) or 0)
+    _cap = getattr(_cfg, "reasoning_max_tokens", 0)
+    _cap = _cap if isinstance(_cap, int) and not isinstance(_cap, bool) else 0
     _escalations = 0
     _attempts = 1 + retries
     attempt = -1
@@ -800,7 +801,8 @@ def _chat_with_prompt(
             last_exc = exc
             _err_str = str(exc)
             if "截断" in _err_str and _cap and _escalations < 3:
-                current = max_tokens or int(getattr(_cfg, "max_tokens", 4096) or 4096)
+                _default = getattr(_cfg, "max_tokens", 4096)
+                current = max_tokens or (_default if isinstance(_default, int) else 4096)
                 if current < _cap:
                     max_tokens = min(_cap, current * 2)
                     _escalations += 1

@@ -6,7 +6,11 @@
 
 1. **每次修改代码后，必须 git commit 并推送到 GitHub 仓库**（`fork` / `docker-setup`），不允许只改本地不提交。一轮工作内多处相关改动可以合并成一个 commit，但会话结束前工作区必须是干净的。
 2. commit message 用中文，写清"改了什么、为什么"；对上游文件的修改要在 message 里注明是本地适配（如国内网络、Volta/V100、上游 bug 的 workaround）。
-3. 密钥纪律：`.env`、API key、token 一律不得进入 commit / push / 日志输出；配置文件只提交模板（`*.example.yaml`、`config.template.yaml`、`config.rc-remote-sensing.yaml` 等不含密钥的文件可以提交）。
+3. **框架边界（2026-11-03 用户要求）**：科研工作（选研究对象与数据、获取数据、规划、编码、运行与修复实验、写作）必须由流水线自己的模型（DeepSeek Flash，经 `.env` 中的外部 API）在框架内完成；开发协作者（Claude 等）只负责设计框架——工具、技能（skill）、数据/产物契约、校验与约束、恢复机制，必要时训练相关模型或策略。上线复用时无人实时监看，系统必须靠接入的外部 API 自主跑通。因此：
+   - 不得在代码或配置里写入任何具体项目的科研决策（研究区、坐标、数据集选择、时间窗、基线、参考真值等）；这些由模型产出为运行目录内的产物（如 `data_plan.json`），由宿主按契约校验（来源白名单、真实检索/估算、原文逐字引文、预算），协同模式下交人工门控确认。
+   - 不手工代跑或盯守：真实运行暴露问题时，修框架让系统自己恢复（看门狗、修复循环、校验反馈），不要手动杀进程、重启、补数据或替模型做选择；验证性运行只观察与报告。
+   - 失败要如实留在产物里，由框架的修复/门控处理，而不是由协作者人工绕过。
+4. 密钥纪律：`.env`、API key、token 一律不得进入 commit / push / 日志输出；配置文件只提交模板（`*.example.yaml`、`config.template.yaml`、`config.rc-remote-sensing.yaml` 等不含密钥的文件可以提交）。
 
 ## 本 fork 的本地适配点（不要"顺手改回"上游行为）
 
@@ -86,7 +90,7 @@
 
 - **执行底座与实验/写作重构（2026-11-03，按 docs/AUTORESEARCH_GOAL_PROMPT_CN.md）**：进度与完成标准见 `docs/REBUILD_PROGRESS.md`、`docs/rebuild_checklist.json`（只能凭证据把 passes 改为 true）。
   - `server.executor: worker`（遥感预设）：Web 只写 `artifacts/<run>/job.json`，`rc-worker` 服务（`python -m researchclaw.worker`）每项目一个子进程执行；子进程消失按 checkpoint 指数退避自动续跑（`max_auto_resumes`），正常结束的失败不重试；停止走 `.control/cancel`。**dashboard 重启不再打断实验**；改 worker 代码后新子进程自动生效，supervisor 本身改动才需 `docker compose restart worker`。rc-worker 同样必须挂 docker.sock+GID 与 `/home/wwj/rc-data`。
-  - 真实数据：`researchclaw/data_acquisition`（HyP3 INSAR_ISCE_BURST + Planetary Computer cop-dem-glo-30，方案经用户确认见 `docs/DATA_PLAN_INSAR_CN.md`）；`execution_check.data_acquisition` 使阶段9规划前完成获取并逐文件重算 SHA-256；`docker.data_mounts` 以同路径只读挂入沙箱。凭据只读 `.env` 的 `EARTHDATA_*`。
+  - 真实数据：`execution_check.data_base` 非空时，阶段9由**模型**起草 `stage-09/data_plan.json`（研究对象、坐标、时间窗、数据工具与参数、参考真值的原文逐字引文），`data_acquisition/planner.py` 校验（工具白名单、真实检索估算、引文逐字命中已读全文、credits/GB 预算）并把错误反馈给模型修订，通过后用 `data_acquisition/sources.py` 的通用工具（ASF burst InSAR/HyP3、Planetary Computer STAC、HTTPS 直链）获取；文件存 `<data_base>/shared`（按 burst 对/STAC item/URL 复用，HyP3 按影像对去重不重复付费），本运行清单在 `<data_base>/runs/<run_id>/data_manifest.json`。等待中检查停止请求。`docker.data_mounts` 同路径只读挂入沙箱；凭据只读 `.env` 的 `EARTHDATA_*`。
   - 阶段9生成 `stage-09/experiment_spec.json`（`pipeline/experiment_spec.py`），主指标方向矛盾、可用真实数据却只用合成数据等静态拦截。
   - `code_agent.backend: patch`：`pipeline/patch_agent.py` 分步编辑块实现，单步截断只重试该步，回复按提示词哈希缓存于 `run_dir/.cache/patch/`；blueprint 路径回复缓存于 `run_dir/.cache/codegen/`。`.cache/` 与 `.formal_runs/` 在 run_dir 根，**不要放进 stage 目录**（恢复会归档 stage 目录）。
   - 验收顺序：语法 → method_checks → RC_VALIDATION dry-run → 数据回执 → 模型审查；每次验收是 `experiment_tree/` 的一个 git 节点，`best.json` 只经 `ExperimentTree.promote`（全部关卡通过且主指标按规格方向改进）更新。阶段12正式运行为 detached 容器 `rc-formal-<key>`，恢复时重新接上。

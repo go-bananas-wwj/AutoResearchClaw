@@ -521,8 +521,11 @@ class ExecutionCheckConfig:
     max_code_repairs: int = 2
     validation_timeout_sec: int = 180
     data_roots: tuple[str, ...] = ()
-    # 本地适配：规划前必须完成的真实数据获取，"<dataset>:<root>"（见 researchclaw.data_acquisition）
-    data_acquisition: tuple[str, ...] = ()
+    # 本地适配：真实数据规划。data_base 非空时，阶段9由模型起草 data_plan.json（宿主校验后执行），
+    # 文件存于 <data_base>/shared，本运行清单在 <data_base>/runs/<run_id>（见 researchclaw.data_acquisition.planner）
+    data_base: str = ""
+    data_max_credits: int = 2000
+    data_max_gb: float = 200.0
 
 
 @dataclass(frozen=True)
@@ -1508,7 +1511,9 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
             max_code_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_code_repairs"), 2)),
             validation_timeout_sec=max(1, _safe_int((data.get("execution_check") or {}).get("validation_timeout_sec"), 180)),
             data_roots=tuple((data.get("execution_check") or {}).get("data_roots") or ()),
-            data_acquisition=tuple((data.get("execution_check") or {}).get("data_acquisition") or ()),
+            data_base=str((data.get("execution_check") or {}).get("data_base") or ""),
+            data_max_credits=max(0, _safe_int((data.get("execution_check") or {}).get("data_max_credits"), 2000)),
+            data_max_gb=float((data.get("execution_check") or {}).get("data_max_gb") or 200.0),
         ),
         benchmark_agent=_parse_benchmark_agent_config(
             data.get("benchmark_agent") or {}

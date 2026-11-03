@@ -119,7 +119,7 @@
       "item": "数据获取为可续跑、按文件校验的流水线步骤",
       "verify": "测试：下载中断后只重下未完成文件；manifest 含 source_url/许可/时间/SHA-256",
       "passes": true,
-      "evidence": "tests/test_data_acquisition.py（fetch 断点续传 Range 续传、manifest 重算哈希检出篡改、HyP3 按名字+granule 对去重提交、产物解压后逐文件登记 SHA-256）；researchclaw/data_acquisition/"
+      "evidence": "tests/test_data_acquisition.py（fetch 断点续传 Range 续传、manifest 重算哈希检出篡改、HyP3 按名字+granule 对去重提交、产物解压后逐文件登记 SHA-256）；researchclaw/data_acquisition/；2026-11-03 改为模型起草 data_plan + 宿主校验 + 通用工具：tests/test_data_acquisition.py::test_validate_requires_verbatim_quote_registry_and_budget、test_draft_revises_on_feedback_then_executes、test_no_project_specific_choices_in_sources"
     },
     {
       "id": "D2",
@@ -127,7 +127,8 @@
       "item": "真实项目使用经用户确认的真实公开数据完成实验",
       "verify": "data_manifest.json 与宿主重算哈希一致；研究区方案有用户确认记录",
       "passes": false,
-      "evidence": ""
+      "evidence": "",
+      "note": "方案须由阶段9模型产出（stage-09/data_plan.json，通过宿主校验）；此前开发协作者手选方案作废（docs/DATA_PLAN_INSAR_CN.md）"
     },
     {
       "id": "G1",

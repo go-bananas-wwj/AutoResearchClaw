@@ -94,7 +94,10 @@ def measure_resources(config: Any, run_dir: Path) -> dict:
     # 带 data_manifest.json 的真实数据根（researchclaw.data_acquisition 产出）以清单摘要盘点，
     # 不靠列前 100 个文件判断数据是否具备。
     from researchclaw.pipeline.experiment_spec import real_data_roots
-    resources["real_data"] = real_data_roots(exp.execution_check.data_roots)
+    roots = list(exp.execution_check.data_roots)
+    if exp.execution_check.data_base:
+        roots.append(str(Path(exp.execution_check.data_base) / "runs" / run_dir.name))
+    resources["real_data"] = real_data_roots(roots)
     write_json(run_dir / "stage-09" / "execution_resources.json", resources)
     emit("plan", "资源检测完成", json.dumps(resources, ensure_ascii=False),
          run_dir=run_dir, phase="planning", status="completed")
@@ -189,25 +192,33 @@ measured_resources.real_data 列出已下载并带 SHA-256 清单的真实数据
 """
 
 
-def ensure_real_data(config: Any, run_dir: Path) -> None:
-    """Acquisition is a resumable pipeline step: complete and hash-verified before planning."""
-    specs = config.experiment.execution_check.data_acquisition
-    if not specs:
+def ensure_real_data(config: Any, run_dir: Path, llm: Any) -> None:
+    """Data is a resumable pipeline step: the model plans it, the host validates and acquires it."""
+    check = config.experiment.execution_check
+    if not check.data_base:
         return
-    from researchclaw.data_acquisition import ensure
+    from researchclaw.data_acquisition import planner
+    from researchclaw.worker.jobs import cancel_requested
 
-    def note(kind: str, title: str, detail: str = "") -> None:
-        emit("plan", title, detail, run_dir=run_dir, phase="planning", status="running")
-    for spec in specs:
-        try:
-            result = ensure(spec, emit=note)
-        except Exception as exc:  # noqa: BLE001
-            raise ExecutionContractError(f"真实数据获取未完成：{exc}") from exc
-        write_json(run_dir / "stage-09" / "data_acquisition.json", {"spec": spec, **result})
+    def note(title: str, detail: str = "") -> None:
+        emit("plan", title, detail, run_dir=run_dir, phase="planning", status="running",
+             model=config.llm.primary_model)
+    budget = {"max_credits": check.data_max_credits, "max_gb": check.data_max_gb}
+    try:
+        plan = planner.draft(llm, run_dir, budget, emit=note)
+        manifest_dir = planner.execute(plan, run_dir, Path(check.data_base),
+                                       should_stop=lambda: cancel_requested(run_dir), emit=note)
+    except InterruptedError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ExecutionContractError(f"真实数据未就绪：{exc}") from exc
+    write_json(run_dir / "stage-09" / "data_acquisition.json", {"manifest_dir": str(manifest_dir),
+               "estimates": plan.get("estimates")})
+    note("真实数据已就绪并通过哈希校验", str(manifest_dir))
 
 
 def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
-    ensure_real_data(config, run_dir)
+    ensure_real_data(config, run_dir, llm)
     resources = measure_resources(config, run_dir)
     source = confirmed_method(run_dir, plan)
     errors: list[str] = []

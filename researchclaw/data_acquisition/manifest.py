@@ -18,13 +18,18 @@ MANIFEST = "data_manifest.json"
 
 
 class Manifest:
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path, files_root: Path | None = None) -> None:
+        """``root`` holds data_manifest.json; entry paths are relative to ``files_root``
+        (default ``root``) so a run manifest can reference a shared store."""
         self.path = root / MANIFEST
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {"entries": []}
+        if files_root is not None:
+            data["files_root"] = str(files_root)
+        self.root = Path(data.get("files_root") or root)
+        self.manifest_dir = root
         self.data = data
         self._index = {e["id"]: e for e in data["entries"]}
 
@@ -55,7 +60,7 @@ class Manifest:
         return entry
 
     def save(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.manifest_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(self.path)

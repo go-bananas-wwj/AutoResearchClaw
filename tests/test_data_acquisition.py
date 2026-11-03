@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 
 import pytest
 
-from researchclaw.data_acquisition import download, insar_landslide
+from researchclaw.data_acquisition import download, planner, sources
 from researchclaw.data_acquisition.manifest import Manifest
 
 
@@ -65,71 +66,93 @@ def test_manifest_verify_detects_tampering(tmp_path):
     assert Manifest(tmp_path).verify()['mismatched'] == ['a']
 
 
-def test_plan_pairs_nearest_two():
-    scenes = [{'granule': g} for g in 'ABCD']
-    assert insar_landslide.plan_pairs(scenes) == [('A', 'B'), ('A', 'C'), ('B', 'C'), ('B', 'D'), ('C', 'D')]
+def test_pairs_nearest_neighbours():
+    scenes = [{'granule': g, 'time': t} for g, t in zip('ABCD', ('1', '2', '3', '4'))]
+    assert sources._pairs(scenes, 2) == [('A', 'B'), ('A', 'C'), ('B', 'C'), ('B', 'D'), ('C', 'D')]
 
 
-class FakeHyp3:
-    def __init__(self, existing):
-        self.existing, self.submitted = existing, []
-
-    def jobs(self, name):
-        return self.existing
-
-    def credits(self):
-        return 100
-
-    def submit(self, name, pairs):
-        self.submitted.extend(pairs)
+def _run_with_paper(tmp_path):
+    run = tmp_path / 'rc-20261025-145941-c30e99'
+    paper = run / 'ideation_evidence' / 'related work' / 'p-1'
+    paper.mkdir(parents=True)
+    (paper / 'fulltext.txt').write_text('… the landslide occurred in the early morning of 24 June 2017 and killed …')
+    (run / 'ideation_evidence' / 'manifest.json').write_text(json.dumps({'papers': [
+        {'paper_id': 'p-1', 'title': 'T', 'selected': True}]}))
+    (run / 'research_brief.json').write_text(json.dumps({'topic': 't', 'metrics': []}))
+    return run
 
 
-def test_submit_missing_skips_existing_pairs(tmp_path):
-    state = {'tracks': {'s/b': {'name': 'n', 'pairs': [['A', 'B'], ['B', 'C']]}}}
-    hyp3 = FakeHyp3([{'job_parameters': {'granules': ['A', 'B']}, 'status_code': 'RUNNING'},
-                     {'job_parameters': {'granules': ['B', 'C']}, 'status_code': 'FAILED'}])
-    assert insar_landslide.submit_missing(tmp_path, hyp3, state) == 1
-    assert hyp3.submitted == [('B', 'C')]  # failed job resubmitted, running one not
+class FakeTool:
+    name = 'fake'
+    describe = 'fake'
+
+    def __init__(self):
+        self.acquired = []
+
+    def estimate(self, params, target):
+        if params.get('bad'):
+            raise ValueError('collection does not exist')
+        return {'credits': params.get('n', 1), 'gb': 0.1}
+
+    def acquire(self, params, ctx):
+        f = ctx.base / 'shared' / 'fake' / f"{ctx.target['id']}.bin"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b'x')
+        ctx.manifest.add_file(f"{ctx.target['id']}/fake", f, source_url='https://x', license='open', kind='fake')
+        self.acquired.append(ctx.target['id'])
 
 
-def test_collect_extracts_and_hashes_products(tmp_path, monkeypatch):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w') as z:
-        z.writestr('P/P_wrapped_phase.tif', b'phase')
-        z.writestr('P/P_corr.tif', b'corr')
-        z.writestr('P/P_amp.tif', b'skip')
-    payload = buf.getvalue()
-
-    def fake_fetch(url, dest, expected_size=None, **kw):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(payload)
-        return dest
-    monkeypatch.setattr(insar_landslide, 'fetch', fake_fetch)
-    ref, sec = 'S1_272973_IW3_20170601T000000_VV_AAAA-BURST', 'S1_272973_IW3_20170613T000000_VV_BBBB-BURST'
-    job = {'job_id': 'j1', 'status_code': 'SUCCEEDED', 'job_parameters': {'granules': [ref, sec]},
-           'files': [{'url': 'https://hyp3/p.zip', 'size': len(payload), 'filename': 'p.zip'}]}
-    state = {'tracks': {'xinmo/b': {'name': 'n', 'site': 'xinmo', 'burst': 'b', 'pairs': [[ref, sec]]}}}
-    counts = insar_landslide.collect(tmp_path, FakeHyp3([job]), state)
-    assert counts == {'SUCCEEDED': 1}
-    m = Manifest(tmp_path)
-    ids = sorted(e['id'] for e in m.data['entries'])
-    assert ids == ['xinmo/b/20170601_20170613/P_corr.tif', 'xinmo/b/20170601_20170613/P_wrapped_phase.tif']
-    assert m.verify()['ok'] and not (tmp_path / 'downloads' / 'p.zip').exists()
-    # second pass is a no-op (.complete flag)
-    monkeypatch.setattr(insar_landslide, 'fetch', lambda *a, **k: pytest.fail('re-download'))
-    insar_landslide.collect(tmp_path, FakeHyp3([job]), state)
+PLAN = {'targets': [{'id': 'xinmo', 'name': 'Xinmo', 'lat': 32.07, 'lon': 103.66, 'event_date': '2017-06-24',
+                     'reference': {'paper_id': 'p-1', 'quote': 'occurred in the early morning of 24 June 2017',
+                                   'claim': 'failure date'}}],
+        'acquisitions': [{'tool': 'fake', 'target': 'xinmo', 'params': {'n': 3}}]}
 
 
-def test_corrupt_zip_is_dropped_and_others_continue(tmp_path, monkeypatch):
-    def fake_fetch(url, dest, expected_size=None, **kw):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b'PK not really a zip')
-        return dest
-    monkeypatch.setattr(insar_landslide, 'fetch', fake_fetch)
-    ref, sec = 'S1_272973_IW3_20170601T000000_VV_AAAA-BURST', 'S1_272973_IW3_20170613T000000_VV_BBBB-BURST'
-    job = {'job_id': 'j1', 'status_code': 'SUCCEEDED', 'job_parameters': {'granules': [ref, sec]},
-           'files': [{'url': 'https://hyp3/p.zip', 'size': 19, 'filename': 'p.zip'}]}
-    state = {'tracks': {'xinmo/b': {'name': 'n', 'site': 'xinmo', 'burst': 'b', 'pairs': [[ref, sec]]}}}
-    assert insar_landslide.collect(tmp_path, FakeHyp3([job]), state) == {'SUCCEEDED': 1}
-    assert not (tmp_path / 'downloads' / 'p.zip').exists()
-    assert not (tmp_path / 'products' / 'xinmo' / 'b' / '20170601_20170613' / '.complete').exists()
+def test_validate_requires_verbatim_quote_registry_and_budget(tmp_path, monkeypatch):
+    run = _run_with_paper(tmp_path)
+    monkeypatch.setitem(sources.REGISTRY, 'fake', FakeTool())
+    monkeypatch.setattr(planner, 'REGISTRY', sources.REGISTRY)
+    errors, est = planner.validate(PLAN, run, {'max_credits': 10, 'max_gb': 1})
+    assert errors == [] and est['total']['credits'] == 3
+    bad = json.loads(json.dumps(PLAN))
+    bad['targets'][0]['reference']['quote'] = 'failed on 25 June 2017'  # not in the paper
+    bad['acquisitions'].append({'tool': 'made_up', 'target': 'xinmo'})
+    bad['acquisitions'].append({'tool': 'fake', 'target': 'xinmo', 'params': {'bad': True}})
+    errors, _ = planner.validate(bad, run, {'max_credits': 2, 'max_gb': 1})
+    joined = ' '.join(errors)
+    assert '逐字' in joined and '未注册' in joined and '参数检索失败' in joined and '超过预算' in joined
+
+
+def test_draft_revises_on_feedback_then_executes(tmp_path, monkeypatch):
+    from researchclaw.llm.client import LLMResponse
+    run = _run_with_paper(tmp_path)
+    tool = FakeTool()
+    monkeypatch.setitem(sources.REGISTRY, 'fake', tool)
+    wrong = json.loads(json.dumps(PLAN))
+    wrong['targets'][0]['reference']['quote'] = '24 June 2017 failure'
+
+    class LLM:
+        def __init__(self):
+            self.replies = [wrong, PLAN]
+            self.prompts = []
+
+        def chat(self, messages, **kw):
+            self.prompts.append(json.loads(messages[0]['content']))
+            return LLMResponse(content=json.dumps(self.replies.pop(0)), model='m', finish_reason='stop')
+    llm = LLM()
+    accepted = planner.draft(llm, run, {'max_credits': 10, 'max_gb': 1})
+    assert llm.prompts[1]['previous_errors'] and accepted['targets'][0]['id'] == 'xinmo'
+    assert planner.draft(llm, run, {'max_credits': 10, 'max_gb': 1}) == accepted  # resume: no new call
+    base = tmp_path / 'data'
+    mdir = planner.execute(accepted, run, base, should_stop=lambda: False)
+    m = Manifest(mdir)
+    assert tool.acquired == ['xinmo'] and m.verify()['ok']
+    ref = m.get('xinmo/reference')
+    assert ref['failure_date'] == '2017-06-24' and ref['quote'].startswith('occurred')
+
+
+def test_no_project_specific_choices_in_sources():
+    import inspect
+    text = inspect.getsource(sources) + inspect.getsource(planner)
+    for word in ('Xinmo', 'Baige', 'Mud Creek', 'Brienz', '103.665', '272973'):
+        assert word not in text

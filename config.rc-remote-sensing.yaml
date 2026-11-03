@@ -62,8 +62,10 @@ experiment:
     max_plan_repairs: 2
     max_code_repairs: 2
     validation_timeout_sec: 180
-    data_roots: [data, datasets, /home/wwj/rc-data/insar_landslide]
-    data_acquisition: ["insar-landslide:/home/wwj/rc-data/insar_landslide"]  # 阶段9规划前获取并校验真实数据（可续跑）
+    data_roots: [data, datasets]
+    data_base: "/home/wwj/rc-data"   # 阶段9由模型起草数据方案、宿主校验后获取；共享存储与每运行清单都在此目录下
+    data_max_credits: 2000           # HyP3 等按量服务的单次运行上限
+    data_max_gb: 200
   cli_agent:
     max_budget_usd: 0.0       # 本地适配：后续科研也不施加美元上限
   metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致
