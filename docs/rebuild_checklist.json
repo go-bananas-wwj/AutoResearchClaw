@@ -14,16 +14,16 @@
       "criterion": "不怕重启",
       "item": "worker 子进程被 kill 后看门狗自动从最近完成处续跑",
       "verify": "kill 运行中 run 的子进程，job.json 出现 auto_resume 记录并重新进入 running，无需手动脚本",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "2026-11-03 真实 run：05:08:53 SIGKILL worker 子进程 117 → worker_events.jsonl 05:08:54 child_exit(code -9) + auto_resume(from_stage 9, delay 30s) → 05:09:24 launch pid 186；resume_history.jsonl 记 auto=true，旧产物归档 recovery_history/20261103-050854-528225。"
     },
     {
       "id": "R3",
       "criterion": "不怕重启",
       "item": "worker 容器整体重启后未完成的 run 自动续跑",
       "verify": "docker compose restart worker 后 interrupted 的 run 被重新拉起",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "2026-11-03 真实 run：05:23:23 docker compose up -d worker（重建容器，init=true）→ 新 supervisor boot 6b5f9b17… 05:23:36 发现上一代 running 任务，auto_resume（原因“执行进程已不存在”）→ 05:24:06 launch pid 8，从阶段9继续数据获取。"
     },
     {
       "id": "T1",

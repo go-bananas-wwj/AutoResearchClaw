@@ -19,5 +19,4 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 - 2026-11-03：P3——证据账本 writing/ledger.py（result/setting/reference/literature，均带来源位置）；阶段17初稿注入账本数字表；VerifiedRegistry 并入账本数值（修复超参被消毒为 ---）；阶段23 主张校验（数字与 \cite 均须在账本有出处，否则阶段失败并写 claim_check.json，不自动改正文）。全量 3271 通过。
 
 ## 待办（P0 剩余）
-- R1–R3 真机实测（需真实 run 运行中重启 dashboard / kill 子进程 / 重启 worker）。
-- 5 项既有失败测试修复。
+- R1–R3 真机实测已通过（见清单证据）。
