@@ -33,6 +33,9 @@ def fetch(url: str, dest: Path, *, headers: dict[str, str] | None = None,
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
+    if expected_size is not None and part.is_file() and part.stat().st_size > expected_size:
+        part.unlink()  # 比预期还大的 .part 已损坏（如并发写入），续传只会卡住
+
     http = session or requests.Session()
     last: Exception | None = None
     for attempt in range(retries):
@@ -59,6 +62,8 @@ def fetch(url: str, dest: Path, *, headers: dict[str, str] | None = None,
                         out.write(block)
             size = part.stat().st_size
             if total is not None and size != total:
+                if size > total:
+                    part.unlink()
                 raise OSError(f"size mismatch {size} != {total}")
             part.replace(dest)
             return dest

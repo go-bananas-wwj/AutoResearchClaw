@@ -63,5 +63,6 @@ services:
     working_dir: /app
     group_add: ["${DOCKER_GID:-999}"]
     restart: unless-stopped
+    init: true   # tini 作 1 号进程回收孤儿/僵尸子进程
     entrypoint: ["python3", "-m", "researchclaw.worker"]
     command: ["--config", "config.rc-remote-sensing.yaml"]

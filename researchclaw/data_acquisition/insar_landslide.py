@@ -256,6 +256,14 @@ def collect(root: Path, hyp3: Hyp3, state: dict[str, Any], *, workers: int = 4) 
             pair_id = f"{pair[0][14:22]}_{pair[1][14:22]}"
             product_dir = root / "products" / track["site"] / track["burst"] / pair_id
             if (product_dir / ".complete").is_file():
+                # 补登记：已完成产物若有文件缺清单条目（并发写入丢失），按文件重新登记哈希
+                for target in product_dir.iterdir():
+                    entry_id = f"{key}/{pair_id}/{target.name}"
+                    if target.name != ".complete" and entry_id not in manifest:
+                        manifest.add_file(entry_id, target, source_url=job["files"][0]["url"], kind="insar_product",
+                                          license="Contains modified Copernicus Sentinel data; ASF HyP3",
+                                          site=track["site"], burst=track["burst"], hyp3_job_id=job["job_id"],
+                                          granules=list(pair), looks=LOOKS, reconciled=True)
                 continue
             todo.append((key, track, job, pair, pair_id, product_dir))
 
@@ -263,6 +271,7 @@ def collect(root: Path, hyp3: Hyp3, state: dict[str, Any], *, workers: int = 4) 
         info = item[2]["files"][0]
         return fetch(info["url"], root / "downloads" / info["filename"], expected_size=int(info["size"]))
 
+    manifest.save()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [(item, pool.submit(download, item)) for item in todo]
         for (key, track, job, pair, pair_id, product_dir), future in futures:
