@@ -128,7 +128,7 @@
       "verify": "data_manifest.json 与宿主重算哈希一致；研究区方案有用户确认记录",
       "passes": false,
       "evidence": "",
-      "note": "方案须由阶段9模型产出（stage-09/data_plan.json，通过宿主校验）；此前开发协作者手选方案作废（docs/DATA_PLAN_INSAR_CN.md）"
+      "note": "方案须由阶段9模型产出（stage-09/data_plan.json，通过宿主校验）；此前开发协作者手选方案作废（docs/DATA_SELECTION_SUPERSEDED_CN.md）"
     },
     {
       "id": "G1",
