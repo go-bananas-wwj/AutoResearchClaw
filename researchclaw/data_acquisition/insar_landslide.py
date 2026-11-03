@@ -281,9 +281,12 @@ def run(root: Path, *, poll_sec: float = 600.0, once: bool = False) -> dict[str,
     check_planetary_computer(root)
     state = plan(root)
     record_references(root)
-    download_dem(root)
     hyp3 = Hyp3(earthdata_token())
-    submit_missing(root, hyp3, state)
+    submit_missing(root, hyp3, state)  # HyP3 处理需数小时，先提交再在等待期间取 DEM
+    try:
+        download_dem(root)
+    except Exception as exc:  # noqa: BLE001 - DEM 失败只记录，下一轮重试，不阻塞产物收集
+        logger.warning("DEM download incomplete, will retry: %s", exc)
     while True:
         counts = collect(root, hyp3, state)
         total = sum(len(t["pairs"]) for t in state["tracks"].values())
@@ -291,6 +294,13 @@ def run(root: Path, *, poll_sec: float = 600.0, once: bool = False) -> dict[str,
         (root / "acquisition_status.json").write_text(json.dumps(
             {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "counts": counts, "pairs": total}))
         pending = sum(v for k, v in counts.items() if k in ("PENDING", "RUNNING"))
+        dem_ok = all((root / "dem" / site.key).is_dir() and not list((root / "dem" / site.key).glob("*.part"))
+                     for site in SITES)
+        if not dem_ok:
+            try:
+                download_dem(root)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("DEM download incomplete, will retry: %s", exc)
         if once or not pending:
             return {"counts": counts, "pairs": total, "verify": Manifest(root).verify()}
         time.sleep(poll_sec)

@@ -401,6 +401,10 @@ def _execute_code_generation(
                          and saved.get("source_hash") == digest(confirmed_method(run_dir, existing))
                          and saved.get("resources") == measured
                          and not validate_plan(existing, measured, confirmed_method(run_dir, existing)))
+                from researchclaw.pipeline.experiment_spec import load_spec, validate_spec
+                spec = load_spec(run_dir)
+                valid = valid and spec is not None and spec.get("hashes", {}).get("plan") == digest(existing) \
+                    and not validate_spec(spec, existing)
             _execution_plan = existing if valid else ground_plan(existing, config, run_dir, llm)
             exp_plan = yaml.safe_dump(_execution_plan, allow_unicode=True)
         except (ExecutionContractError, ValueError, OSError) as exc:

@@ -518,6 +518,8 @@ class ExecutionCheckConfig:
     max_code_repairs: int = 2
     validation_timeout_sec: int = 180
     data_roots: tuple[str, ...] = ()
+    # 本地适配：规划前必须完成的真实数据获取，"<dataset>:<root>"（见 researchclaw.data_acquisition）
+    data_acquisition: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1503,6 +1505,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
             max_code_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_code_repairs"), 2)),
             validation_timeout_sec=max(1, _safe_int((data.get("execution_check") or {}).get("validation_timeout_sec"), 180)),
             data_roots=tuple((data.get("execution_check") or {}).get("data_roots") or ()),
+            data_acquisition=tuple((data.get("execution_check") or {}).get("data_acquisition") or ()),
         ),
         benchmark_agent=_parse_benchmark_agent_config(
             data.get("benchmark_agent") or {}

@@ -91,6 +91,10 @@ def measure_resources(config: Any, run_dir: Path) -> dict:
                 break
         if files:
             resources["datasets"].append({"root": str(root.resolve()), "files": files})
+    # 带 data_manifest.json 的真实数据根（researchclaw.data_acquisition 产出）以清单摘要盘点，
+    # 不靠列前 100 个文件判断数据是否具备。
+    from researchclaw.pipeline.experiment_spec import real_data_roots
+    resources["real_data"] = real_data_roots(exp.execution_check.data_roots)
     write_json(run_dir / "stage-09" / "execution_resources.json", resources)
     emit("plan", "资源检测完成", json.dumps(resources, ensure_ascii=False),
          run_dir=run_dir, phase="planning", status="completed")
@@ -179,10 +183,31 @@ compute_budget 与 execution 必须一致，别在文字中保留 4 A100/200 GPU
 methods 中写清公式、输入输出、维度和数据划分；设置独立 method_checks.py 验证关键数学性质与张量接口。
 正式入口支持 RC_VALIDATION=1 的小规模运行，保留全部方法与评价逻辑并输出同一主指标。
 execution_target 是服务端已保存的主指标及方向，必须原样使用其键（含中文键）；可增加清晰别名和辅助指标，不能换掉主指标。
+主指标在 execution_target、metrics 等所有位置的方向必须与 execution_target.direction 完全一致，不得另写相反的 scoring_direction。
+measured_resources.real_data 列出已下载并带 SHA-256 清单的真实数据；存在时必须作为 kind='local' 使用（path 为该 root），
+代码通过 root 下 data_manifest.json 的 entries 定位文件，并写出所用文件的 data_manifest.json；validation_level 相应为 real 或 mixed。
 """
 
 
+def ensure_real_data(config: Any, run_dir: Path) -> None:
+    """Acquisition is a resumable pipeline step: complete and hash-verified before planning."""
+    specs = config.experiment.execution_check.data_acquisition
+    if not specs:
+        return
+    from researchclaw.data_acquisition import ensure
+
+    def note(kind: str, title: str, detail: str = "") -> None:
+        emit("plan", title, detail, run_dir=run_dir, phase="planning", status="running")
+    for spec in specs:
+        try:
+            result = ensure(spec, emit=note)
+        except Exception as exc:  # noqa: BLE001
+            raise ExecutionContractError(f"真实数据获取未完成：{exc}") from exc
+        write_json(run_dir / "stage-09" / "data_acquisition.json", {"spec": spec, **result})
+
+
 def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
+    ensure_real_data(config, run_dir)
     resources = measure_resources(config, run_dir)
     source = confirmed_method(run_dir, plan)
     errors: list[str] = []
@@ -218,6 +243,11 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
                 raise ValueError("实施计划截断")
             plan = json.loads(response.content)
             errors = validate_plan(plan, resources, source) if isinstance(plan, dict) else ["计划不是对象"]
+            if isinstance(plan, dict):
+                from researchclaw.pipeline.experiment_spec import build_spec, validate_spec
+                spec = build_spec(plan, source, resources, metric_key=config.experiment.metric_key,
+                                  metric_direction=config.experiment.metric_direction)
+                errors += validate_spec(spec, plan)
         except (ValueError, TypeError) as exc:
             errors = [str(exc)]
         write_json(run_dir / "stage-09" / f"execution_plan_review_{next_index+attempt}.json",
@@ -249,6 +279,8 @@ unknown/not_measured/deferred 都表示数据未具备，不因同义措辞阻�
             write_json(run_dir / "stage-09" / f"execution_coverage_{next_index+attempt}.json",
                        {"errors": errors, "raw_response": review.content})
         if not errors:
+            from researchclaw.pipeline.experiment_spec import write_spec
+            write_spec(run_dir, spec)
             write_json(run_dir / "stage-09" / "execution_contract.json",
                        {"source_hash": digest(source), "plan_hash": digest(plan), "resources": resources})
             (run_dir / "stage-09" / "exp_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))

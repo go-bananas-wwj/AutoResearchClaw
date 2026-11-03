@@ -48,8 +48,12 @@ def fetch(url: str, dest: Path, *, headers: dict[str, str] | None = None,
                 if have and resp.status_code != 206:
                     have = 0  # server ignored Range: restart this file
                 total = expected_size
+                if total is None and resp.headers.get("Content-Range", "").rpartition("/")[2].isdigit():
+                    total = int(resp.headers["Content-Range"].rpartition("/")[2])
                 if total is None and resp.headers.get("Content-Length"):
                     total = have + int(resp.headers["Content-Length"])
+                if total is None:
+                    raise OSError("服务器未提供文件大小，无法确认下载完整")
                 with part.open("ab" if have else "wb") as out:
                     for block in resp.iter_content(1 << 20):
                         out.write(block)
@@ -62,7 +66,8 @@ def fetch(url: str, dest: Path, *, headers: dict[str, str] | None = None,
             last = exc
             logger.warning("download %s failed (attempt %d/%d): %s", dest.name, attempt + 1, retries, exc)
             time.sleep(min(60, 5 * 2 ** attempt))
-    if part.is_file() and (expected_size is None or part.stat().st_size == expected_size):
+    if expected_size is not None and part.is_file() and part.stat().st_size == expected_size:
         part.replace(dest)
         return dest
+    # 大小未知或不符时绝不把 .part 当作完成文件；保留 .part 供下次续传
     raise OSError(f"下载失败：{dest.name}（{last}）")
