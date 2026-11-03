@@ -83,3 +83,12 @@
 - **仅使用 Flash（2026-10-27，用户要求覆盖此前 Pro 兜底）**：遥感与 demo 配置均只用 `deepseek-flash`，`fallback_models=[]`，调研、规划、实现、复核均继承 Flash，禁止自动使用 V4 Pro 或其他模型。保持遥感推理开启、独立输出上限及预算 0。切换需重启已载入旧兜底链的运行进程，归档已生成草稿后恢复同一项目，不能只改文件却让旧运行继续切换 Pro。
 
 - **方法验收＋实施实况（2026-10-27，用户选择方案3＋1）**：总览首屏的实施面板展示当前目标文件、真实终态/错误、最近保存代码及12项等实际方法要求；方法行关联审查中的逐字代码/断言证据及源行号。`/runs/{id}/implementation` 仅汇集当前阶段10或最新阶段13优化候选，排除恢复历史；文件接口按白名单＋SHA-256读取，版本变化返回409，过滤后仍映射源行号。代码/计划/任务书哈希不匹配时旧审查和验收失效，源码审查与实际验收分开，不能把草稿、行数或文件名当成实现通过。原生逐文件生成可流式发布公开代码至 `.implementation/live.json`，重试清空旧正文，截断保留失败预览但不生成完整文件；不记录 reasoning_content，沿用凭据过滤。切回总览必须先重绘缓存，不能因数据相同留下加载占位；阅读中的展开状态和文件版本不被轮询覆盖。
+
+- **执行底座与实验/写作重构（2026-11-03，按 docs/AUTORESEARCH_GOAL_PROMPT_CN.md）**：进度与完成标准见 `docs/REBUILD_PROGRESS.md`、`docs/rebuild_checklist.json`（只能凭证据把 passes 改为 true）。
+  - `server.executor: worker`（遥感预设）：Web 只写 `artifacts/<run>/job.json`，`rc-worker` 服务（`python -m researchclaw.worker`）每项目一个子进程执行；子进程消失按 checkpoint 指数退避自动续跑（`max_auto_resumes`），正常结束的失败不重试；停止走 `.control/cancel`。**dashboard 重启不再打断实验**；改 worker 代码后新子进程自动生效，supervisor 本身改动才需 `docker compose restart worker`。rc-worker 同样必须挂 docker.sock+GID 与 `/home/wwj/rc-data`。
+  - 真实数据：`researchclaw/data_acquisition`（HyP3 INSAR_ISCE_BURST + Planetary Computer cop-dem-glo-30，方案经用户确认见 `docs/DATA_PLAN_INSAR_CN.md`）；`execution_check.data_acquisition` 使阶段9规划前完成获取并逐文件重算 SHA-256；`docker.data_mounts` 以同路径只读挂入沙箱。凭据只读 `.env` 的 `EARTHDATA_*`。
+  - 阶段9生成 `stage-09/experiment_spec.json`（`pipeline/experiment_spec.py`），主指标方向矛盾、可用真实数据却只用合成数据等静态拦截。
+  - `code_agent.backend: patch`：`pipeline/patch_agent.py` 分步编辑块实现，单步截断只重试该步，回复按提示词哈希缓存于 `run_dir/.cache/patch/`；blueprint 路径回复缓存于 `run_dir/.cache/codegen/`。`.cache/` 与 `.formal_runs/` 在 run_dir 根，**不要放进 stage 目录**（恢复会归档 stage 目录）。
+  - 验收顺序：语法 → method_checks → RC_VALIDATION dry-run → 数据回执 → 模型审查；每次验收是 `experiment_tree/` 的一个 git 节点，`best.json` 只经 `ExperimentTree.promote`（全部关卡通过且主指标按规格方向改进）更新。阶段12正式运行为 detached 容器 `rc-formal-<key>`，恢复时重新接上。
+  - 写作：`writing/ledger.py` 证据账本注入初稿；阶段23 主张校验失败即阶段失败（stage-23/claim_check.json），不自动删改；VerifiedRegistry 并入账本设置值。阶段10不再有合成 numpy 回退，初稿不再写 [PLACEHOLDER]。
+  - `_chat_with_prompt` 遇截断按调研模块做法把本次上限翻倍重试（≤3 次，封顶 reasoning_max_tokens），不是全局下限。
