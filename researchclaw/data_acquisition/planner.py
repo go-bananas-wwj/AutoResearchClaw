@@ -205,9 +205,14 @@ def execute(plan: dict[str, Any], run_dir: Path, base: Path, *, should_stop: Cal
                                site=t["id"], failure_date=t.get("event_date"), claim=ref.get("claim"),
                                quote=ref.get("quote"), location={"lat": t["lat"], "lon": t["lon"]})
     manifest.save()
-    for acq in plan["acquisitions"]:
-        ctx = Context(base=base, manifest=manifest, target=targets[acq["target"]], should_stop=should_stop,
-                      emit=emit, poll_sec=poll_sec)
+    contexts = [(acq, Context(base=base, manifest=manifest, target=targets[acq["target"]], should_stop=should_stop,
+                              emit=emit, poll_sec=poll_sec)) for acq in plan["acquisitions"]]
+    # 两阶段：先为所有对象提交远程处理（并行排队），再逐个等待与收集，避免对象之间串行等待
+    for acq, ctx in contexts:
+        tool = REGISTRY[acq["tool"]]
+        if hasattr(tool, "submit"):
+            tool.submit(acq.get("params") or {}, ctx)
+    for acq, ctx in contexts:
         REGISTRY[acq["tool"]].acquire(acq.get("params") or {}, ctx)
         manifest.save()
     report = manifest.verify()

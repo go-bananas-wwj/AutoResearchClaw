@@ -159,7 +159,11 @@ class AsfInsarBurst:
         return {"bursts": {b: {"scenes": len(v["scenes"]), "pairs": len(v["pairs"])} for b, v in plan.items()},
                 "credits": pairs, "gb": round(pairs * 0.025, 2)}
 
-    def acquire(self, params: dict[str, Any], ctx: Context) -> dict[str, Any]:
+    def submit(self, params: dict[str, Any], ctx: Context) -> None:
+        """Phase 1 (all targets before any waiting): submit missing HyP3 jobs."""
+        self.acquire(params, ctx, submit_only=True)
+
+    def acquire(self, params: dict[str, Any], ctx: Context, *, submit_only: bool = False) -> dict[str, Any]:
         looks = params.get("looks", "10x2")
         plan = self.plan(params, ctx.target)
         hyp3 = Hyp3(earthdata_token())
@@ -172,6 +176,8 @@ class AsfInsarBurst:
                     raise RuntimeError(f"HyP3 credits 不足：{burst} 需要 {len(missing)}")
                 hyp3.submit(f"rc-{burst}", missing, looks)
                 ctx.emit("提交 HyP3 处理", f"{burst}：{len(missing)} 对")
+        if submit_only:
+            return {}
         wanted = {tuple(p): burst for burst, item in plan.items() for p in item["pairs"]}
         while True:
             jobs = {tuple(j["job_parameters"]["granules"]): j for j in hyp3.all_jobs(refresh=True)
