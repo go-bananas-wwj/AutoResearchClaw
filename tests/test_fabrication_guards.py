@@ -51,6 +51,8 @@ def _make_config(
     cfg.experiment.time_budget_sec = time_budget_sec
     cfg.experiment.metric_key = metric_key
     cfg.experiment.sandbox.python_path = "python3"
+    # 本地适配：遥感部署的最终代码验收另有测试；这里只测上游的零指标硬守卫
+    cfg.experiment.execution_check.enabled = False
     return cfg
 
 

@@ -172,8 +172,9 @@ class TestListConferences:
         assert "prx" in names
         assert "epjc" in names
         # Should be deduplicated — no aliases
-        # 6 ML conferences + 1 generic + 5 HEP = 12
-        assert len(names) == 12
+        # 6 ML conferences + 1 generic + 5 HEP + 本地适配 tgrs/ctex = 14
+        assert "tgrs" in names and "ctex" in names
+        assert len(names) == 14
 
     def test_sorted(self) -> None:
         names = list_conferences()

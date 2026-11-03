@@ -253,12 +253,13 @@ class TestOverleafSync:
             sync.resolve_conflicts()
 
     @patch("researchclaw.overleaf.sync.subprocess.run")
-    def test_setup_clones(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    def test_setup_clones(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OVERLEAF_TOKEN", raising=False)  # 不让真实 token 进入测试输出
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         sync = OverleafSync(git_url="https://git.overleaf.com/abc123")
         local = sync.setup(tmp_path)
         assert local == tmp_path / "overleaf_repo"
-        # git clone was called
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
+        # git clone first; 本地适配随后为共享克隆写入提交身份（user.email/user.name）
+        args = mock_run.call_args_list[0][0][0]
         assert "clone" in args
+        assert all("config" in c[0][0] for c in mock_run.call_args_list[1:])
