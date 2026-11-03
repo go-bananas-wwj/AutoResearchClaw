@@ -159,13 +159,22 @@ def draft(llm: Any, run_dir: Path, budget: dict[str, float], *, max_rounds: int 
     final = stage / "data_plan.json"
     ctx = evidence(run_dir)
     tools = {name: tool.describe for name, tool in REGISTRY.items()}
-    if final.is_file():  # resume: an accepted plan is reused when the evidence is unchanged
-        saved = json.loads(final.read_text(encoding="utf-8"))
-        from researchclaw.pipeline.execution_contract import digest
-        if saved.get("evidence_hash") == digest(ctx):
-            return saved
+    from researchclaw.pipeline.execution_contract import digest
+    # 已通过的方案存于 run_dir/.cache（恢复时 stage-09 会被归档）；复用前按当前契约重新校验，
+    # 仍合格则不再调用模型，不合格则带着错误进入修订。
+    cache = run_dir / ".cache" / "data_plan" / f"{digest(ctx)}.json"
     plan: Any = None
     errors: list[str] = []
+    if cache.is_file():
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        plan = {k: v for k, v in saved.items() if k not in ("estimates", "evidence_hash")}
+        errors, estimates = validate(plan, run_dir, budget)
+        if not errors:
+            accepted = {**plan, "estimates": estimates, "evidence_hash": saved.get("evidence_hash")}
+            final.write_text(json.dumps(accepted, ensure_ascii=False, indent=1), encoding="utf-8")
+            emit("复用已通过的数据方案", "证据未变且按当前契约重新校验通过，未调用模型")
+            return accepted
+        emit("已保存的数据方案不再满足当前契约", "\n".join(errors[:20]))
     for round_no in range(max_rounds):
         emit("起草真实数据方案", f"第 {round_no + 1} 轮（由模型根据任务书与已读文献决定）")
         resp = llm.chat([{"role": "user", "content": json.dumps(
@@ -183,9 +192,10 @@ def draft(llm: Any, run_dir: Path, budget: dict[str, float], *, max_rounds: int 
             {"plan": plan, "errors": errors, "estimates": estimates, "raw": resp.content},
             ensure_ascii=False, indent=1), encoding="utf-8")
         if not errors:
-            from researchclaw.pipeline.execution_contract import digest
             accepted = {**plan, "estimates": estimates, "evidence_hash": digest(ctx)}
             final.write_text(json.dumps(accepted, ensure_ascii=False, indent=1), encoding="utf-8")
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(accepted, ensure_ascii=False, indent=1), encoding="utf-8")
             emit("数据方案通过宿主校验", json.dumps(estimates.get("total"), ensure_ascii=False))
             return accepted
         emit("数据方案需要修改", "\n".join(errors[:20]))

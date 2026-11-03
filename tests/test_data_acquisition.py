@@ -142,7 +142,15 @@ def test_draft_revises_on_feedback_then_executes(tmp_path, monkeypatch):
     llm = LLM()
     accepted = planner.draft(llm, run, {'max_credits': 10, 'max_gb': 1})
     assert llm.prompts[1]['previous_errors'] and accepted['targets'][0]['id'] == 'xinmo'
-    assert planner.draft(llm, run, {'max_credits': 10, 'max_gb': 1}) == accepted  # resume: no new call
+    import shutil
+    shutil.rmtree(run / 'stage-09')  # resume archives the stage dir
+    again = planner.draft(llm, run, {'max_credits': 10, 'max_gb': 1})  # no reply left: must not call the model
+    assert again['targets'] == accepted['targets'] and len(llm.prompts) == 2
+    # A stricter contract re-opens the saved plan and feeds its errors to the model.
+    llm.replies = [PLAN]
+    with pytest.raises(RuntimeError):
+        planner.draft(llm, run, {'max_credits': 2, 'max_gb': 1}, max_rounds=1)
+    assert any('超过预算' in e for e in llm.prompts[-1]['previous_errors'])
     base = tmp_path / 'data'
     mdir = planner.execute(accepted, run, base, should_stop=lambda: False)
     m = Manifest(mdir)
