@@ -26,7 +26,7 @@
 本机磁盘约 780 GB 可用，存储不是瓶颈；数据放在仓库外的固定数据根目录（例如 `/home/wwj/rc-data/`，加入 `experiment.data_roots` 并挂载进实验沙箱），不进 git。
 
 - **首选 Microsoft Planetary Computer**（STAC API `https://planetarycomputer.microsoft.com/api/stac/v1`，用 `pystac-client` + `planetary-computer` 签名，匿名可用）。可直接取：Copernicus DEM（`cop-dem-glo-30`，用于去地形相位）、Sentinel-1 GRD/RTC（`sentinel-1-grd` / `sentinel-1-rtc`，仅幅度，可做辅助/掩膜）、ESA WorldCover 等辅助层。先查询 STAC catalog 确认集合实际存在再用，不要凭记忆写集合名。
-- **注意相位数据缺口**：本方法需要缠绕相位与相干性，而 Planetary Computer 目前不托管 Sentinel-1 SLC 或干涉图（先用 STAC 搜索核实这一点）。相位数据的候选来源：ASF HyP3 按需 InSAR（`INSAR_GAMMA`，勾选包含 wrapped phase，产物含相干性）或 ARIA S1 GUNW 产品；它们需要 NASA Earthdata 账号。**需要账号时停下来告诉我**，我把凭据放进 `.env`（如 `EARTHDATA_USERNAME/EARTHDATA_PASSWORD`），绝不写入配置或提交。
+- **注意相位数据缺口**：本方法需要缠绕相位与相干性，而 Planetary Computer 目前不托管 Sentinel-1 SLC 或干涉图（先用 STAC 搜索核实这一点）。相位数据的候选来源：ASF HyP3 按需 InSAR（`INSAR_GAMMA`，勾选包含 wrapped phase，产物含相干性）或 ARIA S1 GUNW 产品；它们需要 NASA Earthdata 账号——**已配置**：`.env` 中的 `EARTHDATA_USERNAME/EARTHDATA_PASSWORD`（2026-11-03 验证登录通过，HyP3 状态 APPROVED、8000 credits）。凭据只从环境变量读取，绝不写入配置、日志或提交；提交 HyP3 任务前估算 credits 消耗。
 - 滑坡编目、加速/破坏时间的参考真值同样要来自公开来源（论文附录、公开编目或 GNSS/现场监测数据集），并在 `data_manifest.json` 记录 `source_url`、许可、下载时间与 SHA-256。
 - 研究区与时段先从任务书和调研文献中选有公开加速/破坏记录的滑坡；选定方案（站点、轨道、时间范围、预计数据量）先给我确认再大批下载。
 - 下载必须断点续传、按文件校验，失败只重试该文件；下载完成后由宿主重新计算哈希，不相信模型口述“文件已存在”。
@@ -42,7 +42,7 @@
 - 先写 `docs/REBUILD_PROGRESS.md`（进度文件）和 `docs/rebuild_checklist.json`（上面 7 条完成标准拆成可验证条目，每条含 `verify` 步骤和 `passes:false`）；只有拿到证据才能把 `passes` 改成 true，不得删改条目。每次开始工作先读这两个文件和 `git log`。
 - 按 P0 → P1 → P2 → P3 顺序推进，每期结束：跑相关测试、真机验证（`AGENTS.md` 的“生效方式速查/验证习惯”）、commit+push、更新进度文件。
 - 每期结束简要汇报：做了什么、证据在哪、什么没验证；然后直接进入下一期，不需要等我批准。
-- **以下情况停下来问我**：需要改变已确认的科学方法或主指标；需要外部账号（如 Earthdata）；确认研究区/时段/数据量方案；某个约束和完成标准互相冲突；连续两次尝试仍无法让某条完成标准通过。
+- **以下情况停下来问我**：需要改变已确认的科学方法或主指标；需要新的外部账号；确认研究区/时段/数据量方案；某个约束和完成标准互相冲突；连续两次尝试仍无法让某条完成标准通过。
 - 真实项目运行耗时长时，放后台执行并用看门狗/日志跟踪，不要阻塞；运行结果以文件状态为准，不以模型口述为准。
 
 ### 最终交付
