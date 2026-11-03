@@ -322,6 +322,9 @@ class DockerSandboxConfig:
     shm_size_mb: int = 2048
     container_python: str = "/usr/bin/python3"
     keep_containers: bool = False
+    # 本地适配：宿主机绝对路径，以只读方式挂载到沙箱内同一路径（控制面容器也按同路径挂载），
+    # 用于真实数据根目录；路径相同所以无需 RC_HOST_REPO 翻译。
+    data_mounts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1456,6 +1459,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
             shm_size_mb=_safe_int(docker_data.get("shm_size_mb"), 2048),
             container_python=docker_data.get("container_python", "/usr/bin/python3"),
             keep_containers=bool(docker_data.get("keep_containers", False)),
+            data_mounts=tuple(str(p) for p in docker_data.get("data_mounts", ()) or ()),
         ),
         ssh_remote=SshRemoteConfig(
             host=ssh_data.get("host", ""),

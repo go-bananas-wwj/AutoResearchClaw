@@ -41,6 +41,7 @@ services:
       - ./artifacts:/app/artifacts
       - /var/run/docker.sock:/var/run/docker.sock  # serve 容器内调度实验沙箱（浏览器/对话启动的 run 在此执行）
       - ~/.ssh:/home/claw/.ssh:ro
+      - /home/wwj/rc-data:/home/wwj/rc-data   # 真实数据根：与宿主同路径，沙箱只读挂载同一路径
     working_dir: /app
     group_add: ["${DOCKER_GID:-999}"]
     ports:
@@ -58,6 +59,7 @@ services:
       - ./artifacts:/app/artifacts
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.ssh:/home/claw/.ssh:ro
+      - /home/wwj/rc-data:/home/wwj/rc-data
     working_dir: /app
     group_add: ["${DOCKER_GID:-999}"]
     restart: unless-stopped

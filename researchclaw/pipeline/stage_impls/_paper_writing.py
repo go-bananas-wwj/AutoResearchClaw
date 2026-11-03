@@ -398,6 +398,23 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     ), has_parsed_metrics
 
 
+class PaperDraftError(RuntimeError):
+    """A draft part could not be produced; the stage fails instead of writing placeholders."""
+
+
+def _draft_part(llm: Any, system: str, user: str, max_tokens: int, label: str) -> str:
+    try:
+        resp = _chat_with_prompt(llm, system, user, max_tokens=max_tokens, retries=1)
+    except Exception as exc:  # noqa: BLE001
+        raise PaperDraftError(f"论文初稿 {label} 生成失败：{exc}") from exc
+    if getattr(resp, "truncated", False) or getattr(resp, "finish_reason", "") == "length":
+        raise PaperDraftError(f"论文初稿 {label} 输出被截断，未接受不完整正文")
+    part = (resp.content or "").strip()
+    if not part:
+        raise PaperDraftError(f"论文初稿 {label} 返回空正文")
+    return part
+
+
 def _write_paper_sections(
     *,
     llm: LLMClient,
@@ -569,19 +586,8 @@ def _write_paper_sections(
     if any(model_name.startswith(p) for p in ("gpt-5", "o3", "o4")):
         _paper_max_tokens = 24000
 
-    # T3.5: Retry once on failure, use placeholder if still fails
-    try:
-        resp1 = _chat_with_prompt(llm, system, call1_user, max_tokens=_paper_max_tokens, retries=1)
-        part1 = resp1.content.strip()
-    except Exception:  # noqa: BLE001
-        logger.error("Stage 17: Part 1 LLM call failed after retry — using placeholder")
-        part1 = (
-            "## Title\n[PLACEHOLDER — LLM call failed]\n\n"
-            "## Abstract\n[This section could not be generated due to an LLM error. "
-            "Please regenerate this stage.]\n\n"
-            "## Introduction\n[PLACEHOLDER]\n\n"
-            "## Related Work\n[PLACEHOLDER]"
-        )
+    # 本地适配：调用失败/截断/空正文时阶段如实失败，不再写入 [PLACEHOLDER] 占位正文
+    part1 = _draft_part(llm, system, call1_user, _paper_max_tokens, "Part 1 (Title/Abstract/Intro/Related Work)")
     sections.append(part1)
     logger.info("Stage 17: Part 1 (Title+Abstract+Intro+Related Work) — %d chars", len(part1))
 
@@ -667,15 +673,7 @@ def _write_paper_sections(
             f"Outline:\n{outline}\n\n"
             "Output markdown with ## headers. Continue from where Part 1 ended."
         )
-    try:
-        resp2 = _chat_with_prompt(llm, system, call2_user, max_tokens=_paper_max_tokens, retries=1)
-        part2 = resp2.content.strip()
-    except Exception:  # noqa: BLE001
-        logger.error("Stage 17: Part 2 LLM call failed after retry — using placeholder")
-        part2 = (
-            "## Method\n[PLACEHOLDER — LLM call failed. Please regenerate this stage.]\n\n"
-            "## Experiments\n[PLACEHOLDER]"
-        )
+    part2 = _draft_part(llm, system, call2_user, _paper_max_tokens, "Part 2 (Method/Experiments)")
     sections.append(part2)
     logger.info("Stage 17: Part 2 (Method+Experiments) — %d chars", len(part2))
 
@@ -798,17 +796,7 @@ def _write_paper_sections(
             "- Use \\begin{algorithm} or pseudocode notation, NOT \\begin{verbatim}\n\n"
             "Output markdown with ## headers. Do NOT include a References section."
         )
-    try:
-        resp3 = _chat_with_prompt(llm, system, call3_user, max_tokens=_paper_max_tokens, retries=1)
-        part3 = resp3.content.strip()
-    except Exception:  # noqa: BLE001
-        logger.error("Stage 17: Part 3 LLM call failed after retry — using placeholder")
-        part3 = (
-            "## Results\n[PLACEHOLDER — LLM call failed. Please regenerate this stage.]\n\n"
-            "## Discussion\n[PLACEHOLDER]\n\n"
-            "## Limitations\n[PLACEHOLDER]\n\n"
-            "## Conclusion\n[PLACEHOLDER]"
-        )
+    part3 = _draft_part(llm, system, call3_user, _paper_max_tokens, "Part 3 (Results/Discussion/Conclusion)")
     sections.append(part3)
     logger.info("Stage 17: Part 3 (Results+Discussion+Limitations+Conclusion) — %d chars", len(part3))
 
@@ -2531,18 +2519,23 @@ Generated: {_utcnow_iso()}
                 if draft_path.exists():
                     current_draft = draft_path.read_text(encoding="utf-8")
                     logger.info("Applying HITL guidance to paper draft")
-                    resp = llm.chat(
-                        [{"role": "user", "content": (
-                            f"The human researcher provided this guidance for the paper:\n\n"
-                            f"{guidance}\n\n"
-                            f"Apply these suggestions to improve the following draft. "
-                            f"Preserve all existing content and citations. "
-                            f"Only make changes that align with the guidance.\n\n"
-                            f"## Current Draft\n{current_draft[:8000]}"
-                        )}],
-                        max_tokens=8192,
+                    from researchclaw.writing.reviser import _output_budget
+                    prompt = (
+                        f"The human researcher provided this guidance for the paper:\n\n"
+                        f"{guidance}\n\n"
+                        f"Apply these suggestions to improve the following draft. "
+                        f"Preserve all existing content and citations. "
+                        f"Only make changes that align with the guidance.\n\n"
+                        f"## Current Draft\n{current_draft}"
                     )
-                    draft_path.write_text(resp.content, encoding="utf-8")
+                    resp = llm.chat([{"role": "user", "content": prompt}], max_tokens=_output_budget(prompt))
+                    revised = (resp.content or "").strip()
+                    # 全文覆盖前的截断守卫：截断或明显缩水的改写不落盘，保留原稿
+                    if (getattr(resp, "truncated", False) or getattr(resp, "finish_reason", "") == "length"
+                            or len(revised) < 0.8 * len(current_draft)):
+                        logger.warning("HITL guidance rewrite rejected (truncated or shrunk); draft kept")
+                    else:
+                        draft_path.write_text(revised, encoding="utf-8")
         except Exception:
             logger.debug("HITL guidance application to draft failed (non-blocking)")
 
@@ -2559,7 +2552,7 @@ Generated: {_utcnow_iso()}
                 # Extract section content from draft
                 import re as _re_pw
                 pattern = rf"(?:^|\n)##?\s*{_re_pw.escape(section.name)}.*?\n(.*?)(?=\n##?\s|\Z)"
-                match = _re_pw.search(draft_text, _re_pw.DOTALL)
+                match = _re_pw.search(pattern, draft_text, _re_pw.DOTALL)
                 if match:
                     section.content = match.group(1).strip()
                     section.status = "ai_draft"

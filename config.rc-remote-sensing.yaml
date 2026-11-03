@@ -60,7 +60,7 @@ experiment:
     max_plan_repairs: 2
     max_code_repairs: 2
     validation_timeout_sec: 180
-    data_roots: [data, datasets]
+    data_roots: [data, datasets, /home/wwj/rc-data/insar_landslide]
   cli_agent:
     max_budget_usd: 0.0       # 本地适配：后续科研也不施加美元上限
   metric_key: "val_miou"       # 或 val_macro_f1 / val_oa，与你的评分脚本输出一致
@@ -71,6 +71,7 @@ experiment:
     gpu_enabled: true
     memory_limit_mb: 24576                    # V100 32GB，留余量给系统与宿主
     auto_install_deps: true
+    data_mounts: ["/home/wwj/rc-data"]        # 真实数据根（只读，宿主与容器同路径）
   ssh_remote:
     host: ""                       # 远程 GPU 主机（填了即可把 experiment.mode 切到 ssh_remote）
     user: ""

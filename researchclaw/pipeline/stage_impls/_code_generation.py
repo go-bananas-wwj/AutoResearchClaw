@@ -963,36 +963,15 @@ def _execute_code_generation(
                 resp.content[:300],
             )
 
-    # --- Fallback: generic numerical experiment ---
+    # 本地适配：上游此处会静默换成合成 numpy 目标函数的 main.py，产生与任务书无关的
+    # "实验结果"。没有生成出真实实现时必须如实失败，由修复/恢复流程处理。
     if not files:
-        files = {
-            "main.py": (
-                "import numpy as np\n"
-                "\n"
-                "np.random.seed(42)\n"
-                "\n"
-                "# Fallback experiment: parameter sweep on a synthetic objective\n"
-                "# This runs when LLM code generation fails to produce valid code.\n"
-                "dim = 10\n"
-                "n_conditions = 3\n"
-                "results = {}\n"
-                "\n"
-                "for cond_idx in range(n_conditions):\n"
-                "    cond_name = f'condition_{cond_idx}'\n"
-                "    scores = []\n"
-                "    for seed in range(3):\n"
-                "        rng = np.random.RandomState(seed + cond_idx * 100)\n"
-                "        x = rng.randn(dim)\n"
-                "        score = float(1.0 / (1.0 + np.sum(x ** 2)))\n"
-                "        scores.append(score)\n"
-                "    mean_score = float(np.mean(scores))\n"
-                "    results[cond_name] = mean_score\n"
-                f"    print(f'condition={{cond_name}} {metric}: {{mean_score:.6f}}')\n"
-                "\n"
-                "best = max(results, key=results.get)\n"
-                f"print(f'{metric}: {{results[best]:.6f}}')\n"
-            )
-        }
+        (stage_dir / "validation_report.md").write_text(
+            "# Code Validation Report\n\n**Status**: FAILED — 所有代码生成策略均未产出实现文件，"
+            "未使用任何替代代码。\n", encoding="utf-8")
+        return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                           artifacts=("validation_report.md",), evidence_refs=(),
+                           error="所有代码生成策略均未产出实现文件；不使用合成替代实验")
 
     # --- Validate each file + auto-repair loop ---
     all_valid = True

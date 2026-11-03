@@ -320,7 +320,7 @@ class CodeAgent:
                      "implementation and print RC_METHOD_CHECKS_OK only after all assertions pass. "
                      "main.py must materialize the planned datasets and write data_manifest.json "
                      "with their exact IDs and relative paths. These are required execution artifacts.\n")
-        resp = self._chat(sp.system, user, max_tokens=32768, json_mode=json_blueprint)
+        resp = self._chat(sp.system, user, max_tokens=32768, json_mode=json_blueprint, reuse=True)
         # Persist completed blueprint output before later code generation can fail.
         (self._stage_dir / "architecture_response.txt").write_text(resp.content, encoding="utf-8")
 
@@ -576,7 +576,7 @@ class CodeAgent:
             preview = GenerationPreview(self._stage_dir, file_name)
             try:
                 resp = self._chat(sp.system, sp.user, max_tokens=self._cfg.file_max_tokens,
-                                  preview=preview)
+                                  preview=preview, reuse=True)
             except Exception as exc:
                 preview.write("failed", force=True, error=str(exc))
                 raise
@@ -1429,19 +1429,55 @@ class CodeAgent:
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _chat(self, system: str, user: str, max_tokens: int = 8192, *, json_mode: bool = False,
-              preview: Any = None) -> Any:
-        """Make an LLM call and track count."""
+              preview: Any = None, reuse: bool = False) -> Any:
+        """Make an LLM call and track count.
+
+        ``reuse=True`` (blueprint and per-file generation only) checkpoints the
+        completed reply under ``<run_dir>/.cache/codegen/<sha256>.json``, keyed
+        by the exact prompt, so an interrupted stage 10 replays finished files
+        instead of regenerating them.  The cache lives outside ``stage-10/`` so
+        resume archiving does not discard it; truncated/empty replies are never
+        stored.  Repair prompts are not reused: an identical retry must reach
+        the model again.
+        """
+        cache_file = None
+        if reuse:
+            import hashlib
+            model = str(getattr(getattr(self._llm, "config", None), "primary_model", ""))
+            key = hashlib.sha256(json.dumps([system, user, max_tokens, json_mode, model],
+                                            ensure_ascii=False).encode()).hexdigest()
+            cache_file = self._stage_dir.parent / ".cache" / "codegen" / f"{key}.json"
+            try:
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                from researchclaw.llm.client import LLMResponse
+                self._log_event(f"  Reused completed model reply {key[:12]} (prompt unchanged)")
+                if preview is not None:
+                    preview.reset(cached.get("model", model))
+                    preview.body = cached["content"]
+                return LLMResponse(content=cached["content"], model=cached.get("model", model),
+                                   finish_reason="stop")
+            except (OSError, ValueError, KeyError):
+                pass
         self._calls += 1
         messages = [{"role": "user", "content": user}]
         from researchclaw.llm.client import LLMClient
         streaming = {"on_content": preview.content, "on_reset": preview.reset} if preview is not None and isinstance(self._llm, LLMClient) else {}
-        return self._llm.chat(
+        resp = self._llm.chat(
             messages=messages,
             system=system,
             max_tokens=max_tokens,
             **({"json_mode": True} if json_mode else {}),
             **streaming,
         )
+        content = getattr(resp, "content", "") or ""
+        if (cache_file is not None and content.strip() and not getattr(resp, "truncated", False)
+                and getattr(resp, "finish_reason", "") != "length"):
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"content": content, "model": getattr(resp, "model", "")},
+                                      ensure_ascii=False), encoding="utf-8")
+            tmp.replace(cache_file)
+        return resp
 
     def _get_or_create_sandbox(self) -> _SandboxLike:
         """Lazily create a single sandbox instance for all validation runs."""

@@ -402,6 +402,8 @@ class DockerSandbox:
             "--name", container_name,
             "--rm",
             "-v", f"{self._host_visible(staging_dir)}:/workspace",
+            *[arg for root in getattr(cfg, "data_mounts", ()) if Path(root).is_absolute()
+              for arg in ("-v", f"{root}:{root}:ro")],
             "-w", "/workspace",
             f"--memory={cfg.memory_limit_mb}m",
             f"--shm-size={cfg.shm_size_mb}m",
