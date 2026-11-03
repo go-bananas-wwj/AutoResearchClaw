@@ -240,6 +240,7 @@ def _execute_experiment_design(
             json_mode=sp.json_mode,
             max_tokens=sp.max_tokens,
         )
+        (stage_dir / "design_response.txt").write_text(resp.content or "", encoding="utf-8")
         raw_yaml = _extract_yaml_block(resp.content)
         try:
             parsed = yaml.safe_load(raw_yaml)
@@ -288,8 +289,23 @@ def _execute_experiment_design(
                 resp.content[:200],
                 raw_yaml[:200] if raw_yaml else "<empty>",
             )
+            # 本地适配：证据驱动项目用同一份完整设计提示词改走 JSON 模式重问，
+            # 不退回只含题目的“严格 YAML”提示（那会产出空泛/占位计划）。
+            if llm is not None and (run_dir / "ideation_origin.json").exists():
+                try:
+                    _json_resp = _chat_with_prompt(
+                        llm, sp.system,
+                        sp.user + "\n\n以一个 JSON 对象输出同样完整的实验计划（键与上述 YAML 计划相同），不要 Markdown。",
+                        json_mode=True, max_tokens=32768)
+                    (stage_dir / "design_response_json.txt").write_text(_json_resp.content or "", encoding="utf-8")
+                    _json_parsed = json.loads(_json_resp.content)
+                    if isinstance(_json_parsed, dict):
+                        plan = _json_parsed
+                        logger.info("Stage 09: JSON-mode design retry succeeded.")
+                except (ValueError, RuntimeError) as _json_exc:
+                    logger.warning("Stage 09: JSON-mode design retry failed: %s", _json_exc)
             # BUG-12: Retry with a stricter, shorter prompt
-            if llm is not None:
+            if llm is not None and plan is None and not (run_dir / "ideation_origin.json").exists():
                 logger.info("Stage 09: Retrying with strict YAML-only prompt...")
                 _retry_prompt = (
                     "Output ONLY valid YAML. No prose, no markdown fences, no explanation.\n"
