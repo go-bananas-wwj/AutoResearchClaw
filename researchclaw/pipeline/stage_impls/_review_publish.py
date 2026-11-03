@@ -3091,6 +3091,25 @@ def _execute_citation_verify(
         report.integrity_score * 100,
     )
 
+    # 本地适配：主张校验——最终 LaTeX 中每个数字与引用都须能在证据账本找到出处；
+    # 有无证据主张则如实失败并列出，不自动删改正文。
+    _final_tex = stage_dir.parent / "stage-22" / "paper.tex"
+    if _final_tex.is_file() and (run_dir / "experiment_tree" / "best.json").is_file():
+        from researchclaw.writing.ledger import build_ledger, check_claims
+        _ledger = build_ledger(run_dir, data_roots=tuple(config.experiment.execution_check.data_roots))
+        _verified_bib = stage_dir / "references_verified.bib"
+        if _verified_bib.is_file():
+            from researchclaw.writing.ledger import _bib_entries
+            _ledger["entries"] += _bib_entries(_verified_bib)
+        _claims = check_claims(_final_tex.read_text(encoding="utf-8", errors="replace"), _ledger)
+        (stage_dir / "claim_check.json").write_text(json.dumps(_claims, ensure_ascii=False, indent=1), encoding="utf-8")
+        artifacts.append("claim_check.json")
+        if _claims["unsupported"]:
+            return StageResult(
+                stage=Stage.CITATION_VERIFY, status=StageStatus.FAILED, artifacts=tuple(artifacts),
+                evidence_refs=tuple(f"stage-23/{a}" for a in artifacts),
+                error=f"主张校验未通过：{len(_claims['unsupported'])} 条数字/引用在证据账本中没有出处（见 stage-23/claim_check.json）")
+
     return StageResult(
         stage=Stage.CITATION_VERIFY,
         status=StageStatus.DONE,

@@ -329,6 +329,17 @@ class VerifiedRegistry:
                 except (OSError, _json_rd.JSONDecodeError, Exception):  # noqa: BLE001
                     logger.debug("from_run_dir: skipping %s", rl_path, exc_info=True)
 
+        # 本地适配：证据账本中的实验设置值（学习率、batch、种子、分辨率…）与参考真值同样是
+        # 有出处的数字，加入白名单，避免被消毒误替换为 ---
+        try:
+            ledger = _json_rd.loads((run_dir / "evidence_ledger.json").read_text(encoding="utf-8"))
+            from researchclaw.writing.ledger import ledger_numbers
+            for value, entry in ledger_numbers(ledger):
+                target.add_value(value, f"ledger:{entry.get('kind')}:{entry.get('file') or entry.get('source_url')}"
+                                        f":{entry.get('line', '')}:{entry.get('name')}")
+        except (OSError, ValueError, TypeError):
+            pass
+
         # Recompute per-condition stats after merging
         for cond in target.conditions.values():
             cond.compute_stats()

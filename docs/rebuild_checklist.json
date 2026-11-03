@@ -78,8 +78,8 @@
       "criterion": "论文可溯源",
       "item": "证据账本记录结果/设置/文献及来源位置",
       "verify": "ledger 中每条含节点/commit/文件/行号或文献原文",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "tests/test_evidence_ledger.py::test_ledger_sources_and_claim_check（setting 含 file/line/node，result 含节点与结果文件，reference 含 DOI，literature 来自 BibTeX）；researchclaw/writing/ledger.py"
     },
     {
       "id": "P2",
@@ -94,8 +94,8 @@
       "criterion": "论文可溯源",
       "item": "超参数等设置值不再被替换为 ---",
       "verify": "测试：exp spec 中的学习率等出现在论文中不被消毒",
-      "passes": false,
-      "evidence": ""
+      "passes": true,
+      "evidence": "tests/test_evidence_ledger.py::test_registry_whitelists_settings_from_ledger（学习率 0.001、batch 64、波长 5.546 进入 VerifiedRegistry 白名单）"
     },
     {
       "id": "H1",

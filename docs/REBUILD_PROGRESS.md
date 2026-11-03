@@ -16,6 +16,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 - 2026-11-03：P1——ExperimentSpec（stage-09/experiment_spec.json）+ validate_spec；补丁式实现 PatchCodeAgent（code_agent.backend=patch，遥感预设启用），验收修复同样走补丁步骤；验收关卡改为 语法→method_checks→RC_VALIDATION dry-run→数据回执→模型审查，并清理上一轮验收输出。
 - 2026-11-03：P2——experiment_tree（nodes.jsonl + git 工作区 + best.json 棘轮）；accept_final_code 每次验收记为节点并记录各关卡；阶段12 正式运行用 detached 容器（run_dir/.formal_runs，恢复时按容器名重新接上，运行期只 docker inspect/logs），formal 关卡与主指标写入节点后 promote；阶段13 候选以 best 为父节点，提升由棘轮决定，改进生成走补丁步骤。
 - 数据：HyP3 914 对已提交（每对 1 credit），产物 4 路并行下载（CloudFront 实测 12.7 MB/s）；Planetary Computer DEM 很慢，改后台线程。
+- 2026-11-03：P3——证据账本 writing/ledger.py（result/setting/reference/literature，均带来源位置）；阶段17初稿注入账本数字表；VerifiedRegistry 并入账本数值（修复超参被消毒为 ---）；阶段23 主张校验（数字与 \cite 均须在账本有出处，否则阶段失败并写 claim_check.json，不自动改正文）。全量 3271 通过。
 
 ## 待办（P0 剩余）
 - R1–R3 真机实测（需真实 run 运行中重启 dashboard / kill 子进程 / 重启 worker）。

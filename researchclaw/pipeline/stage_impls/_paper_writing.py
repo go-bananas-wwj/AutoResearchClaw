@@ -2429,13 +2429,24 @@ def _execute_paper_draft(
         _paper_venue_guidance = ""
 
         # --- Section-by-section writing (3 calls) for conference-grade depth ---
+        # 本地适配：证据账本——论文只能使用账本中带来源的数值/设置/参考真值
+        _ledger_block = ""
+        if (run_dir / "experiment_tree" / "best.json").is_file():
+            from researchclaw.writing.ledger import build_ledger
+            _ledger = build_ledger(run_dir, data_roots=tuple(config.experiment.execution_check.data_roots))
+            _rows = [e for e in _ledger["entries"] if e["kind"] in ("result", "setting", "reference")]
+            _ledger_block = ("\n\n## EVIDENCE LEDGER（论文中出现的每个数字都必须来自下表，原样或按四舍五入/百分比换算；"
+                             "表中没有的数字不要写，不要估计或编造）\n" + "\n".join(
+                f"- [{e['kind']}] {e.get('name')} = {e.get('value', e.get('text'))}"
+                f"（{e.get('file') or e.get('source_url') or ''}{':' + str(e['line']) if e.get('line') else ''}）"
+                for e in _rows[:400]))
         draft = _write_paper_sections(
             llm=llm,
             pm=_pm,
             run_dir=run_dir,
             preamble=preamble,
             topic_constraint=topic_constraint,
-            exp_metrics_instruction=exp_metrics_instruction,
+            exp_metrics_instruction=exp_metrics_instruction + _ledger_block,
             citation_instruction=citation_instruction,
             outline=outline,
             model_name=config.llm.primary_model,
