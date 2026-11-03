@@ -12,6 +12,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from researchclaw.worker.execution import config_overrides
+
 logger = logging.getLogger(__name__)
 
 import re as _re
@@ -87,35 +89,13 @@ def _get_app_state() -> dict[str, Any]:
 
 def _archive_resume_outputs(run_dir: Path, from_stage: Any) -> Path:
     """Preserve previous evidence while isolating the next execution attempt."""
-    import shutil
-    from datetime import datetime, timezone
-    history = run_dir / "recovery_history" / datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    history.mkdir(parents=True)
-    for path in list(run_dir.iterdir()):
-        match = _re.match(r"^stage-(\d{2})(?:$|_)", path.name)
-        if match and int(match[1]) >= int(from_stage):
-            shutil.move(str(path), history / path.name)
-    for name in ("checkpoint.json", "pipeline_summary.json", "heartbeat.json", "experiment_repair_result.json"):
-        path = run_dir / name
-        if path.is_file():
-            shutil.copy2(path, history / name)
-            if name != "checkpoint.json":
-                path.unlink()
-    for name in ("deliverables", "experiment_summary_best.json", "experiment_diagnosis.json", "repair_prompt.txt"):
-        path = run_dir / name
-        if path.exists():
-            shutil.move(str(path), history / name)
-    plan = run_dir / "stage-09" / "exp_plan.yaml"
-    if plan.is_file():
-        shutil.copy2(plan, history / "exp_plan_before_resume.yaml")
-    if (run_dir / "hitl").is_dir():
-        shutil.move(str(run_dir / "hitl"), history / "hitl")
-    from researchclaw.pipeline.stages import Stage
-    previous = max(0, int(from_stage) - 1)
-    (run_dir / "checkpoint.json").write_text(json.dumps({"run_id": run_dir.name,
-        "last_completed_stage": previous, "last_completed_name": Stage(previous).name if previous else "",
-        "status": "running", "timestamp": datetime.now(timezone.utc).isoformat()}))
-    return history
+    from researchclaw.worker.jobs import archive_resume_outputs
+
+    return archive_resume_outputs(run_dir, int(from_stage))
+
+
+def _worker_mode(config: Any) -> bool:
+    return getattr(config.server, "executor", "inprocess") == "worker"
 
 
 @router.post("/pipeline/start", response_model=PipelineStartResponse)
@@ -139,11 +119,14 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                 if record.get("key") == req.idempotency_key:
                     return PipelineStartResponse(run_id=origin.parent.name,
                         status=(_active_run or {}).get("status", "interrupted"), output_dir=str(origin.parent))
-        if _active_run and _active_run.get("status") in ("running", "stopping"):
-            raise HTTPException(status_code=409, detail="A pipeline is already running")
-
         state = _get_app_state()
         config = state["config"]
+        if _worker_mode(config):
+            from researchclaw.worker.jobs import ACTIVE_STATES, read_job
+            if resume_dir is not None and (read_job(resume_dir) or {}).get("state") in ACTIVE_STATES:
+                raise HTTPException(status_code=409, detail="该项目已在排队或运行中")
+        elif _active_run and _active_run.get("status") in ("running", "stopping"):
+            raise HTTPException(status_code=409, detail="A pipeline is already running")
 
         import dataclasses
 
@@ -253,6 +236,26 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                  run_dir=run_dir, status="running", phase="pipeline")
         if req.idempotency_key:
             (run_dir / "ideation_origin.json").write_text(json.dumps({"key": req.idempotency_key}))
+        job = {
+            "run_id": run_id,
+            "config_path": state.get("config_path", ""),
+            "overrides": config_overrides(config),
+            "from_stage": int(forced_from_stage) if forced_from_stage is not None else None,
+            "auto_approve": req.auto_approve,
+            "brief": req.brief,
+            "idempotency_key": req.idempotency_key,
+            "materialized": False,
+        }
+        if _worker_mode(config):
+            if not job["config_path"]:
+                raise HTTPException(500, detail="worker 模式需要服务以 --config 启动")
+            from researchclaw.worker import jobs as _jobs
+            _jobs.clear_cancel(run_dir)
+            _jobs.write_job(run_dir, {**job, "state": "queued", "queued_at": _jobs.now(),
+                                      "auto_resumes": 0, "attempts": 0})
+            _jobs.append_event(run_dir, "queued", source="web")
+            return PipelineStartResponse(run_id=run_id, status="queued", output_dir=str(run_dir))
+
         cancel_event = threading.Event()
         _run_cancel_event = cancel_event
 
@@ -266,87 +269,18 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
     async def _run_in_background() -> None:
         global _active_run
         try:
-            from researchclaw.adapters import AdapterBundle
-            from researchclaw.pipeline.runner import execute_pipeline
             from researchclaw.pipeline.stages import Stage
+            from researchclaw.worker.execution import execute_job
 
-            kb_root = Path(config.knowledge_base.root) if config.knowledge_base.root else None
-            if kb_root:
-                kb_root.mkdir(parents=True, exist_ok=True)
-
-            # 研究任务书物化：写 stage-01/02/07/08[/09] 产物 + research_brief.json，
-            # 并决定 from_stage（显式 from_stage 参数优先于任务书建议值）
-            from_stage = Stage.TOPIC_INIT
-            if brief_obj is not None:
-                from researchclaw.ideation.brief import materialize
-
-                loop0 = asyncio.get_event_loop()
-                from_stage = await loop0.run_in_executor(
-                    None, lambda: materialize(run_dir, brief_obj, config)
-                )
-                if req.idempotency_key:
-                    import shutil
-                    evidence = Path(brief_obj.source_ideation_run)
-                    shutil.copytree(evidence, run_dir / "ideation_evidence", dirs_exist_ok=True)
-                    shutil.copyfile(evidence / "cost_log.jsonl", run_dir / "cost_log.jsonl")
-                    from researchclaw.hardware import HardwareProfile, detect_hardware
-                    hardware = detect_hardware()
-                    if not hardware.has_gpu and config.experiment.mode == "docker" and config.experiment.docker.gpu_enabled:
-                        hardware = HardwareProfile(has_gpu=True, gpu_type="cuda",
-                            gpu_name="GPU available in docker sibling sandbox", vram_mb=None, tier="limited", warning="")
-                    (run_dir / "stage-01/hardware_profile.json").write_text(json.dumps(hardware.to_dict()))
-            if forced_from_stage is not None:
-                from_stage = forced_from_stage
-            if _active_run:
-                _active_run["from_stage"] = from_stage.name
-
-            adapters = AdapterBundle()
-            if not req.auto_approve:
-                # Web 启动 = co-pilot：挂 HITLSession，门控处写 hitl/waiting.json
-                # 并轮询 hitl/response.json（无 input_callback → 文件 IPC）。
-                # REST /runs/{id}/hitl/{waiting,respond} 与前端横幅都基于这两个文件。
-                hitl_cfg = getattr(config, "hitl", None)
-                try:
-                    if hitl_cfg is None or not getattr(hitl_cfg, "enabled", False):
-                        from researchclaw.hitl.presets import copilot_preset
-
-                        hitl_cfg = copilot_preset()
-                    from researchclaw.hitl.session import HITLSession
-
-                    adapters.hitl = HITLSession(
-                        run_id=run_id,
-                        config=hitl_cfg,
-                        run_dir=run_dir,
-                    )
-                except Exception as _hitl_exc:
-                    logger.warning("HITL session setup failed: %s", _hitl_exc)
+            def on_start(from_stage: int) -> None:
+                if _active_run:
+                    _active_run["from_stage"] = Stage(from_stage).name
 
             loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                lambda: execute_pipeline(
-                    run_dir=run_dir,
-                    run_id=run_id,
-                    config=config,
-                    adapters=adapters,
-                    from_stage=from_stage,
-                    auto_approve_gates=req.auto_approve,
-                    skip_noncritical=True,
-                    kb_root=kb_root,
-                    cancel_event=cancel_event,
-                ),
-            )
-            done = sum(1 for r in results if r.status.value == "done")
-            failed = sum(1 for r in results if r.status.value == "failed")
+            outcome = await loop.run_in_executor(
+                None, lambda: execute_job(run_dir, job, config, cancel_event, on_start=on_start))
             if _active_run:
-                # A paused quality/data gate or a partial run is never a completed paper.
-                complete = any(r.stage == Stage.CITATION_VERIFY and r.status.value == "done" for r in results)
-                _active_run["status"] = "stopped" if cancel_event.is_set() else (
-                    "completed" if complete and failed == 0 else "failed" if failed else "blocked")
-                if results and not complete:
-                    _active_run["reason"] = getattr(results[-1], "error", "") or "流水线未到达论文交付阶段，请检查阶段产物。"
-                _active_run["stages_done"] = done
-                _active_run["stages_failed"] = failed
+                _active_run.update(outcome)
         except Exception as exc:
             logger.exception("Pipeline run failed")
             if _active_run:
@@ -362,10 +296,40 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
     )
 
 
+def _worker_jobs(active_only: bool = True) -> list[dict[str, Any]]:
+    from researchclaw.worker.jobs import ACTIVE_STATES, read_job
+
+    found = []
+    for path in Path("artifacts").glob("rc-*/job.json"):
+        job = read_job(path.parent)
+        if job and (not active_only or job.get("state") in ACTIVE_STATES):
+            found.append(job)
+    return sorted(found, key=lambda job: job.get("updated_at", ""), reverse=True)
+
+
+def _job_status(job: dict[str, Any]) -> dict[str, Any]:
+    return {"run_id": job.get("run_id"), "status": job.get("state"),
+            "output_dir": str(Path("artifacts") / str(job.get("run_id"))),
+            "reason": job.get("reason", ""), "auto_resumes": job.get("auto_resumes", 0),
+            "executor": "worker"}
+
+
 @router.post("/pipeline/stop")
-async def stop_pipeline() -> dict[str, str]:
+async def stop_pipeline(run_id: str | None = None) -> dict[str, str]:
     """Stop the currently running pipeline."""
     global _active_run, _run_task
+
+    if _worker_mode(_get_app_state()["config"]):
+        from researchclaw.worker.jobs import request_cancel, update_job
+        targets = [job for job in _worker_jobs() if not run_id or job.get("run_id") == run_id]
+        if not targets:
+            raise HTTPException(status_code=404, detail="No pipeline is running")
+        for job in targets:
+            run_dir = _validated_run_dir(str(job["run_id"]))
+            request_cancel(run_dir)
+            if not update_job(run_dir, expect_state=("queued",), state="stopped", reason="用户已停止"):
+                update_job(run_dir, expect_state=("running",), state="stopping")
+        return {"status": "stopping"}
 
     if not _run_task or not _active_run:
         raise HTTPException(status_code=404, detail="No pipeline is running")
@@ -379,6 +343,9 @@ async def stop_pipeline() -> dict[str, str]:
 @router.get("/pipeline/status")
 async def pipeline_status() -> dict[str, Any]:
     """Get current pipeline run status."""
+    if _worker_mode(_get_app_state()["config"]):
+        active = _worker_jobs()
+        return {**_job_status(active[0]), "active": [_job_status(j) for j in active]} if active else {"status": "idle"}
     if not _active_run:
         return {"status": "idle"}
     return _active_run

@@ -787,6 +787,11 @@ class ServerConfig:
     voice_enabled: bool = False
     whisper_model: str = "whisper-1"
     whisper_api_url: str = ""  # empty = use OpenAI default
+    # 本地适配：inprocess=上游行为（Web 进程内执行）；worker=投递到独立 rc-worker，
+    # Web 重启不影响运行中的项目，中断后由看门狗自动续跑。
+    executor: str = "inprocess"
+    max_concurrent_runs: int = 1
+    max_auto_resumes: int = 5
 
 
 @dataclass(frozen=True)
@@ -1758,6 +1763,9 @@ def _parse_server_config(data: dict[str, Any]) -> ServerConfig:
         voice_enabled=bool(data.get("voice_enabled", False)),
         whisper_model=data.get("whisper_model", "whisper-1"),
         whisper_api_url=data.get("whisper_api_url", ""),
+        executor=str(data.get("executor", "inprocess")),
+        max_concurrent_runs=max(1, int(data.get("max_concurrent_runs", 1))),
+        max_auto_resumes=max(0, int(data.get("max_auto_resumes", 5))),
     )
 
 

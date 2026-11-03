@@ -62,9 +62,18 @@ def _project_info(d: Path) -> dict[str, Any]:
         except (OSError, ValueError, TypeError):
             pass
     from researchclaw.server.routes.pipeline import _active_run
+    from researchclaw.worker.jobs import read_job
+    job = read_job(d)
+    live = None
     if _active_run and _active_run.get('run_id') == d.name:
-        proj['status'] = _active_run['status']
-        proj['reason'] = _active_run.get('reason') or _active_run.get('error', '')
+        live = {'status': _active_run['status'], 'reason': _active_run.get('reason') or _active_run.get('error', '')}
+    elif job and job.get('state') in ('queued', 'running', 'stopping', 'interrupted', 'stopped'):
+        # worker 执行：job.json 是运行态真相源（Web 重启后依然可见）
+        live = {'status': job['state'], 'reason': job.get('reason', '')}
+        proj['auto_resumes'] = job.get('auto_resumes', 0)
+    if live:
+        proj['status'] = live['status']
+        proj['reason'] = live['reason']
         if proj['status'] in ('running', 'stopping'):
             try:
                 heartbeat = json.loads((d / 'heartbeat.json').read_text())

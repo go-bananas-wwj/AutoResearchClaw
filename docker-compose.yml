@@ -46,3 +46,20 @@ services:
     ports:
       - "8088:8088"
     command: serve --host 0.0.0.0 --port 8088 --config config.rc-remote-sensing.yaml   # 完整模式：chat/启停/设置页全开；本地适配：首跑端到端用遥感预设（沙箱/训练档/指标已调好）
+
+  # 独立执行进程：从 artifacts/rc-*/job.json 取任务，每个项目一个子进程；
+  # 子进程消失（kill/OOM/容器重启）时按 checkpoint 自动续跑。必须与 dashboard 同挂 docker.sock + GID。
+  worker:
+    image: researchclaw/control:latest
+    container_name: rc-worker
+    env_file: .env
+    volumes:
+      - ./:/app
+      - ./artifacts:/app/artifacts
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.ssh:/home/claw/.ssh:ro
+    working_dir: /app
+    group_add: ["${DOCKER_GID:-999}"]
+    restart: unless-stopped
+    entrypoint: ["python3", "-m", "researchclaw.worker"]
+    command: ["--config", "config.rc-remote-sensing.yaml"]

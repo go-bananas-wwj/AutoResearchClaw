@@ -103,6 +103,12 @@ hitl:
     default_human_timeout_sec: 86400
     auto_proceed_on_timeout: false
 
+server:
+  # 本地适配：Web 只投递任务，rc-worker 独立执行；dashboard 重启不打断实验，中断由看门狗自动续跑
+  executor: "worker"
+  max_concurrent_runs: 1
+  max_auto_resumes: 5
+
 security:
   hitl_required_stages: [5, 9, 20]
   allow_publish_without_approval: false
