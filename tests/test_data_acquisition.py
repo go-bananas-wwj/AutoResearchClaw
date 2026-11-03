@@ -118,3 +118,18 @@ def test_collect_extracts_and_hashes_products(tmp_path, monkeypatch):
     # second pass is a no-op (.complete flag)
     monkeypatch.setattr(insar_landslide, 'fetch', lambda *a, **k: pytest.fail('re-download'))
     insar_landslide.collect(tmp_path, FakeHyp3([job]), state)
+
+
+def test_corrupt_zip_is_dropped_and_others_continue(tmp_path, monkeypatch):
+    def fake_fetch(url, dest, expected_size=None, **kw):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b'PK not really a zip')
+        return dest
+    monkeypatch.setattr(insar_landslide, 'fetch', fake_fetch)
+    ref, sec = 'S1_272973_IW3_20170601T000000_VV_AAAA-BURST', 'S1_272973_IW3_20170613T000000_VV_BBBB-BURST'
+    job = {'job_id': 'j1', 'status_code': 'SUCCEEDED', 'job_parameters': {'granules': [ref, sec]},
+           'files': [{'url': 'https://hyp3/p.zip', 'size': 19, 'filename': 'p.zip'}]}
+    state = {'tracks': {'xinmo/b': {'name': 'n', 'site': 'xinmo', 'burst': 'b', 'pairs': [[ref, sec]]}}}
+    assert insar_landslide.collect(tmp_path, FakeHyp3([job]), state) == {'SUCCEEDED': 1}
+    assert not (tmp_path / 'downloads' / 'p.zip').exists()
+    assert not (tmp_path / 'products' / 'xinmo' / 'b' / '20170601_20170613' / '.complete').exists()

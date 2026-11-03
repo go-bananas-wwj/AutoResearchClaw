@@ -281,6 +281,16 @@ def collect(root: Path, hyp3: Hyp3, state: dict[str, Any], *, workers: int = 4) 
                 logger.warning("product %s/%s not downloaded: %s", key, pair_id, exc)
                 continue
             info = job["files"][0]
+            try:
+                with zipfile.ZipFile(zpath) as archive:
+                    bad = archive.testzip()
+                if bad:
+                    raise zipfile.BadZipFile(f"CRC 校验失败：{bad}")
+            except (zipfile.BadZipFile, OSError) as exc:
+                # 大小相符但内容损坏（如并发写入）：删除压缩包，下一轮只重下这一个
+                logger.warning("product %s/%s zip corrupt, will re-download: %s", key, pair_id, exc)
+                zpath.unlink(missing_ok=True)
+                continue
             product_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(zpath) as archive:
                 for member in archive.namelist():
