@@ -311,3 +311,21 @@ def test_failed_repair_mission_is_abandoned_after_framework_change(tmp_path, mon
     assert again.calls == []
     state = {m["id"]: m["status"] for m in json.loads((tmp_path / ".tower" / "missions.json").read_text())["missions"]}
     assert state["repair-1"] == "abandoned"
+
+
+def test_stop_request_stops_dispatch_and_resume_continues(tmp_path):
+    stop = {"now": False}
+
+    class Stopper(FakeDeepSeek):
+        def chat(self, messages, system=None, **kw):
+            if "当前步骤：layout" in messages[0]["content"]:
+                stop["now"] = True  # layout 进行中收到停止请求
+            return super().chat(messages, system=system, **kw)
+    llm = Stopper()
+    with pytest.raises(InterruptedError):
+        tw.Tower(llm, run_dir=tmp_path, spec=SPEC, plan_text="plan", should_stop=lambda: stop["now"]).run()
+    state = {m["id"]: m["status"] for m in json.loads((tmp_path / ".tower" / "missions.json").read_text())["missions"]}
+    assert state["layout"] == "merged" and state["M1"] == "planned"  # 进行中的完成，新的不再派
+    again = FakeDeepSeek()
+    files = _tower(tmp_path, again).run()
+    assert "m1 done" in files["methods/m1.py"] and not any(c.startswith("layout") for c in again.calls)

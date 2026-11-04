@@ -1836,5 +1836,11 @@ def _tower(config: RCConfig, run_dir: Path, llm: Any, spec: dict, exp_plan: str)
                                    config.experiment.execution_check.validation_timeout_sec)
     return Tower(llm, run_dir=run_dir, spec=spec, plan_text=exp_plan, step_max_tokens=agent.step_max_tokens,
                  max_parallel=agent.tower_parallel, max_attempts=agent.tower_max_attempts, check_runner=runner,
+                 should_stop=lambda: _cancel_requested(Path(run_dir)),
                  emit=lambda kind, title, detail="", status="running": _emit(
                      kind, title, detail, run_dir=run_dir, phase="implementation", status=status))
+
+
+def _cancel_requested(run_dir: Path) -> bool:
+    from researchclaw.worker.jobs import cancel_requested
+    return cancel_requested(run_dir)

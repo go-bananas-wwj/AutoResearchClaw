@@ -176,7 +176,8 @@ def _now() -> str:
 class Tower:
     def __init__(self, llm: Any, *, run_dir: Path, spec: dict, plan_text: str, step_max_tokens: int = 16384,
                  max_parallel: int = 3, max_attempts: int = 3, emit: Callable[..., None] | None = None,
-                 check_runner: Callable[[Path, str], tuple[bool, str]] | None = None) -> None:
+                 check_runner: Callable[[Path, str], tuple[bool, str]] | None = None,
+                 should_stop: Callable[[], bool] | None = None) -> None:
         from researchclaw.pipeline.execution_contract import digest
         self.llm = llm
         # 绝对路径：git -C <repo> worktree add <path> 会按 repo 目录解析相对路径（真实运行 run_dir 是相对路径）
@@ -189,6 +190,8 @@ class Tower:
         self._emit = emit or (lambda *a, **k: None)
         # 宿主实际运行 req mission 的 checks/check_<id>.check()；None 时只做静态检查与审查（单元测试）
         self.check_runner = check_runner
+        # 停止请求：不再派新 mission，等进行中的完成后以 InterruptedError 退出（未完成的保持 planned）
+        self.should_stop = should_stop or (lambda: False)
         self.root = run_dir / TOWER_DIR
         self.repo = self.root / "repo"
         self.worktrees = self.root / "worktrees"
@@ -392,7 +395,8 @@ class Tower:
                 failed = [m for m in self.missions.values() if m.status == "failed"]
                 ready = [m for m in self.missions.values()
                          if m.status == "planned" and all(d in merged for d in m.deps)]
-                if not failed:
+                stopping = self.should_stop()
+                if not failed and not stopping:
                     for mission in ready[: self.max_parallel - len(running)]:
                         mission.status = "running"
                         self._save()
@@ -417,6 +421,9 @@ class Tower:
                             raise
                         outcome = {"ok": False, "issues": [f"worker 异常：{exc}"]}
                     self._settle(mission, outcome)
+        if self.should_stop() and any(m.status == "planned" for m in self.missions.values()):
+            self._log("收到停止请求，已暂停派工", "", "", "failed")
+            raise InterruptedError("Tower 收到停止请求；未完成的 mission 保持待派工，恢复后继续")
         failed = [m for m in self.missions.values() if m.status == "failed"]
         if failed:
             raise TowerError("；".join(f"{m.id}: {m.feedback[-1] if m.feedback else '失败'}" for m in failed))
