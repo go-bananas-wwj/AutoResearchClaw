@@ -111,7 +111,7 @@ def test_method_review_cannot_invent_code_evidence():
     reply = {"ok": True, "issues": [], "requirements": [{"id": "M1", "status": "implemented",
         "code_evidence": [{"file": "main.py", "quote": "solve_normal_equation()"}],
         "test_evidence": [{"file": "method_checks.py", "quote": "assert recovered == 2"}]}]}
-    llm = SimpleNamespace(chat=lambda **kw: LLMResponse(content=json.dumps(reply), model="reviewer"))
+    llm = SimpleNamespace(chat=lambda *a, **kw: LLMResponse(content=json.dumps(reply), model="reviewer"))
     audit = audit_implementation({"main.py": "pass", "method_checks.py": "pass"}, plan, source, llm)
     assert not audit["ok"]
     assert any("证据" in s for s in audit["issues"])

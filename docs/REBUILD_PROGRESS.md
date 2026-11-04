@@ -72,3 +72,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 - 修复：kind=local 的条目可用 files_root 下的绝对路径，但必须是宿主清单登记的文件，并按清单 SHA-256 复核（篡改即拒绝），回执记录 `manifest_entry`。失败信息写明 data_manifest.json 的位置与格式。合成数据仍须写成文件、出具回执（"声明不等于存在"不变）。
 - 续：恢复时 7 次已缓存修复按提示词哈希原样重放，也计入总上限 8，于是数据回执失败落在第 8 次，新反馈没机会送到模型。修复：重放的修复步骤（0 次模型调用，`REPAIR_STATS`）不计入 `max_code_repairs_total`。
 - 续 2：数据回执失败仍立即终止，有两个原因：① 失败原因只打印到 stdout 和活动日志，修复反馈读的 execution.json/method_tests.json 都显示成功，模型看不到要修什么；② 方法断言通过后没有 traceback，签名退化为反馈末尾，即不变的 method_tests 通过日志，导致所有后续失败签名相同、被判为无进展。修复：失败写入 `.rc-validation/data_receipts.json` 并纳入反馈；签名改为取失败字段（failure/error）+ 最后一帧与异常行，数字归一化，不含通过的输出。
+
+### 2026-11-04 数据回执通过；独立实现审查截断
+- 签名与回执反馈修复后，模型写出 data_manifest.json，宿主按清单 SHA-256 复核通过；dry-run 指标 留一滑坡CRPS=107167.27。进入独立实现审查（模型核对代码与方法），审查调用固定 max_tokens=16384 被截断，异常未捕获，阶段失败。
+- 修复：`audit_implementation` 改经 `_chat_with_prompt`，截断时只把该次上限翻倍重试（封顶 reasoning_max_tokens）；仍失败时报 ExecutionContractError，进入修复/门控，不再让阶段崩溃。
