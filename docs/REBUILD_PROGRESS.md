@@ -27,3 +27,8 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 
 ## 待办（P0 剩余）
 - R1–R3 真机实测已通过（见清单证据）。
+
+### 2026-11-04 阶段 9 数据校验矛盾修复
+- 真实数据两阶段获取完成并通过哈希校验（SUCCEEDED 210 批次收尾），但计划校验报"本地数据未经清单验证"：提示词要求模型以 `real_data.root` 作 `kind=local` 的 path，而 `validate_plan` 只认 `datasets` 根——框架自相矛盾，模型无错。已让校验同时接受带清单的真实数据根。
+- 运行清单累积了作废方案（baige/fana/yujiaying 等）的条目；`planner.execute` 现按当前方案对象清理，文件留在共享库按需重新登记。
+- 重启 worker/dashboard 后经 API 从 EXPERIMENT_DESIGN 恢复同一项目。

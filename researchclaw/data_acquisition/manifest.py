@@ -59,6 +59,10 @@ class Manifest:
         self._index[entry["id"]] = entry
         return entry
 
+    def remove(self, entry_id: str) -> None:
+        if self._index.pop(entry_id, None) is not None:
+            self.data["entries"] = [e for e in self.data["entries"] if e["id"] != entry_id]
+
     def save(self) -> None:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(f".{os.getpid()}.tmp")

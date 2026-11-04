@@ -130,7 +130,9 @@ def validate_plan(plan: dict, resources: dict, source: dict) -> list[str]:
                     errors.append("合成数据须明确生成机制")
             elif kind == "local":
                 path = Path(str(data.get("path", "")))
+                # 普通数据根，或带 SHA-256 清单的真实数据根（resources.real_data，提示词要求以其 root 作 path）
                 roots = [Path(d["root"]) for d in resources["datasets"]]
+                roots += [Path(d["root"]) for d in resources.get("real_data") or []]
                 if not any(path.resolve().is_relative_to(p.resolve()) for p in roots) or not path.exists():
                     errors.append(f"本地数据未经清单验证：{data.get('path')}")
             elif kind == "download":

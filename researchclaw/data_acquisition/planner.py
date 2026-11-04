@@ -208,6 +208,10 @@ def execute(plan: dict[str, Any], run_dir: Path, base: Path, *, should_stop: Cal
     manifest_dir = base / "runs" / run_dir.name
     manifest = Manifest(manifest_dir, files_root=base)
     targets = {t["id"]: t for t in plan["targets"]}
+    # 清单只描述当前方案：早先作废方案的对象条目移除（文件仍在共享库，按需重新登记，不重复下载）
+    stale = [e["id"] for e in manifest.data["entries"] if e.get("target") not in targets]
+    for entry_id in stale:
+        manifest.remove(entry_id)
     for t in targets.values():
         ref = t.get("reference") or {}
         manifest.add_reference(f"{t['id']}/reference", source_url=ref.get("paper_id", ""),

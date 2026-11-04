@@ -174,3 +174,28 @@ def test_targets_too_close_are_not_independent(tmp_path, monkeypatch):
     plan['targets'].append(twin)
     errors, _ = planner.validate(plan, run, {'max_credits': 10, 'max_gb': 1})
     assert any('不能作为独立研究对象' in e for e in errors)
+
+
+def test_manifest_root_is_accepted_as_local_data(tmp_path):
+    from researchclaw.pipeline.execution_contract import validate_plan
+    root = tmp_path / "runs" / "rc-x"
+    root.mkdir(parents=True)
+    plan = {"execution": {"gpu_count": 0, "estimated_runtime_sec": 1, "memory_mb": 1,
+                          "validation_level": "real",
+                          "datasets": [{"id": "real", "kind": "local", "path": str(root)}]}}
+    resources = {"gpu_count": 1, "time_budget_sec": 100, "memory_limit_mb": 100, "datasets": [],
+                 "real_data": [{"root": str(root)}]}
+    errors = validate_plan(plan, resources, {})
+    assert not any("本地数据未经清单验证" in e for e in errors)
+    resources["real_data"] = []
+    assert any("本地数据未经清单验证" in e for e in validate_plan(plan, resources, {}))
+
+
+def test_manifest_remove_drops_stale_entry(tmp_path):
+    m = Manifest(tmp_path)
+    m.add_reference("old/reference", source_url="p", license="c", target="old")
+    m.add_reference("new/reference", source_url="p", license="c", target="new")
+    m.remove("old/reference")
+    m.save()
+    again = Manifest(tmp_path)
+    assert "old/reference" not in again and "new/reference" in again
