@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import ast
+import logging
 from pathlib import Path
 import re
 import subprocess
@@ -19,6 +20,8 @@ from typing import Any
 
 import yaml
 from researchclaw.pipeline.activity import emit, run_from_path
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionContractError(ValueError):
@@ -596,7 +599,41 @@ def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, ll
         agent = PatchCodeAgent(llm, run_dir=run_dir, stage_dir=stage_dir, spec=spec, plan_text=exp_plan,
                                step_max_tokens=config.experiment.code_agent.step_max_tokens)
         try:
-            repaired = agent.step("repair:" + digest(feedback)[:8], guidance, files)
+            repaired = files
+            # 独立审查判定 missing 的要求逐条成步（与生成阶段 req:<id> 同粒度），每步只带该要求与
+            # 提到它的问题；一步修全部缺失常因输出过大或顾此失彼而无进展。最后一步处理其余问题。
+            audit_path = stage_dir / "method_acceptance.json"
+            audit = {}
+            if feedback.startswith("方法实现未通过验收") and audit_path.is_file():
+                try:
+                    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                except ValueError:
+                    audit = {}
+            missing = [r.get("id") for r in audit.get("requirements") or []
+                       if isinstance(r, dict) and r.get("status") != "implemented" and r.get("id")]
+            issues = [str(i) for i in audit.get("issues") or []]
+            reqs = {r.get("id"): r for r in spec.get("method_requirements") or [] if isinstance(r, dict)}
+            applied = 0
+            for rid in missing:
+                related = [i for i in issues if re.search(rf"(?<![A-Za-z0-9]){re.escape(rid)}(?![0-9])", i)]
+                instruction = ("独立实现审查判定方法要求 " + rid + " 未实现，只修复这一项，不改变确认的方法：\n"
+                               + json.dumps(reqs.get(rid, {"id": rid}), ensure_ascii=False, indent=1)
+                               + ("\n审查指出的相关问题：\n- " + "\n- ".join(related) if related else ""))
+                try:
+                    repaired = agent.step(f"repair:{rid}:" + digest([instruction, repaired])[:8],
+                                          instruction, repaired)
+                    applied += 1
+                except PatchError as exc:
+                    logger.info("acceptance repair for %s not applied: %s", rid, exc)
+            rest = guidance if not missing else (
+                "Repair the remaining acceptance issues without changing the confirmed method:\n- "
+                + "\n- ".join(i for i in issues if not any(
+                    re.search(rf"(?<![A-Za-z0-9]){re.escape(r)}(?![0-9])", i) for r in missing)))
+            try:
+                repaired = agent.step("repair:" + digest([rest, repaired])[:8], rest, repaired)
+            except PatchError:
+                if not applied:
+                    raise
             # 本步骤全部回复取自缓存（恢复时重放）则不发生模型调用；调用方据此不计入修复总上限
             REPAIR_STATS["model_calls"] = agent.model_calls
             return repaired

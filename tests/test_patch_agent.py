@@ -111,3 +111,32 @@ def test_patch_backend_skips_legacy_whole_file_rewrites():
     from researchclaw.pipeline.stage_impls import _code_generation as cg
     src = inspect.getsource(cg._execute_code_generation)
     assert src.count("not _patch_backend") >= 3  # 深度质量修复 / 选题对齐重生成 / 消融重写
+
+
+def test_review_failure_repaired_one_missing_requirement_per_step(tmp_path):
+    import json as _json
+    from types import SimpleNamespace
+    from researchclaw.pipeline import execution_contract as ec
+    stage = tmp_path / 'stage-10'
+    stage.mkdir()
+    (tmp_path / 'stage-09').mkdir()
+    (tmp_path / 'stage-09' / 'experiment_spec.json').write_text(_json.dumps(SPEC))
+    (stage / 'method_acceptance.json').write_text(_json.dumps({
+        'ok': False, 'issues': ['M1 未接入主流程', '没有负对照'],
+        'requirements': [{'id': 'M1', 'status': 'missing'}]}))
+    config = SimpleNamespace(experiment=SimpleNamespace(
+        opencode=SimpleNamespace(enabled=False),
+        code_agent=SimpleNamespace(backend='patch', step_max_tokens=16384)))
+    prompts = []
+
+    class Rec(Scripted):
+        def chat(self, messages, **kw):
+            prompts.append(messages[0]['content'])
+            return super().chat(messages, **kw)
+    llm = Rec([REQ, WIRE])
+    files = ec.repair_acceptance_code({'main.py': 'import method\n', 'method.py': 'def wrap(x):\n    pass\n'},
+                                      '方法实现未通过验收：M1 未接入主流程', config, llm, None, stage,
+                                      exp_plan='plan', metric='CRPS')
+    assert 'return x % 6.283' in files['method.py'] and 'print(method.wrap' in files['main.py']
+    assert '当前步骤：repair:M1:' in prompts[0] and 'M1 未接入主流程' in prompts[0]
+    assert '没有负对照' in prompts[1] and 'M1 未接入主流程' not in prompts[1]
