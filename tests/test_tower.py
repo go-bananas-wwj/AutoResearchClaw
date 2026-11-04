@@ -329,3 +329,18 @@ def test_stop_request_stops_dispatch_and_resume_continues(tmp_path):
     again = FakeDeepSeek()
     files = _tower(tmp_path, again).run()
     assert "m1 done" in files["methods/m1.py"] and not any(c.startswith("layout") for c in again.calls)
+
+
+def test_mission_attempts_are_progress_aware(tmp_path):
+    n = {"M1": 0}
+
+    def m1(attempt):  # 前 3 次每次都是不同的越界文件（失败在变化），第 4 次正确
+        return (f"<<<FILE methods/m2_{attempt}.py>>>\nx = 1\n<<<END>>>\n{DONE}\n" if attempt < 3
+                else f"<<<FILE methods/m1.py>>>\ndef f():\n    return 'm1 done'\n<<<END>>>\n{DONE}\n")
+    files = _tower(tmp_path, FakeDeepSeek(workers={"M1": m1}), max_attempts=2).run()
+    assert "m1 done" in files["methods/m1.py"]  # 超过 max_attempts=2 仍继续：每次失败不同
+
+    same = FakeDeepSeek(workers={"M1": f"<<<FILE methods/m2.py>>>\nx = 1\n<<<END>>>\n{DONE}\n"})
+    with pytest.raises(tw.TowerError):
+        _tower(tmp_path / "b", same, max_attempts=2).run()
+    assert [c for c in same.calls if c.startswith("M1#")] == ["M1#0", "M1#1"]  # 同一失败连续 2 次即停

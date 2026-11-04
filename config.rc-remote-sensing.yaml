@@ -50,7 +50,8 @@ experiment:
     backend: "tower"            # 多智能体：每条方法要求一个 mission 分支并行实现、独立审查、合并（patch=单智能体小步补丁）
     step_max_tokens: 16384      # 单步编辑输出上限（非全局下限）
     tower_parallel: 3           # 同时运行的 worker/reviewer 数
-    tower_max_attempts: 3       # 每个 mission 最多尝试次数（审查驳回、越界、冲突都计一次）
+    tower_max_attempts: 3       # 同一失败连续出现 3 次判 mission 失败（失败在变化=有进展，不消耗）
+    tower_max_total: 8          # 每个 mission 的总尝试上限
   opencode:
     enabled: false             # 本地适配：先使用 ResearchClaw 内置 CodeAgent 跑通
     required: false

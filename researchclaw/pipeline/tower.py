@@ -129,6 +129,8 @@ class Mission:
     feedback: list[str] = field(default_factory=list)
     reviews: int = 0
     framework: str = ""  # 判失败时的框架版本；框架修复后恢复会重开该 mission
+    last_sig: str = ""  # 上次失败的签名（函数+异常行/问题文本，去掉行号与数值）
+    stuck: int = 0  # 同一失败连续重复的次数
 
 
 def framework_version() -> str:
@@ -175,7 +177,8 @@ def _now() -> str:
 
 class Tower:
     def __init__(self, llm: Any, *, run_dir: Path, spec: dict, plan_text: str, step_max_tokens: int = 16384,
-                 max_parallel: int = 3, max_attempts: int = 3, emit: Callable[..., None] | None = None,
+                 max_parallel: int = 3, max_attempts: int = 3, max_total: int = 8,
+                 emit: Callable[..., None] | None = None,
                  check_runner: Callable[[Path, str], tuple[bool, str]] | None = None,
                  should_stop: Callable[[], bool] | None = None) -> None:
         from researchclaw.pipeline.execution_contract import digest
@@ -186,7 +189,9 @@ class Tower:
         self.plan_text = plan_text
         self.step_max_tokens = step_max_tokens
         self.max_parallel = max(1, max_parallel)
+        # 按进展计：同一失败连续出现 max_attempts 次才判失败；失败在变化（有进展）时不消耗该额度，总次数封顶 max_total
         self.max_attempts = max(1, max_attempts)
+        self.max_total = max(self.max_attempts, max_total)
         self._emit = emit or (lambda *a, **k: None)
         # 宿主实际运行 req mission 的 checks/check_<id>.check()；None 时只做静态检查与审查（单元测试）
         self.check_runner = check_runner
@@ -278,7 +283,7 @@ class Tower:
                 mission.status = "abandoned"
             elif mission.status == "failed" and mission.framework != framework_version():
                 # 失败之后框架被修复：保留反馈、清零次数重新派工（框架没变则仍判真失败，不无限重试）
-                mission.status, mission.attempts = "planned", 0
+                mission.status, mission.attempts, mission.stuck, mission.last_sig = "planned", 0, 0, ""
                 mission.feedback.append("（框架已更新，重新尝试；以上为此前未通过的原因）")
             self.missions[mission.id] = mission
         if [asdict(m) for m in self.missions.values()] != data.get("missions"):
@@ -446,7 +451,11 @@ class Tower:
         mission.feedback.append("; ".join(outcome.get("issues") or ["未通过"]))
         # 只在失败时计次：中断后重新派工沿用同一步骤名，补丁回复按提示词哈希命中缓存
         mission.attempts += 1
-        if mission.attempts >= self.max_attempts:
+        from researchclaw.pipeline.execution_contract import failure_signature
+        sig = failure_signature(mission.feedback[-1])
+        mission.stuck = mission.stuck + 1 if sig == mission.last_sig else 0
+        mission.last_sig = sig
+        if mission.stuck + 1 >= self.max_attempts or mission.attempts >= self.max_total:
             mission.status = "failed"
             mission.framework = framework_version()
             self._log("失败", mission.id, mission.feedback[-1], "failed")
@@ -498,7 +507,8 @@ class Tower:
             self._log("检查通过" if ok else "检查失败", mission.id, output[-1500:], "completed" if ok else "failed")
             if not ok:
                 return {"ok": False, "issues": ["checks/check_" + _slug(mission.id) + ".py 实际运行失败（已提交的改动保留，"
-                                                "下次在此基础上修正）：\n" + output[-2500:]],
+                                                "下次在此基础上修正。先在函数 docstring 中写明每个数组参数的形状与轴含义，"
+                                                "再让实现与检查都按同一约定构造数据）：\n" + output[-2500:]],
                         "model_calls": agent.model_calls}
         review = self._review(mission, base_files, after, changed)
         calls = agent.model_calls + review.pop("model_calls", 0)
@@ -604,6 +614,7 @@ class Tower:
     def _reopen(self, mission_id: str, reason: str) -> None:
         mission = self.missions[mission_id]
         mission.status, mission.attempts, mission.feedback = "planned", 0, [reason]
+        mission.stuck, mission.last_sig = 0, ""
 
     def _owner_of_failure(self, feedback: str) -> str | None:
         """traceback 最内层落在哪个 mission 的文件里，就交给那个 mission。"""

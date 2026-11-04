@@ -483,6 +483,7 @@ class CodeAgentConfig:
     # backend=tower：mission 并行数与每个 mission 的最多尝试次数（docs/TOWER_DESIGN_CN.md）
     tower_parallel: int = 3
     tower_max_attempts: int = 3
+    tower_max_total: int = 8
     # Phase 2.5: Hard validation gates (AST-based)
     hard_validation: bool = True
     hard_validation_max_repairs: int = 4
@@ -1609,6 +1610,7 @@ def _parse_code_agent_config(data: dict[str, Any]) -> CodeAgentConfig:
         step_max_tokens=max(1, _safe_int(data.get("step_max_tokens"), 16384)),
         tower_parallel=max(1, _safe_int(data.get("tower_parallel"), 3)),
         tower_max_attempts=max(1, _safe_int(data.get("tower_max_attempts"), 3)),
+        tower_max_total=max(1, _safe_int(data.get("tower_max_total"), 8)),
         hard_validation=bool(data.get("hard_validation", True)),
         hard_validation_max_repairs=_safe_int(
             data.get("hard_validation_max_repairs"), 4

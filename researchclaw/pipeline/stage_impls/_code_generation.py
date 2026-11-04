@@ -1836,7 +1836,8 @@ def _tower(config: RCConfig, run_dir: Path, llm: Any, spec: dict, exp_plan: str)
         runner = make_check_runner(config.experiment, Path(run_dir).resolve() / ".tower" / "check_sandbox",
                                    config.experiment.execution_check.validation_timeout_sec)
     return Tower(llm, run_dir=run_dir, spec=spec, plan_text=exp_plan, step_max_tokens=agent.step_max_tokens,
-                 max_parallel=agent.tower_parallel, max_attempts=agent.tower_max_attempts, check_runner=runner,
+                 max_parallel=agent.tower_parallel, max_attempts=agent.tower_max_attempts,
+                 max_total=getattr(agent, "tower_max_total", 8), check_runner=runner,
                  should_stop=lambda: _cancel_requested(Path(run_dir)),
                  emit=lambda kind, title, detail="", status="running": _emit(
                      kind, title, detail, run_dir=run_dir, phase="implementation", status=status))
