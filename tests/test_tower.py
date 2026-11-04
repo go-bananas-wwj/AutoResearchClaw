@@ -415,3 +415,16 @@ def test_host_file_issues_are_not_routed_to_code_missions(tmp_path):
                                     "requirements": [{"id": "M1", "status": "implemented"}]})
     assert not [m for m in t.missions if m.startswith("repair-")]
     assert "宿主文件问题不派给代码 mission" in (tmp_path / ".tower" / "comms.jsonl").read_text()
+
+
+def test_bad_quote_asks_reviewer_again_without_costing_attempt(tmp_path):
+    def reviewer(data):
+        file = [l[6:] for l in data["diff"].splitlines() if l.startswith("+++ b/")][-1]
+        quote = [l[1:] for l in data["diff"].splitlines() if l.startswith("+") and not l.startswith("+++")
+                 and l[1:].strip()][-1]
+        if data["mission"] == "M1" and "evidence_problem" not in data:
+            return {"blocking": [], "suggestions": [], "evidence": [{"file": file, "quote": "not in file"}]}
+        return {"blocking": [], "suggestions": [], "evidence": [{"file": file, "quote": "  " + quote.strip() + "  "}]}
+    llm = FakeDeepSeek(reviewer=reviewer)
+    _tower(tmp_path, llm).run()
+    assert llm.calls.count("review:M1") == 2 and llm.calls.count("M1#0") == 1  # 只重问审查者，不重做 mission
