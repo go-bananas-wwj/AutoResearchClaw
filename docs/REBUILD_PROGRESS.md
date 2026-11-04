@@ -78,3 +78,4 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 - 修复：`audit_implementation` 改经 `_chat_with_prompt`，截断时只把该次上限翻倍重试（封顶 reasoning_max_tokens）；仍失败时报 ExecutionContractError，进入修复/门控，不再让阶段崩溃。
 - 续：审查调用修好后，独立审查给出实质性否决（M2/M6/M8/M11 missing，并列出 12 条问题：入口没有跑基线、消融、双几何和联合风险；M11 未接入主流程；相干性观测用的是累计位移而不是增量；保留比例指标结构性恒为 1；logsumexp 未减 log M；没有失败日期泄漏重跑等）。本轮 8 次真实修复都是单个补丁步骤一次修全部问题，在审查失败和 dry-run 失败之间来回，没有收敛。
 - 修复：`repair_acceptance_code` 遇审查失败时，按审查 requirements 中非 implemented 的项逐条成步（`repair:<id>:…`，只带该要求的规格与提及它的问题），再用一步处理其余问题；单条失败不影响其它条。粒度与生成阶段的 `req:<id>` 一致。
+- 续 2：逐条修复后，dry-run 主指标从 ~1e5 降到 留一滑坡CRPS=149.37，依次越过方法断言、dry-run、指标格式；最后卡在数据回执（计划声明的合成数据集 `math-check-synthetic-v1` 没有落盘文件），这时 8 次真实修复已用完，其中仅方法断言一道关卡就用了 5 次。遥感预设 `max_code_repairs_total` 调为 16（"同一失败连续 2 次即停"不变）。
