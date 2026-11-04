@@ -247,7 +247,8 @@ def resources_key(resources: Any) -> Any:
     if not isinstance(resources, dict):
         return resources
     key = {k: v for k, v in resources.items() if k != "real_data"}
-    key["real_data"] = [{k: d.get(k) for k in ("root", "manifest_sha256", "entries", "bytes")}
+    # 不比清单哈希：文件内容由实验准备与数据回执逐个按 SHA-256 复核；这里只判断数据集是否换了
+    key["real_data"] = [{k: d.get(k) for k in ("root", "entries", "bytes")}
                         for d in resources.get("real_data") or [] if isinstance(d, dict)]
     return key
 

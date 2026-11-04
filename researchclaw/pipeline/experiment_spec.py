@@ -62,7 +62,9 @@ def manifest_summary(root: Path) -> dict[str, Any] | None:
         if (kind, variant) not in seen and len(examples.setdefault(kind, [])) < 12:
             seen.add((kind, variant))
             examples[kind].append(entry)
-    return {"root": str(root), "manifest": str(path), "manifest_sha256": digest(entries),
+    # 内容哈希排除登记时间戳：重新登记同样的文件不应让"数据变了"（真实运行中每次恢复都因此重新规划）
+    stable = [{k: v for k, v in e.items() if k not in ("downloaded_at", "recorded_at")} for e in entries]
+    return {"root": str(root), "manifest": str(path), "manifest_sha256": digest(stable),
             "files_root": files_root,
             "path_rule": f"文件绝对路径 = files_root + '/' + entry['path']（entry['path'] 相对 {files_root}，"
                          "不是相对清单目录）；清单顶层为 {'files_root':..., 'entries':[...]}",

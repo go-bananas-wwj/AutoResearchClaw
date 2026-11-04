@@ -312,5 +312,7 @@ def test_resources_key_ignores_summary_details():
     b = json.loads(json.dumps(a))
     b["real_data"][0]["file_samples"] = {"x.txt": "Baseline: 1"}
     assert resources_key(a) == resources_key(b)
-    b["real_data"][0]["manifest_sha256"] = "other"
+    b["real_data"][0]["manifest_sha256"] = "other"  # 登记时间戳变化等：不算数据集变化
+    assert resources_key(a) == resources_key(b)
+    b["real_data"][0]["entries"] = 4
     assert resources_key(a) != resources_key(b)
