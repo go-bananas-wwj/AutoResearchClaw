@@ -345,3 +345,25 @@ def test_mission_attempts_are_progress_aware(tmp_path):
     with pytest.raises(tw.TowerError):
         _tower(tmp_path / "b", same, max_attempts=2).run()
     assert [c for c in same.calls if c.startswith("M1#")] == ["M1#0", "M1#1"]  # 同一失败连续 2 次即停
+
+
+def test_reviewer_sees_final_files_and_check_result(tmp_path):
+    seen = []
+
+    def reviewer(data):
+        seen.append(data)
+        file = [l[6:] for l in data["diff"].splitlines() if l.startswith("+++ b/")][-1]
+        quote = [l[1:] for l in data["diff"].splitlines() if l.startswith("+") and not l.startswith("+++")
+                 and l[1:].strip()][-1]
+        return {"blocking": [], "suggestions": [], "evidence": [{"file": file, "quote": quote}]}
+    _tower(tmp_path, FakeDeepSeek(reviewer=reviewer)).run()
+    m1 = next(d for d in seen if d["mission"] == "M1")
+    assert "m1 done" in m1["final_files"]["methods/m1.py"]  # 完整文件，不只是 diff
+    assert m1["check_result"] == "未实际运行"
+    assert "final_files" in tw.REVIEW_SYSTEM
+
+
+def test_bounded_files_keeps_head_and_tail():
+    out = tw._bounded_files({"a.py": "x" * 10, "b.py": "H" + "y" * 100000 + "T"}, limit=5000)
+    assert out["a.py"] == "x" * 10
+    assert out["b.py"].startswith("H") and out["b.py"].endswith("T") and "省略" in out["b.py"]
