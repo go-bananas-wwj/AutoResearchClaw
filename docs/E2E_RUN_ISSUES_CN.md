@@ -90,3 +90,9 @@
 - 现象：Tower 合并完成，阶段 10 全部关卡通过，阶段 11 完成；阶段 12 `verify_accepted_code` 报"代码、任务书或计划在验收后发生变化"。实测代码/计划/任务书哈希全部一致。
 - 根因：验收记录含 Tower 脚手架生成的 `methods/__init__.py`、`checks/__init__.py`，而阶段 12 收集当前文件时跳过所有 `__` 开头的路径段，两边文件名集合不等。
 - 修复：`is_code_path` 只跳过隐藏项与 `__pycache__` 等目录，保留包的 `__init__.py`；实施面板文件列表用同一规则。
+
+### 2026-11-05 00:55 阶段 12 正式运行挂载相对路径被 docker 拒绝
+
+- 现象：阶段 12 两秒内失败，`docker run -d` 报 `artifacts/.../.formal_runs/c30e99-n135 includes invalid characters for a local volume name`。
+- 根因：worker 的 run_dir 是相对路径，detached 正式运行把它直接作为 bind-mount 源；`_host_visible` 只翻译 `/app/` 开头的绝对路径，相对路径原样交给 docker，被当成具名卷。
+- 修复：`_host_visible` 先 `resolve()` 为绝对路径再翻译，所有沙箱挂载统一受益。

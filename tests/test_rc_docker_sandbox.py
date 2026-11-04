@@ -509,3 +509,14 @@ def test_detect_pip_packages_ignores_stdlib_docstrings_and_relative(tmp_path: Pa
     )
     detected = DockerSandbox._detect_pip_packages(tmp_path)
     assert detected == ["some_new_package"]
+
+
+def test_host_visible_makes_relative_paths_absolute(tmp_path, monkeypatch):
+    monkeypatch.delenv("RC_HOST_REPO", raising=False)
+    monkeypatch.chdir(tmp_path)
+    out = DockerSandbox._host_visible(Path("artifacts/rc-x/.formal_runs/k"))
+    assert out.is_absolute() and out == tmp_path / "artifacts/rc-x/.formal_runs/k"
+    monkeypatch.setenv("RC_HOST_REPO", "/home/u/repo")
+    monkeypatch.chdir("/app") if Path("/app").is_dir() else None
+    if Path("/app").is_dir():
+        assert str(DockerSandbox._host_visible(Path("artifacts/a"))) == "/home/u/repo/artifacts/a"

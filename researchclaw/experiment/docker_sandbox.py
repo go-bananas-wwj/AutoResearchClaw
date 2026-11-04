@@ -273,6 +273,8 @@ class DockerSandbox:
         import os
 
         prefix = os.environ.get("RC_HOST_REPO", "").rstrip("/")
+        # 先转绝对路径：相对路径会被 docker 当作具名卷名而拒绝（阶段 12 正式运行的 .formal_runs 曾因此失败）
+        staging_dir = Path(staging_dir).resolve()
         s = str(staging_dir)
         if prefix and s.startswith("/app/"):
             return Path(prefix) / s[len("/app/"):]
