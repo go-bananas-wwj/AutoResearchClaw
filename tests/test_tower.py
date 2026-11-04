@@ -174,3 +174,32 @@ def test_acceptance_repair_routes_to_tower_backend(tmp_path):
     files = ec.repair_acceptance_code({}, "方法实现未通过验收：M1 不对", config, fixer, None, stage,
                                       exp_plan="plan", metric="CRPS")
     assert "m1 v2" in files["methods/m1.py"] and ec.REPAIR_STATS["model_calls"] >= 1
+
+
+def test_account_error_pauses_without_burning_attempts(tmp_path):
+    from researchclaw.llm.client import LLMAccountError
+
+    class Broke(FakeDeepSeek):
+        def chat(self, messages, system=None, **kw):
+            if system and "实现协调者" in system:
+                return super().chat(messages, system=system, **kw)
+            raise LLMAccountError("余额不足")
+    with pytest.raises(LLMAccountError):
+        _tower(tmp_path, Broke()).run()
+    state = json.loads((tmp_path / ".tower" / "missions.json").read_text())
+    assert all(m["status"] == "planned" and m["attempts"] == 0 for m in state["missions"])
+    files = _tower(tmp_path, FakeDeepSeek()).run()  # 账户恢复后原样继续
+    assert "m1 done" in files["methods/m1.py"]
+
+
+def test_client_maps_402_to_account_error(monkeypatch):
+    import io
+    import urllib.error
+    from researchclaw.llm.client import LLMAccountError, LLMClient, LLMConfig
+    client = LLMClient(LLMConfig(base_url="https://x", api_key="k", primary_model="deepseek-flash"))
+
+    def boom(*a, **k):
+        raise urllib.error.HTTPError("https://x", 402, "Payment Required", {}, io.BytesIO(b"{}"))
+    monkeypatch.setattr(client, "_raw_call", boom)
+    with pytest.raises(LLMAccountError, match="余额不足"):
+        client.chat([{"role": "user", "content": "hi"}])

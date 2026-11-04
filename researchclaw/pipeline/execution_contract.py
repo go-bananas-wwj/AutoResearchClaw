@@ -544,6 +544,9 @@ code_evidence:[{file,quote:逐字源码片段}],test_evidence:[{file,quote:逐�
             {"confirmed_method": source, "plan": plan, "files": files}, ensure_ascii=False),
             json_mode=True, max_tokens=16384)
     except Exception as exc:  # noqa: BLE001 - 审查调用失败是验收未通过，交给修复/门控，不伪装成代码问题
+        from researchclaw.llm.client import LLMAccountError
+        if isinstance(exc, LLMAccountError):
+            raise
         raise ExecutionContractError(f"独立实现审查调用未完成：{exc}") from exc
     try:
         audit = json.loads(response.content)

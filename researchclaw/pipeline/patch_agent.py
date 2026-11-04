@@ -177,6 +177,9 @@ class PatchCodeAgent:
             resp = self.llm.chat([{"role": "user", "content": prompt}], system=SYSTEM,
                                  max_tokens=max_tokens or self.step_max_tokens)
         except Exception as exc:  # noqa: BLE001 - truncation raises in thinking mode
+            from researchclaw.llm.client import LLMAccountError
+            if isinstance(exc, LLMAccountError):
+                raise  # 账户问题不是本步骤的实现失败，不计入重试
             raise PatchError(f"模型调用失败：{exc}") from exc
         if getattr(resp, "truncated", False) or getattr(resp, "finish_reason", "") == "length":
             raise PatchError("本步骤输出被截断")

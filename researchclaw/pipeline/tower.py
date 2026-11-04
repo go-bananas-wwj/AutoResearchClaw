@@ -237,6 +237,9 @@ class Tower:
             deps = {k: [d for d in v if d in ids and d != k] for k, v in (raw.get("deps") or {}).items()
                     if k in ids and isinstance(v, list)}
         except Exception as exc:  # noqa: BLE001 - 依赖只影响调度顺序，不影响科学内容
+            from researchclaw.llm.client import LLMAccountError
+            if isinstance(exc, LLMAccountError):
+                raise
             self._log("依赖规划失败，按互不依赖调度", "", str(exc))
             return {}
         if self._has_cycle(deps):
@@ -286,6 +289,15 @@ class Tower:
                     try:
                         outcome = future.result()
                     except Exception as exc:  # noqa: BLE001 - worker 异常记入协议，按失败重派
+                        from researchclaw.llm.client import LLMAccountError
+                        if isinstance(exc, LLMAccountError):
+                            mission.status = "planned"  # 不计失败次数：账户恢复后原样重派
+                            self._save()
+                            self._log("暂停：模型服务账户不可用", mission.id, str(exc), "failed")
+                            for other in running.values():
+                                other.status = "planned"
+                            self._save()
+                            raise
                         outcome = {"ok": False, "issues": [f"worker 异常：{exc}"]}
                     self._settle(mission, outcome)
         failed = [m for m in self.missions.values() if m.status == "failed"]
@@ -383,6 +395,9 @@ class Tower:
                 calls = 1
                 content = _chat_with_prompt(self.llm, REVIEW_SYSTEM, user, json_mode=True, max_tokens=8192).content
             except Exception as exc:  # noqa: BLE001
+                from researchclaw.llm.client import LLMAccountError
+                if isinstance(exc, LLMAccountError):
+                    raise
                 return {"approve": False, "issues": [f"审查调用未完成：{exc}"], "model_calls": calls}
             cache.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(content, encoding="utf-8")

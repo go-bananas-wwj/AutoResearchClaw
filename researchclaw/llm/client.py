@@ -57,6 +57,14 @@ class LLMStreamAborted(Exception):
     """Caller cancellation must not trigger another provider/model call."""
 
 
+class LLMAccountError(RuntimeError):
+    """本地适配：模型服务账户不可用（HTTP 401 密钥无效 / 402 余额不足）。
+
+    这不是代码或产物的问题，换模型、重试或让修复循环继续都只会把同一错误当成
+    "实现失败"重复记账；调用方应立即停止并如实报告，等待人工处理账户。
+    """
+
+
 @dataclass
 class LLMResponse:
     """Parsed response from the LLM API."""
@@ -319,6 +327,13 @@ class LLMClient:
             except LLMStreamAborted:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 402):
+                    from researchclaw.pipeline.activity import emit
+                    reason = "API 密钥无效" if exc.code == 401 else "API 账户余额不足"
+                    emit("error", f"模型服务账户不可用：{reason}", f"HTTP {exc.code}",
+                         status="failed", model=m, phase="model")
+                    raise LLMAccountError(f"模型服务账户不可用（HTTP {exc.code}：{reason}），"
+                                          "需人工处理账户后恢复；未把它当作实现失败重试") from exc
                 from researchclaw.pipeline.activity import emit
                 emit("error", "模型调用未完成，准备检查或切换模型", str(exc),
                      status="failed", model=m, phase="model")
