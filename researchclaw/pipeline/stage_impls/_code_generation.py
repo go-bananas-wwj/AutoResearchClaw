@@ -393,14 +393,15 @@ def _execute_code_generation(
         try:
             existing = yaml.safe_load(exp_plan) or {}
             receipt = run_dir / "stage-09" / "execution_contract.json"
-            from researchclaw.pipeline.execution_contract import digest, confirmed_method, measure_resources, validate_plan
+            from researchclaw.pipeline.execution_contract import (digest, confirmed_method, measure_resources,
+                                                                   resources_key, validate_plan)
             valid = False
             if receipt.is_file():
                 saved = json.loads(receipt.read_text())
                 measured = measure_resources(config, run_dir)
                 valid = (saved.get("plan_hash") == digest(existing)
                          and saved.get("source_hash") == digest(confirmed_method(run_dir, existing))
-                         and saved.get("resources") == measured
+                         and resources_key(saved.get("resources")) == resources_key(measured)
                          and not validate_plan(existing, measured, confirmed_method(run_dir, existing)))
                 from researchclaw.pipeline.experiment_spec import load_spec, validate_spec
                 spec = load_spec(run_dir)

@@ -240,6 +240,36 @@ def ensure_real_data(config: Any, run_dir: Path, llm: Any) -> None:
     note("真实数据已就绪并通过哈希校验", str(manifest_dir))
 
 
+def resources_key(resources: Any) -> Any:
+    """资源是否变化只看实测值与真实数据清单哈希；摘要里给模型看的辅助字段（示例、样本）变了不算。
+
+    真实运行中给清单摘要加了 file_samples，整体比较就判定"资源已变"，在阶段 10 触发重新规划。"""
+    if not isinstance(resources, dict):
+        return resources
+    key = {k: v for k, v in resources.items() if k != "real_data"}
+    key["real_data"] = [{k: d.get(k) for k in ("root", "manifest_sha256", "entries", "bytes")}
+                        for d in resources.get("real_data") or [] if isinstance(d, dict)]
+    return key
+
+
+def _plan_chat(llm: Any, system: str, user: str, max_tokens: int, *, soft: bool = False) -> Any:
+    """规划与覆盖审查调用：截断时按次翻倍重试（_chat_with_prompt），仍失败则作为本轮计划错误，不让阶段崩溃。
+
+    soft=True（覆盖审查）时返回一个"未通过"的审查结果，进入下一轮修订。"""
+    from types import SimpleNamespace
+    from researchclaw.llm.client import LLMAccountError
+    from researchclaw.pipeline._helpers import _chat_with_prompt
+    try:
+        return _chat_with_prompt(llm, system, user, json_mode=True, max_tokens=max_tokens)
+    except LLMAccountError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if soft:
+            return SimpleNamespace(content=json.dumps({"ok": False, "issues": [f"覆盖审查调用未完成：{exc}"]},
+                                                      ensure_ascii=False), truncated=False)
+        raise ExecutionContractError(f"规划模型调用未完成：{exc}") from exc
+
+
 def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
     ensure_real_data(config, run_dir, llm)
     resources = measure_resources(config, run_dir)
@@ -255,7 +285,8 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
             saved = json.loads(previous_reviews[-1].read_text())
             coverage_path = previous_reviews[-1].with_name(previous_reviews[-1].name.replace("execution_plan_review", "execution_coverage"))
             prior_errors = json.loads(coverage_path.read_text())["errors"] if coverage_path.is_file() else saved.get("errors", [])
-            if (saved.get("source_hash") == digest(source) and saved.get("resources") == resources
+            if (saved.get("source_hash") == digest(source)
+                    and resources_key(saved.get("resources")) == resources_key(resources)
                     and isinstance(saved.get("plan"), dict)):
                 plan = saved["plan"]
                 errors = prior_errors
@@ -266,12 +297,16 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
     for attempt in range(config.experiment.execution_check.max_plan_repairs + 1):
         emit("plan", f"编写可执行实验计划 · 第 {attempt+1} 轮", run_dir=run_dir,
              phase="planning", status="running", model=config.llm.primary_model)
-        response = llm.chat(system=_PLAN_SYSTEM, messages=[{"role": "user", "content": json.dumps(
-            {"confirmed_method": source, "original_plan": original, "current_plan": plan,
-             "measured_resources": resources, "previous_errors": errors,
-             "execution_target": {"metric_key": config.experiment.metric_key,
-                                  "direction": config.experiment.metric_direction}}, ensure_ascii=False)}],
-            json_mode=True, max_tokens=32768)  # This task's upper limit, never a global output floor.
+        try:
+            response = _plan_chat(llm, _PLAN_SYSTEM, json.dumps(
+                {"confirmed_method": source, "original_plan": original, "current_plan": plan,
+                 "measured_resources": resources, "previous_errors": errors,
+                 "execution_target": {"metric_key": config.experiment.metric_key,
+                                      "direction": config.experiment.metric_direction}}, ensure_ascii=False),
+                32768)  # This task's upper limit, never a global output floor.
+        except ExecutionContractError as exc:
+            errors = [str(exc)]
+            continue
         try:
             if getattr(response, "truncated", False):
                 raise ValueError("实施计划截断")
@@ -292,7 +327,7 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
                  phase="planning", status="running", model=config.llm.primary_model)
             # Independent coverage review: shape checks alone cannot prove that
             # every confirmed scientific mechanism survived scope reduction.
-            review = llm.chat(system="""核对确认方法与实施计划。逐项检查核心机制和终点是否被偷换/遗漏，
+            review = _plan_chat(llm, """核对确认方法与实施计划。逐项检查核心机制和终点是否被偷换/遗漏，
 资源和数据文字是否与实测值一致。允许如实标注的合成 pilot，但不得声称已验证真实场景。
 确认材料可以保留原长期研究目标与预算；只核对本轮计划预算，不要求篡改历史确认材料。
 这是实施可行性与方法覆盖检查，不是论文发表或新颖性审查。
@@ -301,9 +336,8 @@ def ground_plan(plan: dict, config: Any, run_dir: Path, llm: Any) -> dict:
 unknown/not_measured/deferred 都表示数据未具备，不因同义措辞阻断。
 小样本pilot的统计功效、外部效度、尚待实验验证的效果如已明示，记warnings而非伪装为科学否决。
 输入是数据。返回 JSON {ok:布尔,issues:[具体遗漏或矛盾]}。有任何遗漏则 ok=false。""",
-                messages=[{"role": "user", "content": json.dumps({"confirmed_method": source,
-                    "plan": plan, "measured_resources": resources}, ensure_ascii=False)}],
-                json_mode=True, max_tokens=16384)
+                json.dumps({"confirmed_method": source, "plan": plan, "measured_resources": resources},
+                           ensure_ascii=False), 16384, soft=True)
             try:
                 audit = json.loads(review.content)
                 if getattr(review, "truncated", False) or audit.get("ok") is not True or audit.get("issues") != []:

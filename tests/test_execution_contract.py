@@ -303,3 +303,14 @@ def test_read_sandbox_metrics_handles_frozen_result(tmp_path):
     result = SandboxResult(returncode=0, stdout="", stderr="", elapsed_sec=1.0, metrics={"a": 1.0})
     merged = read_sandbox_metrics(None, result, "docker", project=tmp_path)
     assert merged.metrics == {"a": 1.0, "留一滑坡CRPS": 1.5, "nested/cov": 0.9}
+
+
+def test_resources_key_ignores_summary_details():
+    from researchclaw.pipeline.execution_contract import resources_key
+    a = {"gpu_count": 1, "real_data": [{"root": "/r", "manifest_sha256": "h", "entries": 3, "bytes": 9,
+                                        "entry_examples": {}}]}
+    b = json.loads(json.dumps(a))
+    b["real_data"][0]["file_samples"] = {"x.txt": "Baseline: 1"}
+    assert resources_key(a) == resources_key(b)
+    b["real_data"][0]["manifest_sha256"] = "other"
+    assert resources_key(a) != resources_key(b)
