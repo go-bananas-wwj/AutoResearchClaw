@@ -67,7 +67,8 @@ base 级关卡失败时，协调者把失败归到具体 mission 或新开一个
 ## 6. 实现说明（与设计的差异）
 
 - **协调者**：DeepSeek 只负责判断方法要求之间的实现依赖（宿主校验 id 与无环，有环或失败时按互不依赖调度并记入协议）。mission 骨架（layout → 每条要求一个 req → wire）由宿主按规格生成。集成失败的分派是确定性的：审查判定缺失的要求重开对应 req；traceback 最内层文件归属的 mission 重开；其余新建 `repair-N`。分派不交给模型猜。
-- **scope**：layout 生成"每条要求一个模块 `methods/<id>.py` + 一个检查 `checks/check_<id>.py`"的结构，`method_checks.py` 自动发现并断言检查数。req mission 只能改自己的两个文件，wire 只能改顶层文件。宿主按 diff 逐段匹配路径（`*` 不跨目录），越界直接退回，不送审。
+- **宿主脚手架**（2026-11-04 真实运行后调整）：`methods/<id>.py`、`checks/check_<id>.py` 桩和检查运行器 `method_checks.py` 由宿主按规格顺序确定性生成，运行器为宿主所有、任何 mission 改动都判越界。layout mission 只写 `config.py`/`data.py`/`main.py` 骨架。原因：真实运行中让模型一次写 28 个文件，两次只交出空 `__init__.py`，第三次运行器按字典序排 m1,m10,m11 却断言数字序。
+- **scope**（原设计）：layout 生成"每条要求一个模块 `methods/<id>.py` + 一个检查 `checks/check_<id>.py`"的结构，`method_checks.py` 自动发现并断言检查数。req mission 只能改自己的两个文件，wire 只能改顶层文件。宿主按 diff 逐段匹配路径（`*` 不跨目录），越界直接退回，不送审。
 - **mission 级关卡**：语法静态检查 + 独立审查（证据必须是改动后文件中的逐字片段，否则驳回）。沙箱实际运行仍在 base 级集成关卡里做（方法断言、dry-run、数据回执、全局审查），沿用阶段 10 的进展式修复预算。
 - **合并**：worker 在 `mission/<id>` 分支提交 → 宿主在该 worktree 上 `rebase base` → `merge --ff-only`。冲突时中止 rebase，退回 worker 基于最新 base 重做，计一次尝试。
 - **恢复**：`missions.json` 里 merged 的 mission 不再重做；running 的重新派工。尝试次数只在失败时增加，所以中断后的重新派工沿用同一步骤名，补丁回复按提示词哈希命中缓存。审查回复也按内容哈希缓存在 `.tower/missions/<id>/reviews/`。规格或计划变化时整个 `.tower/` 归档为 `.tower_superseded_<时间>` 后重建。

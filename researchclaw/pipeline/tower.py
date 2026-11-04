@@ -40,17 +40,45 @@ logger = logging.getLogger(__name__)
 
 TOWER_DIR = ".tower"
 BASE = "base"
-STATE_VERSION = 1
+STATE_VERSION = 2  # 2：宿主生成脚手架，layout 只写主流程骨架
 
-LAYOUT = """建立工作区骨架（只写骨架、函数签名与文档字符串，不写完整算法）：
+LAYOUT = """建立主流程骨架（只写骨架、函数签名与文档字符串，不写完整算法）：
 - config.py：全部超参数与路径，含 RC_VALIDATION=1 时缩小规模的设置。
 - data.py：读取数据的函数签名与最小实现（ExperimentSpec 有 prepared_data 时只按其中的绝对路径用 numpy.load 读取）。
-- 每条方法要求 <id> 一个模块 methods/<id小写>.py（含该要求需要的函数签名）与一个检查 checks/check_<id小写>.py，
-  检查文件定义 check() 函数，暂时 raise NotImplementedError；methods/__init__.py 与 checks/__init__.py 为空文件。
-- method_checks.py：按文件名顺序导入 checks/ 下全部 check_*.py 并逐个调用 check()，用 assert 断言实际运行的检查数
-  等于方法要求条数，最后单独一行打印 RC_METHOD_CHECKS_OK。
 - main.py：入口骨架。
-这样每条方法要求只改自己的两个文件，可以并行实现、互不冲突。"""
+methods/<id>.py、checks/check_<id>.py 与 method_checks.py 已由宿主按方法要求建好（每条要求一个模块和一个检查），
+本步骤不要修改它们；各要求的实现由后续 mission 分别完成。"""
+
+# 宿主按规格确定性生成的脚手架：每条方法要求一个模块 + 一个检查桩，以及检查运行器。
+# 这是测试框架层面的结构，不含任何科学决策；交给模型一次写 28 个文件在真实运行中连续 3 次失败。
+HOST_OWNED = ("method_checks.py",)
+
+_RUNNER = '''"""宿主生成的方法检查运行器（Tower 脚手架，mission 不得修改）。"""
+import importlib
+
+REQUIREMENTS = {ids!r}
+
+ran = 0
+for rid, module in REQUIREMENTS:
+    importlib.import_module("checks." + module).check()
+    print(f"{{rid}} check passed")
+    ran += 1
+assert ran == len(REQUIREMENTS), (ran, len(REQUIREMENTS))
+print("RC_METHOD_CHECKS_OK")
+'''
+
+
+def scaffold(reqs: list[dict]) -> dict[str, str]:
+    files = {"methods/__init__.py": "", "checks/__init__.py": ""}
+    for r in reqs:
+        slug = _slug(r["id"])
+        doc = str(r.get("description") or "").replace('"""', "'''")
+        files[f"methods/{slug}.py"] = f'"""方法要求 {r["id"]}：{doc}"""\n'
+        files[f"checks/check_{slug}.py"] = (f'"""方法要求 {r["id"]} 的可执行检查。"""\n\n\ndef check():\n'
+                                            f'    raise NotImplementedError("{r["id"]} 尚未实现")\n')
+    files["method_checks.py"] = _RUNNER.format(ids=[(r["id"], "check_" + _slug(r["id"])) for r in reqs])
+    return files
+
 
 REQ = """只实现方法要求 {rid}：{description}
 - 只修改/新建 scope 允许的文件：methods/{slug}.py（可另建 methods/{slug}_*.py）与 checks/check_{slug}.py。
@@ -207,7 +235,8 @@ class Tower:
         if self.missions:
             return
         reqs = [r for r in self.spec.get("method_requirements") or [] if isinstance(r, dict) and r.get("id")]
-        self.missions["layout"] = Mission("layout", "layout", LAYOUT, ["**"])
+        self._commit_scaffold(reqs)
+        self.missions["layout"] = Mission("layout", "layout", LAYOUT, ["*.py", "*.json", "*.txt", "*.yaml"])
         for r in reqs:
             slug = _slug(r["id"])
             self.missions[r["id"]] = Mission(
@@ -221,6 +250,17 @@ class Tower:
                                         ["layout"] + [r["id"] for r in reqs])
         self._save()
         self._log("规划", "", "；".join(f"{m.id}←{','.join(m.deps) or '-'}" for m in self.missions.values()))
+
+    def _commit_scaffold(self, reqs: list[dict]) -> None:
+        self._init_repo()
+        if self._tree_files(BASE).get("method_checks.py"):
+            return
+        for name, body in scaffold(reqs).items():
+            target = self.repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
+        self._git(self.repo, "add", "-A")
+        self._git(self.repo, "commit", "-q", "-m", "tower: host scaffold")
 
     def _coordinator_deps(self, reqs: list[dict]) -> dict[str, list[str]]:
         """协调者（DeepSeek）判断方法要求之间的实现依赖；宿主校验 id 与无环，失败时视为互不依赖。"""
@@ -342,6 +382,7 @@ class Tower:
                                emit=lambda kind, title, detail="": self._emit("tower", f"Tower：{mission.id} {title}",
                                                                                detail, "running"))
         instruction = (mission.instruction + "\n\n本 mission 只允许修改匹配这些模式的文件：" + "、".join(mission.scope)
+                       + "（宿主文件 " + "、".join(HOST_OWNED) + " 除外）"
                        + ("\n\n上次未通过的原因（只修正这些问题）：\n- " + "\n- ".join(mission.feedback[-3:])
                           if mission.feedback else ""))
         try:
@@ -349,7 +390,7 @@ class Tower:
         except PatchError as exc:
             return {"ok": False, "issues": [f"实现未完成：{exc}"], "model_calls": agent.model_calls}
         changed = sorted(n for n in set(after) | set(before) if after.get(n) != before.get(n))
-        outside = [n for n in changed if not in_scope(n, mission.scope)]
+        outside = [n for n in changed if not in_scope(n, mission.scope) or n in HOST_OWNED]
         if not changed:
             return {"ok": False, "issues": ["没有任何改动"], "model_calls": agent.model_calls}
         if outside:

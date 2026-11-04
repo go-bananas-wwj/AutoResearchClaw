@@ -16,12 +16,7 @@ SPEC = {"hashes": {"plan": "p", "brief": "b"}, "primary_metric": {"key": "CRPS",
         "method_requirements": [{"id": "M1", "description": "wrap", "acceptance_test": "W(x+2pi)=W(x)"},
                                 {"id": "M2", "description": "coherence", "acceptance_test": "g(0)=1"}]}
 
-LAYOUT = "\n".join(f"<<<FILE {p}>>>\n{b}<<<END>>>" for p, b in [
-    ("main.py", "import methods\n"), ("methods/__init__.py", "\n"), ("checks/__init__.py", "\n"),
-    ("methods/m1.py", "def f():\n    pass\n"), ("methods/m2.py", "def f():\n    pass\n"),
-    ("checks/check_m1.py", "def check():\n    raise NotImplementedError\n"),
-    ("checks/check_m2.py", "def check():\n    raise NotImplementedError\n"),
-    ("method_checks.py", "print('RC_METHOD_CHECKS_OK')\n")]) + f"\n{DONE}\n"
+LAYOUT = f"<<<FILE main.py>>>\nimport methods\n<<<END>>>\n{DONE}\n"
 
 
 def _edit(path, search, replace):
@@ -72,8 +67,8 @@ class FakeDeepSeek:
             reply = reply(int(attempt))
         if reply is None:
             reply = {"layout": LAYOUT,
-                     "M1": _edit("methods/m1.py", "    pass", "    return 'm1 done'"),
-                     "M2": _edit("methods/m2.py", "    pass", "    return 'm2 done'"),
+                     "M1": f"<<<FILE methods/m1.py>>>\ndef f():\n    return 'm1 done'\n<<<END>>>\n{DONE}\n",
+                     "M2": f"<<<FILE methods/m2.py>>>\ndef f():\n    return 'm2 done'\n<<<END>>>\n{DONE}\n",
                      "wire": _edit("main.py", "import methods", "import methods\nprint('CRPS: 1.0')")}.get(mission)
         return LLMResponse(content=reply, model="m", finish_reason="stop")
 
@@ -96,8 +91,8 @@ def test_missions_run_in_parallel_review_and_merge(tmp_path):
 
 
 def test_out_of_scope_edit_is_rejected_then_redone(tmp_path):
-    llm = FakeDeepSeek(workers={"M1": lambda attempt: _edit("methods/m2.py", "    pass", "    return 'stolen'")
-                                if attempt == 0 else _edit("methods/m1.py", "    pass", "    return 'm1 done'")})
+    llm = FakeDeepSeek(workers={"M1": lambda attempt: f"<<<FILE methods/m2.py>>>\nstolen = 1\n<<<END>>>\n{DONE}\n"
+                                if attempt == 0 else f"<<<FILE methods/m1.py>>>\ndef f():\n    return 'm1 done'\n<<<END>>>\n{DONE}\n"})
     files = _tower(tmp_path, llm).run()
     assert "m1 done" in files["methods/m1.py"] and "m2 done" in files["methods/m2.py"]
     assert "M1#0" in llm.calls and "M1#1" in llm.calls
@@ -210,3 +205,14 @@ def test_relative_run_dir_works(tmp_path, monkeypatch):
     (tmp_path / "artifacts" / "rc-x").mkdir(parents=True)
     files = tw.Tower(FakeDeepSeek(), run_dir=tw.Path("artifacts/rc-x"), spec=SPEC, plan_text="plan").run()
     assert "m1 done" in files["methods/m1.py"]
+
+
+def test_host_scaffold_and_runner_are_protected(tmp_path):
+    llm = FakeDeepSeek(workers={"layout": lambda attempt: f"<<<FILE method_checks.py>>>\nprint('RC_METHOD_CHECKS_OK')\n<<<END>>>\n{DONE}\n"
+                                if attempt == 0 else LAYOUT})
+    files = _tower(tmp_path, llm).run()
+    assert "importlib.import_module" in files["method_checks.py"] and "assert ran ==" in files["method_checks.py"]
+    assert "layout#1" in llm.calls  # 改宿主运行器被判越界，退回重做
+    assert [r for r in tw.scaffold(SPEC["method_requirements"])] == [
+        "methods/__init__.py", "checks/__init__.py", "methods/m1.py", "checks/check_m1.py",
+        "methods/m2.py", "checks/check_m2.py", "method_checks.py"]
