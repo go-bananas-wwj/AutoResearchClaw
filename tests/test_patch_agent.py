@@ -79,3 +79,17 @@ def test_bad_search_feedback_then_fix(tmp_path):
     agent.generate()
     m1 = [r for r in agent.records if r.step == 'req:M1'][0]
     assert m1.attempts == 2 and 'SEARCH' in m1.feedback[0]
+
+
+def test_truncation_doubles_only_that_step_budget(tmp_path):
+    class Capped(Scripted):
+        config = type('C', (), {'reasoning_max_tokens': 65536})()
+
+        def chat(self, messages, **kw):
+            self.budgets.append(kw.get('max_tokens'))
+            return super().chat(messages, **kw)
+    llm = Capped([LAYOUT, RuntimeError('推理模型返回截断或空正文'), RuntimeError('推理模型返回截断或空正文'),
+                  REQ, WIRE])
+    llm.budgets = []
+    _agent(tmp_path, llm).generate()
+    assert llm.budgets == [16384, 16384, 32768, 65536, 16384]  # 下一步骤回到原上限

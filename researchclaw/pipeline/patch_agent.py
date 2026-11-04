@@ -151,14 +151,14 @@ class PatchCodeAgent:
         parts.append(PROTOCOL)
         return "\n\n".join(parts)
 
-    def _ask(self, prompt: str) -> str:
+    def _ask(self, prompt: str, max_tokens: int | None = None) -> str:
         cache_file = self.cache / "replies" / (hashlib.sha256(prompt.encode()).hexdigest() + ".txt")
         if cache_file.is_file():
             return cache_file.read_text(encoding="utf-8")
         self.model_calls += 1
         try:
             resp = self.llm.chat([{"role": "user", "content": prompt}], system=SYSTEM,
-                                 max_tokens=self.step_max_tokens)
+                                 max_tokens=max_tokens or self.step_max_tokens)
         except Exception as exc:  # noqa: BLE001 - truncation raises in thinking mode
             raise PatchError(f"模型调用失败：{exc}") from exc
         if getattr(resp, "truncated", False) or getattr(resp, "finish_reason", "") == "length":
@@ -172,15 +172,24 @@ class PatchCodeAgent:
 
     def step(self, step: str, instruction: str, files: dict[str, str]) -> dict[str, str]:
         feedback: list[str] = []
+        # 截断时只把本步骤的输出上限翻倍（封顶 llm.config.reasoning_max_tokens），与
+        # _chat_with_prompt 一致；不是全局下限，截断回复仍不被接受。推理模型在同一上限下
+        # 重试通常再次截断，单靠"拆小编辑"的反馈不足以恢复。
+        cap = getattr(getattr(self.llm, "config", None), "reasoning_max_tokens", 0)
+        cap = cap if isinstance(cap, int) and not isinstance(cap, bool) else 0
+        budget = self.step_max_tokens
         for attempt in range(1, self.max_step_attempts + 1):
             prompt = self._prompt(step, instruction, files, feedback)
             reused = (self.cache / "replies" / (hashlib.sha256(prompt.encode()).hexdigest() + ".txt")).is_file()
             self.emit("implementation", f"实现步骤 {step}" + ("（复用已完成结果）" if reused else f" · 第 {attempt} 次"))
             try:
-                reply = self._ask(prompt)
+                reply = self._ask(prompt, budget)
                 updated = apply_edits(files, parse_edits(reply))
             except PatchError as exc:
-                feedback.append(str(exc) + ("；请拆成更小的编辑" if "截断" in str(exc) or "结束标记" in str(exc) else ""))
+                truncated = "截断" in str(exc) or "结束标记" in str(exc)
+                feedback.append(str(exc) + ("；请拆成更小的编辑" if truncated else ""))
+                if truncated and cap > budget:
+                    budget = min(cap, budget * 2)
                 logger.info("patch step %s attempt %d rejected: %s", step, attempt, exc)
                 continue
             self.records.append(StepRecord(step, "applied", attempt, reused, feedback))
