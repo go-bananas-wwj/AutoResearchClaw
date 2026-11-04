@@ -499,3 +499,13 @@ def test_keep_containers_skips_removal(
     sandbox.run("print('ok')", timeout_sec=60)
 
     mock_remove.assert_not_called()
+
+
+def test_detect_pip_packages_ignores_stdlib_docstrings_and_relative(tmp_path: Path):
+    (tmp_path / "main.py").write_text(
+        '"""Sample paths from the filtered posterior.\\nimport fake_in_doc\\n"""\n'
+        "from __future__ import annotations\nimport inspect\nfrom . import util\n"
+        "import researchclaw\nimport some_new_package\n"
+    )
+    detected = DockerSandbox._detect_pip_packages(tmp_path)
+    assert detected == ["some_new_package"]

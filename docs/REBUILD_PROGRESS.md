@@ -37,3 +37,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 - 阶段 9 通过（模型方案 + 真实数据清单），阶段 10 补丁式实现在 `req:M4` 连续 3 次截断失败：每次重试都用同一 `step_max_tokens=16384`，推理模型在同一上限下必然再截断，"拆小编辑"反馈不足以恢复。
 - 修复：`PatchCodeAgent.step` 截断时仅把本步骤上限翻倍（封顶 `llm.reasoning_max_tokens`），下一步骤回到原上限；与 `_chat_with_prompt` 一致，不是全局下限。
 - 框架缺口：正常结束的失败不会被看门狗重试，框架修复后仍需经 API 恢复（`resume_run_id` + `from_stage`）。
+
+### 2026-11-04 沙箱依赖自动检测误判
+- 截断翻倍生效：阶段 10 补丁实现 M1–M10、wire 全部完成。随后方法断言在 Phase 0 pip 即失败：上游 `_detect_pip_packages` 用正则扫 import，把 docstring 中 "from the ..." 的 `the`、标准库 `__future__`/`inspect`、宿主包 `researchclaw` 追加进沙箱 requirements.txt。该文件由沙箱在暂存目录生成，模型的两次修复看不到也改不了。
+- 修复：改为 AST 解析真实 import，排除标准库（`sys.stdlib_module_names`）、相对导入、本地模块/目录和宿主包；未知第三方包仍按上游语义自动安装。

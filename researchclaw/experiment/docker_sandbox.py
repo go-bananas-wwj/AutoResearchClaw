@@ -560,24 +560,38 @@ class DockerSandbox:
     @staticmethod
     def _detect_pip_packages(staging_dir: Path) -> list[str]:
         """Scan Python files for import statements and return pip package names."""
-        import_re = re.compile(
-            r"^\s*(?:import|from)\s+([\w.]+)", re.MULTILINE
-        )
+        # 本地适配：按 AST 取真实 import（上游正则会把 docstring 里的 "from the ..." 当成包名），
+        # 并排除标准库（__future__、inspect 等）、相对导入与宿主包；否则 pip 在代码运行前
+        # 就失败，模型的修复循环看不到也改不了这个由沙箱追加的 requirements.txt。
+        import ast
+        import sys
+
+        stdlib = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
         # Exclude local project modules (any .py file in staging_dir, recursive)
         # BUG-DA8-13: Use rglob to also scan subdirectories
         local_modules = {
             pyf.stem for pyf in staging_dir.rglob("*.py")
-        }
+        } | {d.name for d in staging_dir.rglob("*") if d.is_dir()}
         detected: list[str] = []
         for pyf in staging_dir.rglob("*.py"):
             if pyf.name == "setup.py":
                 continue  # Don't scan setup.py for experiment deps
             text = pyf.read_text(encoding="utf-8", errors="replace")
-            for m in import_re.finditer(text):
-                top_module = m.group(1).split(".")[0]
-                if top_module in _BUILTIN_PACKAGES:
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue  # 语法错误由验收的语法关卡报告，不在这里猜依赖
+            names = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names += [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    names.append(node.module)
+            for name in names:
+                top_module = name.split(".")[0]
+                if top_module in _BUILTIN_PACKAGES or top_module in stdlib:
                     continue
-                if top_module in local_modules:
+                if top_module in local_modules or top_module == "researchclaw":
                     continue  # Skip local project modules
                 pip_name = _IMPORT_TO_PIP.get(top_module, top_module)
                 if pip_name not in detected:
