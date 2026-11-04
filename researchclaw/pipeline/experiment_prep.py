@@ -31,13 +31,14 @@ from researchclaw.pipeline.activity import emit
 
 logger = logging.getLogger(__name__)
 
-PREP_VERSION = 3  # 3：拒绝有效掩码全为 False 的数组（真实运行中 bperp 未解析却照样输出）； 2：按研究对象坐标提取 + 跨对象数组去重（v1 产物在真实运行中两个对象数组相同）
+PREP_VERSION = 4  # 4：规格提供文本元数据样本 file_samples；3： 3：拒绝有效掩码全为 False 的数组（真实运行中 bperp 未解析却照样输出）； 2：按研究对象坐标提取 + 跨对象数组去重（v1 产物在真实运行中两个对象数组相同）
 PREP_DIR = "prep"
 SCRIPT = "prepare.py"
 OK_MARK = "RC_PREP_OK"
 
 INSTRUCTION = """编写 prepare.py（本步骤是"实验准备"，只准备数据，不实现方法、不计算指标）：
 - 按 ExperimentSpec.real_data 的 path_rule（files_root + entry['path']）读取原始数据清单中的文件；
+  解析元数据前先看 real_data.file_samples 中的真实文件内容，按其实际字段名与格式解析，不要凭猜测匹配关键词。
   只能读清单登记的文件，不得联网下载，不得用随机数冒充真实数据。
 - 把 ExperimentSpec.datasets 中的每个数据集准备成实验可直接读取的数组，写到相对工作目录的 prepared/ 下，
   格式只用 .npy 或 .npz（numpy.save / numpy.savez，不要 pickle），按研究对象、几何、时间组织文件。

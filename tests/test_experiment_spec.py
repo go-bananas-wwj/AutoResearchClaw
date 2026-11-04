@@ -73,3 +73,18 @@ def test_manifest_summary_tells_code_how_to_find_files(tmp_path):
     assert s["files_root"] == str(tmp_path) and "files_root" in s["path_rule"]
     assert s["file_variants"]["insar_product"] == {"wrapped_phase.tif": 2, "corr.tif": 2}
     assert len(s["entry_examples"]["insar_product"]) == 2
+
+
+def test_manifest_summary_includes_text_file_samples(tmp_path):
+    import json as _json
+    from researchclaw.pipeline.experiment_spec import manifest_summary
+    run = tmp_path / "runs" / "rc-x"
+    run.mkdir(parents=True)
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "S1_A_meta.txt").write_text("Baseline: -18.52\nHeading: -12.4\n")
+    (tmp_path / "shared" / "S1_A_phase.tif").write_bytes(b"\x00" * 8)
+    entries = [{"id": "a/meta", "kind": "insar_product", "path": "shared/S1_A_meta.txt", "bytes": 1},
+               {"id": "a/phase", "kind": "insar_product", "path": "shared/S1_A_phase.tif", "bytes": 8}]
+    (run / "data_manifest.json").write_text(_json.dumps({"files_root": str(tmp_path), "entries": entries}))
+    samples = manifest_summary(run)["file_samples"]
+    assert samples == {"shared/S1_A_meta.txt": "Baseline: -18.52\nHeading: -12.4\n"}  # 二进制不取样

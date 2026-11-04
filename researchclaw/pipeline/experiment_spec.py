@@ -67,10 +67,31 @@ def manifest_summary(root: Path) -> dict[str, Any] | None:
             "path_rule": f"文件绝对路径 = files_root + '/' + entry['path']（entry['path'] 相对 {files_root}，"
                          "不是相对清单目录）；清单顶层为 {'files_root':..., 'entries':[...]}",
             "file_variants": extensions, "entry_examples": examples,
+            "file_samples": _text_samples(examples, files_root),
             "entries": len(entries), "by_kind": kinds, "bytes": total,
             "sites": sorted({e["site"] for e in entries if e.get("site")}),
             "references": [{k: e.get(k) for k in ("id", "source_url", "failure_date", "site", "target", "location")}
                            for e in entries if e.get("kind") == "reference"]}
+
+
+_TEXT_SUFFIXES = (".txt", ".md", ".json", ".csv", ".xml", ".yaml", ".yml", ".ann", ".log")
+
+
+def _text_samples(examples: dict[str, list[dict]], files_root: str, *, chars: int = 2500) -> dict[str, str]:
+    """每种文本类文件给一份真实内容的开头：模型要解析元数据，必须先看到它的实际格式
+    （真实运行中 prepare.py 没见过 HyP3 的 `Baseline: -18.52` 写法，把垂直基线判成缺失）。"""
+    samples: dict[str, str] = {}
+    for rows in examples.values():
+        for entry in rows:
+            path = entry.get("path")
+            if not path or not str(path).lower().endswith(_TEXT_SUFFIXES):
+                continue
+            try:
+                with (Path(files_root) / path).open(encoding="utf-8", errors="replace") as fh:
+                    samples[str(path)] = fh.read(chars)
+            except OSError:
+                continue
+    return samples
 
 
 def real_data_roots(data_roots: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
