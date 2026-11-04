@@ -124,3 +124,14 @@ def test_identical_arrays_for_different_targets_are_rejected(tmp_path):
     assert len(errors) == 1 and "['phase']" in errors[0] and "不是独立样本" in errors[0]  # 一维共享元数据不算
     np.savez(out / "b.npz", phase=crop + 1, dates=np.arange(3))
     assert ep.check_prepared(out, spec, raw)[0] == []
+
+
+def test_array_with_all_false_validity_mask_is_rejected(tmp_path):
+    out = tmp_path / "prepared"
+    out.mkdir()
+    np.savez(out / "a.npz", bperp=np.zeros(5), bperp_valid=np.zeros(5, bool), phase=np.ones((4, 4)),
+             phase_valid=np.ones((4, 4), bool))
+    spec = {"datasets": [{"id": "R", "kind": "local"}]}
+    (out / "index.json").write_text(json.dumps([{"dataset_id": "R", "file": "a.npz", "sources": ["A/x"]}]))
+    errors, _ = ep.check_prepared(out, spec, {"A/x": {"target": "A"}})
+    assert errors and "['bperp']" in errors[0] and "有效掩码全部为 False" in errors[0]

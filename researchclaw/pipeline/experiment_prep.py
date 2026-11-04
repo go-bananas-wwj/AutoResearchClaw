@@ -31,7 +31,7 @@ from researchclaw.pipeline.activity import emit
 
 logger = logging.getLogger(__name__)
 
-PREP_VERSION = 2  # 2：按研究对象坐标提取 + 跨对象数组去重（v1 产物在真实运行中两个对象数组相同）
+PREP_VERSION = 3  # 3：拒绝有效掩码全为 False 的数组（真实运行中 bperp 未解析却照样输出）； 2：按研究对象坐标提取 + 跨对象数组去重（v1 产物在真实运行中两个对象数组相同）
 PREP_DIR = "prep"
 SCRIPT = "prepare.py"
 OK_MARK = "RC_PREP_OK"
@@ -118,6 +118,21 @@ def _describe_array(path: Path) -> list[dict]:
     return rows
 
 
+def _all_invalid(path: Path, names: list[str]) -> list[str]:
+    """Arrays X whose companion mask X_valid / X_mask is all False."""
+    import numpy as np
+    if path.suffix != ".npz":
+        return []
+    dead = []
+    with np.load(path, allow_pickle=False) as data:
+        for name in names:
+            for suffix in ("_valid", "_mask"):
+                mask = name + suffix
+                if mask in data.files and data[mask].dtype == bool and data[mask].size and not data[mask].any():
+                    dead.append(name)
+    return dead
+
+
 def check_prepared(out: Path, spec: dict, raw: dict[str, dict]) -> tuple[list[str], list[dict]]:
     """Host-side acceptance of prepare.py output; returns (errors, card rows)."""
     from researchclaw.data_acquisition.download import sha256_file
@@ -163,6 +178,12 @@ def check_prepared(out: Path, spec: dict, raw: dict[str, dict]) -> tuple[list[st
             errors.append(f"{rel}: 数组为空 {empty[:3]}"); continue
         if kind != "synthetic" and any(a.get("finite_fraction", 1.0) == 0.0 for a in arrays):
             errors.append(f"{rel}: 数组全部为非有限值"); continue
+        # 有效掩码全为 False 等于没有这项数据（真实运行中 bperp 全 0、bperp_valid 全 False，原始元数据里其实有）
+        dead = _all_invalid(path, [a["array"] for a in arrays])
+        if dead:
+            errors.append(f"{rel}: 数组 {dead} 的有效掩码全部为 False，等于没有这项数据：须从原始文件正确解析；"
+                          "原始文件确实没有该信息时不要输出该数组，并在 description 中如实说明缺失")
+            continue
         covered.add(did)
         rows.append({"dataset_id": did, "kind": kind, "file": rel, "path": str(path),
                      "description": item.get("description"), "units": item.get("units"),

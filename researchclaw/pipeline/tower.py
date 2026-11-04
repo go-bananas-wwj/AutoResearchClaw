@@ -124,7 +124,7 @@ class Mission:
     instruction: str
     scope: list[str]
     deps: list[str] = field(default_factory=list)
-    status: str = "planned"  # planned/running/merged/failed
+    status: str = "planned"  # planned/running/merged/failed/abandoned
     attempts: int = 0
     feedback: list[str] = field(default_factory=list)
     reviews: int = 0
@@ -141,6 +141,16 @@ def framework_version() -> str:
         if path.is_file():
             digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
+
+
+def _card_structure(card: Any) -> Any:
+    """数据卡的结构（路径、数组名、形状、dtype）：结构变了代码才需重做；只是数值修正时保留已合并 mission，
+    由集成关卡用新数据重新验收。"""
+    if not isinstance(card, dict):
+        return card
+    return [(f.get("dataset_id"), f.get("path"), [(a.get("array"), a.get("shape"), a.get("dtype"))
+                                                 for a in f.get("arrays") or []])
+            for f in card.get("files") or []]
 
 
 def _slug(rid: str) -> str:
@@ -185,7 +195,7 @@ class Tower:
         self.state_path = self.root / "missions.json"
         self.comms = self.root / "comms.jsonl"
         self.key = digest([STATE_VERSION, spec.get("hashes"), spec.get("method_requirements"),
-                           spec.get("prepared_data"), plan_text])  # 数据卡变了（重新准备）则 Tower 重建
+                           _card_structure(spec.get("prepared_data")), plan_text])
         self.missions: dict[str, Mission] = {}
         self.model_calls = 0
         self._git_lock = threading.Lock()
@@ -260,11 +270,16 @@ class Tower:
             mission = Mission(**row)
             if mission.status == "running":  # 上次进程在该 mission 进行中被中断：重新派工
                 mission.status = "planned"
+            elif mission.status == "failed" and mission.framework != framework_version() and mission.kind == "repair":
+                # 集成修复是针对某次失败现象派出的；框架更新后由集成关卡重新验收、按新失败重新分派
+                mission.status = "abandoned"
             elif mission.status == "failed" and mission.framework != framework_version():
                 # 失败之后框架被修复：保留反馈、清零次数重新派工（框架没变则仍判真失败，不无限重试）
                 mission.status, mission.attempts = "planned", 0
                 mission.feedback.append("（框架已更新，重新尝试；以上为此前未通过的原因）")
             self.missions[mission.id] = mission
+        if [asdict(m) for m in self.missions.values()] != data.get("missions"):
+            self._save()  # 恢复时的状态调整（重新派工、重开、作废）立即落盘
 
     def _save(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -311,6 +326,16 @@ class Tower:
             target.write_text(body, encoding="utf-8")
         self._git(self.repo, "add", "-A")
         self._git(self.repo, "commit", "-q", "-m", "tower: host scaffold")
+
+    def _refresh_host_spec(self) -> None:
+        """宿主规格随数据卡数值更新（结构不变时 mission 保留，但代码运行时读到的必须是当前规格）。"""
+        reqs = [r for r in self.spec.get("method_requirements") or [] if isinstance(r, dict) and r.get("id")]
+        body = scaffold(reqs, self.spec).get("experiment_spec.json")
+        if body is None or self._tree_files(BASE).get("experiment_spec.json") == body:
+            return
+        (self.repo / "experiment_spec.json").write_text(body, encoding="utf-8")
+        self._git(self.repo, "add", "experiment_spec.json")
+        self._git(self.repo, "commit", "-q", "-m", "tower: refresh host spec")
 
     def _coordinator_deps(self, reqs: list[dict]) -> dict[str, list[str]]:
         """协调者（DeepSeek）判断方法要求之间的实现依赖；宿主校验 id 与无环，失败时视为互不依赖。"""
@@ -359,6 +384,7 @@ class Tower:
         """Run until every mission is merged; returns the files of the base branch."""
         self._init_repo()
         self.plan()
+        self._refresh_host_spec()
         with cf.ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             running: dict[cf.Future, Mission] = {}
             while True:
@@ -394,7 +420,7 @@ class Tower:
         failed = [m for m in self.missions.values() if m.status == "failed"]
         if failed:
             raise TowerError("；".join(f"{m.id}: {m.feedback[-1] if m.feedback else '失败'}" for m in failed))
-        pending = [m.id for m in self.missions.values() if m.status != "merged"]
+        pending = [m.id for m in self.missions.values() if m.status not in ("merged", "abandoned")]
         if pending:
             raise TowerError(f"依赖无法满足的 mission：{pending}")
         return self.base_files()

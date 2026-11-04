@@ -281,3 +281,33 @@ def test_failed_mission_reopens_only_after_framework_change(tmp_path, monkeypatc
     monkeypatch.setattr(tw, "framework_version", lambda: "changed")
     files = _tower(tmp_path, FakeDeepSeek()).run()  # 框架修复后恢复：重开失败的 mission
     assert "m1 done" in files["methods/m1.py"]
+
+
+def test_card_value_change_keeps_missions_structure_change_rebuilds(tmp_path):
+    card = {"files": [{"dataset_id": "R", "path": "/p/a.npz", "arrays": [{"array": "x", "shape": [3], "dtype": "f4",
+                                                                         "min": 0.0, "max": 1.0}]}]}
+    tw.Tower(FakeDeepSeek(), run_dir=tmp_path, spec=dict(SPEC, prepared_data=card), plan_text="plan").run()
+    values = json.loads(json.dumps(card))
+    values["files"][0]["arrays"][0]["max"] = 9.0
+    again = FakeDeepSeek()
+    tw.Tower(again, run_dir=tmp_path, spec=dict(SPEC, prepared_data=values), plan_text="plan").run()
+    assert again.calls == []  # 只有数值变化：已合并 mission 保留
+    spec_file = json.loads((tmp_path / ".tower" / "repo" / "experiment_spec.json").read_text())
+    assert spec_file["prepared_data"]["files"][0]["arrays"][0]["max"] == 9.0  # 宿主规格随之刷新
+    shape = json.loads(json.dumps(card))
+    shape["files"][0]["arrays"][0]["shape"] = [4]
+    tw.Tower(FakeDeepSeek(), run_dir=tmp_path, spec=dict(SPEC, prepared_data=shape), plan_text="plan")
+    assert list(tmp_path.glob(".tower_superseded_*"))
+
+
+def test_failed_repair_mission_is_abandoned_after_framework_change(tmp_path, monkeypatch):
+    _tower(tmp_path, FakeDeepSeek()).run()
+    bad = FakeDeepSeek(workers={"repair-1": f"{DONE}\n"})  # 没有任何编辑块：每次都不被接受
+    with pytest.raises(tw.TowerError):
+        _tower(tmp_path, bad).repair("没有指标")
+    monkeypatch.setattr(tw, "framework_version", lambda: "changed")
+    again = FakeDeepSeek()
+    _tower(tmp_path, again).run()
+    assert again.calls == []
+    state = {m["id"]: m["status"] for m in json.loads((tmp_path / ".tower" / "missions.json").read_text())["missions"]}
+    assert state["repair-1"] == "abandoned"
