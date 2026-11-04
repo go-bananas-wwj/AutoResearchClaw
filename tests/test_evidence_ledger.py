@@ -50,3 +50,29 @@ def test_registry_whitelists_settings_from_ledger(tmp_path):
     reg = VerifiedRegistry.from_run_dir(run, metric_direction='minimize')
     assert reg.is_verified(0.001) and reg.is_verified(64) and reg.is_verified(5.546)
     assert not reg.is_verified(0.777)
+
+
+def test_long_arrays_are_not_evidence_and_differences_are_derived(tmp_path):
+    run, data, node = _run(tmp_path)
+    formal = run / '.formal_runs' / f'c30e99-{node}' / 'results.json'
+    formal.write_text(json.dumps({'留一滑坡CRPS': 413.4460722, 'negative_control_crps_mm': 819.2214894,
+                                  'per_fold': [1.25, 2.5], 'samples': [[i * 1.37 for i in range(50)]]}))
+    ledger = build_ledger(run, data_roots=(str(data),))
+    names = {e.get('name') for e in ledger['entries']}
+    assert 'per_fold[1]' in names and not any(str(n).startswith('samples') for n in names)
+    report = check_claims(r'\begin{document} CRPS 由 413.4461 升至 819.2215，相差 405.7754；折 2.5。', ledger)
+    assert report['unsupported'] == [] and report['derived'][0]['value'] == '405.7754'
+    # 只出现在样本数组里的数、以及与任何差值都不符的数仍须拦截
+    bad = check_claims(r'\begin{document} 样本 67.13，增量 405.9。', ledger)
+    assert sorted(u['value'] for u in bad['unsupported']) == ['405.9', '67.13']
+
+
+def test_run_record_and_algorithm_steps(tmp_path):
+    run, data, node = _run(tmp_path)
+    (run / 'stage-12' / 'runs').mkdir(parents=True)
+    (run / 'stage-12' / 'runs' / 'run-1.json').write_text(json.dumps(
+        {'metrics': {'留一滑坡CRPS': 0.4213}, 'elapsed_sec': 481.99, 'receipt': {'time_budget_sec': 900}}))
+    ledger = build_ledger(run, data_roots=(str(data),))
+    text = '\\begin{document} 运行约 482 s 完成，预算 900 s。\n11: Compute r\n12: return\n'
+    assert check_claims(text, ledger)['unsupported'] == []
+    assert [u['value'] for u in check_claims('\\begin{document} 增量 11 mm', ledger)['unsupported']] == ['11']

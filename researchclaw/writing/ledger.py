@@ -22,16 +22,31 @@ from pathlib import Path
 from typing import Any
 
 LEDGER_FILE = "evidence_ledger.json"
+# 结果里的长数组（样本、协方差、逐像元场）不是可写进论文的结论：展开后账本有数十万个数，
+# 论文里几乎任何数字都能"碰巧"匹配某个元素，主张校验就失去意义（真实运行 318308 条）。
+MAX_LIST_LEAVES = 32
+# 由两个结果标量相减得到的数字（"由 413.4461 升至 547.2020，增量 133.7559"）可追溯，按派生值接受。
+MAX_DERIVED_SCALARS = 2000
 
 
-def _flatten(value: Any, prefix: str = "") -> dict[str, float]:
+def _leaves(value: Any) -> int:
+    if isinstance(value, dict):
+        return sum(_leaves(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_leaves(v) for v in value)
+    return 1
+
+
+def _flatten(value: Any, prefix: str = "", *, max_list: int | None = None) -> dict[str, float]:
     rows: dict[str, float] = {}
     if isinstance(value, dict):
         for key, item in value.items():
-            rows.update(_flatten(item, f"{prefix}/{key}" if prefix else str(key)))
+            rows.update(_flatten(item, f"{prefix}/{key}" if prefix else str(key), max_list=max_list))
     elif isinstance(value, list):
+        if max_list is not None and _leaves(value) > max_list:
+            return rows
         for i, item in enumerate(value):
-            rows.update(_flatten(item, f"{prefix}[{i}]"))
+            rows.update(_flatten(item, f"{prefix}[{i}]", max_list=max_list))
     elif isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
         rows[prefix] = float(value)
     return rows
@@ -97,9 +112,24 @@ def build_ledger(run_dir: Path, *, data_roots: tuple[str, ...] = ()) -> dict[str
                 data = json.loads(results.read_text())
             except (OSError, ValueError):
                 continue
-            for key, value in _flatten(data).items():
+            for key, value in _flatten(data, max_list=MAX_LIST_LEAVES).items():
                 entries.append({"kind": "result", "value": value, "name": key, "node": best["node"],
                                 "commit": best["commit"], "file": str(results.relative_to(run_dir))})
+            break
+        # 正式运行记录（阶段 12 回执）：用时、时间预算，只取主指标与最佳节点一致的那次
+        for record in sorted((run_dir / "stage-12" / "runs").glob("run-*.json")):
+            try:
+                rec = json.loads(record.read_text())
+            except (OSError, ValueError):
+                continue
+            if best.get("metric") not in (rec.get("metrics") or {}).values():
+                continue
+            receipt = rec.get("receipt") or {}
+            for key in ("elapsed_sec", "time_budget_sec"):
+                value = receipt.get(key, rec.get(key))
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    entries.append({"kind": "result", "value": float(value), "name": f"run/{key}",
+                                    "node": best["node"], "file": str(record.relative_to(run_dir))})
             break
     for root in data_roots:
         try:
@@ -131,6 +161,21 @@ def ledger_numbers(ledger: dict[str, Any]) -> list[tuple[float, dict[str, Any]]]
     return rows
 
 
+def _decimals(raw: str) -> int:
+    digits = raw.rstrip("%").lstrip("+-")
+    return len(digits.split(".", 1)[1]) if "." in digits else 0
+
+
+def _derived(number: float, dp: int, scalars: list[float]) -> tuple[float, float] | None:
+    """两个结果标量之差（按论文写出的小数位，先舍入再相减或相减再舍入均可）。"""
+    target = abs(number)
+    for i, a in enumerate(scalars):
+        for b in scalars[i + 1:]:
+            if round(abs(a - b), dp) == target or round(abs(round(a, dp) - round(b, dp)), dp) == target:
+                return a, b
+    return None
+
+
 def _matches(number: float, value: float) -> bool:
     for candidate in (value, value * 100, value / 100):
         if candidate == number:
@@ -159,13 +204,15 @@ def check_claims(text: str, ledger: dict[str, Any], *, small_int_exempt: int = 1
     body = body.split("\\begin{document}", 1)[-1]
     numbers = ledger_numbers(ledger)
     keys = {e["key"] for e in ledger.get("entries", []) if e.get("kind") == "literature"}
-    unsupported, checked, cites = [], 0, 0
+    scalars = sorted({v for v, e in numbers if e.get("kind") == "result"})[:MAX_DERIVED_SCALARS]
+    unsupported, derived, checked, cites = [], [], 0, 0
     for m in re.finditer(r"\\cite[pt]?\s*(?:\[[^\]]*\])?\{([^}]*)\}", body):
         for key in (k.strip() for k in m.group(1).split(",")):
             cites += 1
             if key and key not in keys:
                 unsupported.append({"kind": "citation", "value": key, "context": body[max(0, m.start() - 60):m.end() + 20]})
     scrubbed = _SKIP_COMMANDS.sub(" ", body)
+    scrubbed = re.sub(r"(?m)^(\s*)\d+:", r"\1 ", scrubbed)  # 算法步骤编号 "11: ..." 是结构不是主张
     for m in _NUM.finditer(scrubbed):
         raw = m.group(0)
         percent = raw.endswith("%")
@@ -176,8 +223,15 @@ def check_claims(text: str, ledger: dict[str, Any], *, small_int_exempt: int = 1
         if not percent and number.is_integer() and 0 <= number <= small_int_exempt:
             continue
         checked += 1
-        if not any(_matches(number, value) for value, _ in numbers):
+        if any(_matches(number, value) for value, _ in numbers):
+            continue
+        dp = _decimals(raw)
+        # 整数差值太容易偶然命中，只接受带小数位的派生值
+        pair = _derived(number, dp, scalars) if not percent and dp >= 1 else None
+        if pair:
+            derived.append({"value": raw, "from": list(pair)})
+        else:
             unsupported.append({"kind": "number", "value": raw,
                                 "context": scrubbed[max(0, m.start() - 60):m.end() + 40].replace("\n", " ")})
-    return {"checked": checked, "citations_checked": cites, "unsupported": unsupported,
+    return {"checked": checked, "citations_checked": cites, "unsupported": unsupported, "derived": derived,
             "ledger_hash": ledger.get("hash")}
