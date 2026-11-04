@@ -118,3 +118,9 @@ def test_failure_signature_tracks_check_not_line_numbers():
     b = failure_signature(tb.format(n=537, m=99, fn="check_m2_coherence", msg=""))
     c = failure_signature(tb.format(n=537, m=477, fn="check_m10_oracle_calibration", msg="coverage 1.0"))
     assert a == b and a != c
+
+
+def test_metrics_contract_line_with_chinese_key():
+    from researchclaw.experiment.sandbox import parse_metrics
+    out = 'noise\nMETRICS {"留一滑坡CRPS": 1.5, "x": null, "metrics": {"cov": 0.9, "ok": true}}\n'
+    assert parse_metrics(out) == {"留一滑坡CRPS": 1.5, "cov": 0.9}

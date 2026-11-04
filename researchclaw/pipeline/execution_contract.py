@@ -340,7 +340,9 @@ def execution_failure(result: Any, metric: str = "") -> str:
         from researchclaw.experiment.sandbox import parse_metrics
         metrics = parse_metrics(result.stdout or "")
     if not has_real_metric(metrics, metric):
-        return "没有有限的目标科研指标，退出码 0 不构成通过"
+        return ("没有有限的目标科研指标，退出码 0 不构成通过。宿主只从 stdout 解析指标，接受两种格式："
+                f"单独一行 `{metric or '<主指标键>'}: <数值>`，或单独一行 "
+                f"`METRICS {{\"{metric or '<主指标键>'}\": <数值>, ...}}`（键须与主指标键完全一致）")
     return ""
 
 

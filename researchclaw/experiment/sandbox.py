@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import os
 import re
@@ -114,6 +115,22 @@ def parse_metrics(stdout: str) -> dict[str, float]:
     metrics: dict[str, float] = {}
     for line in stdout.splitlines():
         stripped = line.strip()
+
+        # 本地适配：显式契约行 "METRICS {json}"（中文主指标键常写在 JSON 里）；
+        # 只取有限数值，顶层与嵌套 "metrics" 字段均可，null/字符串忽略。
+        if stripped.startswith("METRICS {"):
+            try:
+                payload = json.loads(stripped[len("METRICS "):])
+            except ValueError:
+                continue
+            if isinstance(payload, dict):
+                for scope in (payload, payload.get("metrics")):
+                    if not isinstance(scope, dict):
+                        continue
+                    for key, val in scope.items():
+                        if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
+                            metrics[str(key)] = float(val)
+            continue
 
         # BUG-181: Parse SUMMARY lines first (most reliable, one metric per line)
         # Format: "SUMMARY condition=X metric=Y mean=M std=S [success_rate=R]"
