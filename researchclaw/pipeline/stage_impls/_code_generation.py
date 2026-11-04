@@ -1192,6 +1192,10 @@ def _execute_code_generation(
                 complexity_warnings.append(f"[{fname}] {w}")
                 logger.warning("Stage 10 code quality: [%s] %s", fname, w)
 
+    # 本地适配：补丁后端下，上游整文件重写式修复（深度质量/选题对齐重生成/消融重写）会从自由文本
+    # 抽出平铺文件替换工作区、丢掉子包路径并绕过编辑块协议；改由验收关卡（method_checks、
+    # dry-run、数据回执、模型审查）与补丁式修复处理，这些检查仅记录告警。
+    _patch_backend = getattr(config.experiment.code_agent, "backend", "blueprint") == "patch"
     # --- P1.1+P1.2: Deep quality analysis (class quality, scoping, API) ---
     deep_warnings = deep_validate_files(files)
     for w in deep_warnings:
@@ -1208,7 +1212,7 @@ def _execute_code_generation(
                            "identical AST", "NOT a real ablation",
                            "shadows stdlib/pip")
     )]
-    if critical_deep and llm is not None:
+    if critical_deep and llm is not None and not _patch_backend:
         logger.info(
             "Stage 10: %d critical code issues found — triggering repair cycle",
             len(critical_deep),
@@ -1413,7 +1417,7 @@ def _execute_code_generation(
     # includes file inventory + full main.py + per-file function/class headers.
     alignment_ok = True
     alignment_note = ""
-    if llm is not None:
+    if llm is not None and not _patch_backend:
         # Build structured code summary for alignment check
         _file_inventory = []
         for _fn, _cd in files.items():
@@ -1616,7 +1620,7 @@ def _execute_code_generation(
 
     # --- FIX-7: Ablation distinctness check ---
     main_code = files.get("main.py", "")
-    if llm is not None and main_code and "condition" in main_code.lower():
+    if llm is not None and not _patch_backend and main_code and "condition" in main_code.lower():
         try:
             ablation_prompt = (
                 f"Examine this experiment code:\n```python\n{main_code[:6000]}\n```\n\n"

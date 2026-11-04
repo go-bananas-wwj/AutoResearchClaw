@@ -57,3 +57,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 ### 2026-11-04 生成代码含子包时写盘失败
 - 续写生效：阶段 10 的 14 个补丁步骤全部完成（15 次模型调用）。随后宿主写盘时 `FileNotFoundError: experiment/methods/__init__.py`：模型把方法组织成 `methods/` 子包，`_code_generation.py` 的 6 处与阶段 13 `_write_project` 写文件前没建父目录。
 - 修复：这些位置写盘前 `parent.mkdir(parents=True)`；BUG-184 跨文件导入检查把子包与标准库视为已知模块（原先把 `fractions`、`methods` 误报为缺失）。
+
+### 2026-11-04 补丁后端被上游整文件重写修复覆盖
+- 子包写盘修复后，补丁实现完成，但验收修复报"EDIT 目标文件不存在：methods/gaussian_sum.py"。原因：生成后上游"深度质量"检查误报（把内置异常 `FloatingPointError` 当成未定义函数），触发旧式整文件重写修复，从自由文本抽出平铺文件替换工作区，丢掉 `methods/` 子包路径，也绕过了编辑块协议。
+- 修复：`code_agent.backend=patch` 时跳过深度质量修复、选题对齐重生成、消融重写这三条上游 LLM 重写路径，只记录告警；由验收关卡与补丁式修复负责。

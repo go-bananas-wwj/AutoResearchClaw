@@ -104,3 +104,10 @@ def test_reply_stopping_after_complete_block_is_continued_not_restarted(tmp_path
     llm = Scripted([LAYOUT, partial, reply(''), WIRE])
     files = _agent(tmp_path, llm).generate()
     assert 'return x % 6.283' in files['method.py'] and llm.calls == 4  # M1 = 一次回复 + 一次续写
+
+
+def test_patch_backend_skips_legacy_whole_file_rewrites():
+    import inspect
+    from researchclaw.pipeline.stage_impls import _code_generation as cg
+    src = inspect.getsource(cg._execute_code_generation)
+    assert src.count("not _patch_backend") >= 3  # 深度质量修复 / 选题对齐重生成 / 消融重写
