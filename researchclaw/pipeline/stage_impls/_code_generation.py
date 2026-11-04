@@ -1731,11 +1731,15 @@ def _execute_code_generation(
                 if _same >= _check.max_code_repairs or _total >= _check.max_code_repairs_total:
                     return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
                         artifacts=("experiment/", "method_acceptance.json"), evidence_refs=(), error=str(exc))
-                _total += 1
+                from researchclaw.pipeline import execution_contract as _ec
+                _ec.REPAIR_STATS["model_calls"] = -1
                 from researchclaw.pipeline.execution_contract import repair_acceptance_code
                 try:
                     files = repair_acceptance_code(files, feedback, config, llm, _pm,
                         stage_dir, exp_plan=exp_plan, metric=metric)
+                    # 恢复时按缓存重放的修复（0 次模型调用）不计入总上限，否则重放就会耗尽预算
+                    if _ec.REPAIR_STATS["model_calls"] != 0:
+                        _total += 1
                 except ExecutionContractError as repair_error:
                     return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
                         artifacts=("experiment/",), evidence_refs=(), error=str(repair_error))

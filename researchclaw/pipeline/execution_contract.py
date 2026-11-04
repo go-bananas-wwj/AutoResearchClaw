@@ -551,6 +551,9 @@ code_evidence:[{file,quote:逐字源码片段}],test_evidence:[{file,quote:逐�
     return audit
 
 
+REPAIR_STATS: dict[str, int] = {"model_calls": -1}
+
+
 def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, llm: Any,
                            prompts: Any, stage_dir: Path, *, exp_plan: str, metric: str) -> dict[str, str]:
     """Use the selected implementation backend for acceptance repairs as well."""
@@ -579,7 +582,10 @@ def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, ll
         agent = PatchCodeAgent(llm, run_dir=run_dir, stage_dir=stage_dir, spec=spec, plan_text=exp_plan,
                                step_max_tokens=config.experiment.code_agent.step_max_tokens)
         try:
-            return agent.step("repair:" + digest(feedback)[:8], guidance, files)
+            repaired = agent.step("repair:" + digest(feedback)[:8], guidance, files)
+            # 本步骤全部回复取自缓存（恢复时重放）则不发生模型调用；调用方据此不计入修复总上限
+            REPAIR_STATS["model_calls"] = agent.model_calls
+            return repaired
         except PatchError as exc:
             raise ExecutionContractError("补丁式验收修复失败：" + str(exc)) from exc
     else:
