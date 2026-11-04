@@ -216,3 +216,29 @@ def test_host_scaffold_and_runner_are_protected(tmp_path):
     assert [r for r in tw.scaffold(SPEC["method_requirements"])] == [
         "methods/__init__.py", "checks/__init__.py", "methods/m1.py", "checks/check_m1.py",
         "methods/m2.py", "checks/check_m2.py", "method_checks.py"]
+
+
+def test_only_blocking_issues_reject_and_reviewer_sees_history(tmp_path):
+    seen = []
+
+    def reviewer(data):
+        seen.append(data["previous_feedback"])
+        added = [l[1:] for l in data["diff"].splitlines() if l.startswith("+") and not l.startswith("+++") and l[1:].strip()]
+        file = [l[6:] for l in data["diff"].splitlines() if l.startswith("+++ b/")][-1]
+        quote = [l[1:] for l in data["diff"].splitlines() if l.startswith("+") and not l.startswith("+++")
+                 and l[1:].strip()][-1]
+        if data["mission"] == "M1" and not data["previous_feedback"]:
+            return {"blocking": ["M1 没有实现 wrap"], "suggestions": [], "evidence": []}
+        return {"blocking": [], "suggestions": ["可以多加注释"], "evidence": [{"file": file, "quote": quote}]}
+    files = _tower(tmp_path, FakeDeepSeek(reviewer=reviewer)).run()
+    assert "m1 done" in files["methods/m1.py"]
+    assert ["M1 没有实现 wrap"] in seen  # 第二次审查看到了第一次的阻断意见
+    comms = (tmp_path / ".tower" / "comms.jsonl").read_text()
+    assert "审查建议" in comms and comms.count("审查驳回") == 1
+
+
+def test_workspace_has_host_spec_for_runtime(tmp_path):
+    spec = dict(SPEC, prepared_data={"files": [{"path": "/data/x.npz"}]})
+    files = tw.Tower(FakeDeepSeek(), run_dir=tmp_path, spec=spec, plan_text="plan").run()
+    assert json.loads(files["experiment_spec.json"])["prepared_data"]["files"][0]["path"] == "/data/x.npz"
+    assert "experiment_spec.json" in tw.HOST_OWNED
