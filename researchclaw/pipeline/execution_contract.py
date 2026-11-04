@@ -375,7 +375,12 @@ def read_sandbox_metrics(sandbox: Any, result: Any, mode: str, project: Path | N
                     elif isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item):
                         rows[name] = item
                 return rows
-            result.metrics = {**(result.metrics or {}), **flatten(data)}
+            # SandboxResult 是 frozen dataclass：返回替换后的副本，不能原地赋值
+            merged = {**(result.metrics or {}), **flatten(data)}
+            if dataclasses.is_dataclass(result):
+                result = dataclasses.replace(result, metrics=merged)
+            else:
+                result.metrics = merged
         except (ValueError, OSError):
             pass
     return result

@@ -294,3 +294,12 @@ def test_receipt_accepts_registered_prepared_files(tmp_path):
     assert validate_workspace(work, timeout=20) == 0
     syn.write_bytes(b"changed-bytes!!")
     assert validate_workspace(work, timeout=20) == 1
+
+
+def test_read_sandbox_metrics_handles_frozen_result(tmp_path):
+    from researchclaw.experiment.sandbox import SandboxResult
+    from researchclaw.pipeline.execution_contract import read_sandbox_metrics
+    (tmp_path / "results.json").write_text(json.dumps({"留一滑坡CRPS": 1.5, "nested": {"cov": 0.9}}))
+    result = SandboxResult(returncode=0, stdout="", stderr="", elapsed_sec=1.0, metrics={"a": 1.0})
+    merged = read_sandbox_metrics(None, result, "docker", project=tmp_path)
+    assert merged.metrics == {"a": 1.0, "留一滑坡CRPS": 1.5, "nested/cov": 0.9}
