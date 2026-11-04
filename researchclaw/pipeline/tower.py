@@ -111,7 +111,8 @@ class Tower:
                  max_parallel: int = 3, max_attempts: int = 3, emit: Callable[..., None] | None = None) -> None:
         from researchclaw.pipeline.execution_contract import digest
         self.llm = llm
-        self.run_dir = run_dir
+        # 绝对路径：git -C <repo> worktree add <path> 会按 repo 目录解析相对路径（真实运行 run_dir 是相对路径）
+        self.run_dir = run_dir = Path(run_dir).resolve()
         self.spec = spec
         self.plan_text = plan_text
         self.step_max_tokens = step_max_tokens
@@ -124,7 +125,7 @@ class Tower:
         self.state_path = self.root / "missions.json"
         self.comms = self.root / "comms.jsonl"
         self.key = digest([STATE_VERSION, spec.get("hashes"), spec.get("method_requirements"),
-                           bool(spec.get("prepared_data")), plan_text])
+                           spec.get("prepared_data"), plan_text])  # 数据卡变了（重新准备）则 Tower 重建
         self.missions: dict[str, Mission] = {}
         self.model_calls = 0
         self._git_lock = threading.Lock()

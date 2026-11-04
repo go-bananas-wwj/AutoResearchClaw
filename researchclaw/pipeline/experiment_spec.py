@@ -69,7 +69,7 @@ def manifest_summary(root: Path) -> dict[str, Any] | None:
             "file_variants": extensions, "entry_examples": examples,
             "entries": len(entries), "by_kind": kinds, "bytes": total,
             "sites": sorted({e["site"] for e in entries if e.get("site")}),
-            "references": [{k: e.get(k) for k in ("id", "source_url", "failure_date", "site")}
+            "references": [{k: e.get(k) for k in ("id", "source_url", "failure_date", "site", "target", "location")}
                            for e in entries if e.get("kind") == "reference"]}
 
 

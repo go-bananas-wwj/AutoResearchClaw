@@ -203,3 +203,10 @@ def test_client_maps_402_to_account_error(monkeypatch):
     monkeypatch.setattr(client, "_raw_call", boom)
     with pytest.raises(LLMAccountError, match="余额不足"):
         client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_relative_run_dir_works(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "artifacts" / "rc-x").mkdir(parents=True)
+    files = tw.Tower(FakeDeepSeek(), run_dir=tw.Path("artifacts/rc-x"), spec=SPEC, plan_text="plan").run()
+    assert "m1 done" in files["methods/m1.py"]

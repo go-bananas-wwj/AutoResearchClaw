@@ -106,3 +106,21 @@ def test_tampered_raw_data_blocks_preparation(tmp_path):
     np.save(raw, np.zeros((2, 3)))
     with pytest.raises(ep.PrepError, match="原始数据清单复核失败"):
         ep.ensure_prepared(config, run_dir, Scripted([]), spec, "plan")
+
+
+def test_identical_arrays_for_different_targets_are_rejected(tmp_path):
+    out = tmp_path / "prepared"
+    out.mkdir()
+    crop = np.arange(64 * 64, dtype=np.float32).reshape(64, 64)
+    mask = np.ones((64, 64), bool)
+    np.savez(out / "a.npz", phase=crop, dates=np.arange(3), valid=mask)
+    np.savez(out / "b.npz", phase=crop, dates=np.arange(3), valid=mask)
+    spec = {"datasets": [{"id": "R", "kind": "local"}]}
+    raw = {"A/x": {"target": "A"}, "B/x": {"target": "B"}}
+    (out / "index.json").write_text(json.dumps([
+        {"dataset_id": "R", "file": "a.npz", "sources": ["A/x"]},
+        {"dataset_id": "R", "file": "b.npz", "sources": ["B/x"]}]))
+    errors, _ = ep.check_prepared(out, spec, raw)
+    assert len(errors) == 1 and "['phase']" in errors[0] and "不是独立样本" in errors[0]  # 一维共享元数据不算
+    np.savez(out / "b.npz", phase=crop + 1, dates=np.arange(3))
+    assert ep.check_prepared(out, spec, raw)[0] == []

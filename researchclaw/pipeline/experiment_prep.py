@@ -31,7 +31,7 @@ from researchclaw.pipeline.activity import emit
 
 logger = logging.getLogger(__name__)
 
-PREP_VERSION = 1
+PREP_VERSION = 2  # 2：按研究对象坐标提取 + 跨对象数组去重（v1 产物在真实运行中两个对象数组相同）
 PREP_DIR = "prep"
 SCRIPT = "prepare.py"
 OK_MARK = "RC_PREP_OK"
@@ -42,6 +42,9 @@ INSTRUCTION = """编写 prepare.py（本步骤是"实验准备"，只准备数�
 - 把 ExperimentSpec.datasets 中的每个数据集准备成实验可直接读取的数组，写到相对工作目录的 prepared/ 下，
   格式只用 .npy 或 .npz（numpy.save / numpy.savez，不要 pickle），按研究对象、几何、时间组织文件。
   对真实数据完成裁剪、按时间堆叠、相位与相干性等对齐、单位换算等预处理，并保留日期/坐标等元数据数组。
+- 每个研究对象必须按它在 ExperimentSpec.real_data.references 中的 location（经纬度）在影像上定位并裁剪/提取，
+  不得用景中心或固定窗口；多个对象位于同一 burst 时，各自的数组也必须来自各自坐标处的像素。
+  不同研究对象的观测数组（相位、相干性、DEM 等二维及以上数组）若完全相同，宿主会判为不独立并拒绝。
 - kind=synthetic 的数据集在这里按其 generator 生成（固定随机种子）并落盘，与真实数据分开存放。
 - 写 prepared/index.json：JSON 列表，每个输出文件一项
   {"dataset_id": 计划中的数据集 id, "file": 相对 prepared/ 的路径, "description": 内容说明,
@@ -106,6 +109,11 @@ def _describe_array(path: Path) -> list[dict]:
                 if values.dtype.kind == "c":
                     sample = np.abs(sample)
                 row["min"], row["max"] = float(sample.min()), float(sample.max())
+        # 用于跨研究对象的独立性检查；常数数组（如全 True 的有效掩码）相同不说明问题，不参与
+        if arr.ndim >= 2 and arr.size >= 1024 and not np.all(np.asarray(arr) == np.asarray(arr).flat[0]):
+            import hashlib
+            row["content_sha256"] = hashlib.sha256(
+                np.ascontiguousarray(arr).tobytes() + str(arr.shape).encode() + str(arr.dtype).encode()).hexdigest()
         rows.append(row)
     return rows
 
@@ -160,6 +168,23 @@ def check_prepared(out: Path, spec: dict, raw: dict[str, dict]) -> tuple[list[st
                      "description": item.get("description"), "units": item.get("units"),
                      "sources": sources, "bytes": path.stat().st_size, "sha256": sha256_file(path),
                      "arrays": arrays})
+    # 独立性：不同研究对象的观测数组逐字节相同，说明没有按各自位置提取（留一验证会变成拿训练数据测试）
+    seen: dict[str, tuple[str, frozenset]] = {}
+    clashes: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        if row["kind"] == "synthetic":
+            continue
+        targets = frozenset(str(raw[s].get("target") or raw[s].get("site") or "") for s in row["sources"])
+        for arr in row["arrays"]:
+            digest_ = arr.get("content_sha256")
+            if not digest_:
+                continue
+            if digest_ in seen and seen[digest_][1].isdisjoint(targets):
+                clashes.setdefault((row["file"], seen[digest_][0]), []).append(arr["array"])
+            seen.setdefault(digest_, (row["file"], targets))
+    for (file, other), names in clashes.items():
+        errors.append(f"{file} 与 {other} 属于不同研究对象，但数组 {names} 完全相同：不是独立样本，"
+                      "须按各对象 references.location 在影像上定位提取，不能用景中心或固定窗口")
     missing = [did for did in datasets if did not in covered]
     if missing:
         errors.append(f"计划中的数据集没有准备好的文件：{missing}")
