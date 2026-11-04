@@ -108,3 +108,13 @@ def test_truncation_escalates_only_that_call():
     with pytest.raises(RuntimeError):
         _chat_with_prompt(always, 's', 'u')
     assert always.seen == [None, 8192, 16384, 32768]  # bounded, truncated output never accepted
+
+
+def test_failure_signature_tracks_check_not_line_numbers():
+    from researchclaw.pipeline.execution_contract import failure_signature
+    tb = ('Traceback (most recent call last):\n  File "/workspace/method_checks.py", line {n}, in main\n'
+          '    check()\n  File "/workspace/method_checks.py", line {m}, in {fn}\n    assert x\nAssertionError: {msg}\n')
+    a = failure_signature(tb.format(n=517, m=99, fn="check_m2_coherence", msg=""))
+    b = failure_signature(tb.format(n=537, m=99, fn="check_m2_coherence", msg=""))
+    c = failure_signature(tb.format(n=537, m=477, fn="check_m10_oracle_calibration", msg="coverage 1.0"))
+    assert a == b and a != c

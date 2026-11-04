@@ -41,3 +41,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 ### 2026-11-04 沙箱依赖自动检测误判
 - 截断翻倍生效：阶段 10 补丁实现 M1–M10、wire 全部完成。随后方法断言在 Phase 0 pip 即失败：上游 `_detect_pip_packages` 用正则扫 import，把 docstring 中 "from the ..." 的 `the`、标准库 `__future__`/`inspect`、宿主包 `researchclaw` 追加进沙箱 requirements.txt。该文件由沙箱在暂存目录生成，模型的两次修复看不到也改不了。
 - 修复：改为 AST 解析真实 import，排除标准库（`sys.stdlib_module_names`）、相对导入、本地模块/目录和宿主包；未知第三方包仍按上游语义自动安装。
+
+### 2026-11-04 阶段 10 修复预算按进展计
+- 依赖检测修复后代码实际运行。验收修复 2 次均有进展：失败依次推进 M2 相干性 → M6/M7 强度 → M10 oracle 覆盖率 1.0 超出 [0.85,0.95]。但固定 `max_code_repairs=2` 在模型仍在推进时就终止阶段。
+- 修复：`execution_contract.failure_signature`（最后一帧函数 + 异常行，不含行号）。失败签名变化即进展，不计入同一失败次数；同一签名连续 `max_code_repairs` 次才停止，总次数封顶 `max_code_repairs_total=8`。验收标准不变。

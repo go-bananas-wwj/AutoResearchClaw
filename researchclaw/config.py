@@ -518,7 +518,8 @@ class ExecutionCheckConfig:
 
     enabled: bool = False
     max_plan_repairs: int = 2
-    max_code_repairs: int = 2
+    max_code_repairs: int = 2  # 同一失败（签名不变）允许的连续修复次数
+    max_code_repairs_total: int = 8  # 失败在推进时的修复总上限
     validation_timeout_sec: int = 180
     data_roots: tuple[str, ...] = ()
     # 本地适配：真实数据规划。data_base 非空时，阶段9由模型起草 data_plan.json（宿主校验后执行），
@@ -1509,6 +1510,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
             enabled=bool((data.get("execution_check") or {}).get("enabled", False)),
             max_plan_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_plan_repairs"), 2)),
             max_code_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_code_repairs"), 2)),
+            max_code_repairs_total=max(0, _safe_int((data.get("execution_check") or {}).get("max_code_repairs_total"), 8)),
             validation_timeout_sec=max(1, _safe_int((data.get("execution_check") or {}).get("validation_timeout_sec"), 180)),
             data_roots=tuple((data.get("execution_check") or {}).get("data_roots") or ()),
             data_base=str((data.get("execution_check") or {}).get("data_base") or ""),

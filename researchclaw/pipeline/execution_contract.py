@@ -194,6 +194,18 @@ measured_resources.real_data 列出已下载并带 SHA-256 清单的真实数据
 """
 
 
+def failure_signature(text: str) -> str:
+    """Where and why acceptance failed (function + exception line), without line numbers.
+
+    Repairs that move the failure to a different check are progress; the same
+    signature again means the model is not getting closer.
+    """
+    frames = re.findall(r'File "[^"]*?([^/"]+)", line \d+, in (\w+)', text)
+    errors = re.findall(r"^\s*(\w+(?:Error|Exception)\b.*)$", text, re.MULTILINE)
+    where = "/".join(frames[-1]) if frames else ""
+    return digest([where, errors[-1][:200] if errors else text.strip()[-300:]])
+
+
 def ensure_real_data(config: Any, run_dir: Path, llm: Any) -> None:
     """Data is a resumable pipeline step: the model plans it, the host validates and acquires it."""
     check = config.experiment.execution_check

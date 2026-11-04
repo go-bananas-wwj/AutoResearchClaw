@@ -1696,21 +1696,30 @@ def _execute_code_generation(
 
     # --- Write spec ---
     if config.experiment.execution_check.enabled:
-        from researchclaw.pipeline.execution_contract import accept_final_code, ExecutionContractError
-        for attempt in range(config.experiment.execution_check.max_code_repairs + 1):
+        from researchclaw.pipeline.execution_contract import (accept_final_code, ExecutionContractError,
+                                                               failure_signature)
+        # 修复预算按进展计：失败推进到别的检查不消耗"同一失败"次数；同一签名连续出现
+        # max_code_repairs 次后停止，总次数封顶 max_code_repairs_total。验收标准不变。
+        _check = config.experiment.execution_check
+        _same, _total, _last_sig = 0, 0, None
+        while True:
             try:
                 accept_final_code(files, _execution_plan, config, run_dir, stage_dir, llm)
                 break
             except ExecutionContractError as exc:
-                if attempt == config.experiment.execution_check.max_code_repairs:
-                    return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
-                        artifacts=("experiment/", "method_acceptance.json"), evidence_refs=(), error=str(exc))
                 feedback = str(exc)
                 for path in (stage_dir / "method_acceptance.json",
                              exp_dir / ".rc-validation" / "execution.json",
                              exp_dir / ".rc-validation" / "method_tests.json"):
                     if path.is_file():
                         feedback += "\n" + path.read_text()
+                _sig = failure_signature(feedback)
+                _same = _same + 1 if _sig == _last_sig else 0
+                _last_sig = _sig
+                if _same >= _check.max_code_repairs or _total >= _check.max_code_repairs_total:
+                    return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                        artifacts=("experiment/", "method_acceptance.json"), evidence_refs=(), error=str(exc))
+                _total += 1
                 from researchclaw.pipeline.execution_contract import repair_acceptance_code
                 try:
                     files = repair_acceptance_code(files, feedback, config, llm, _pm,
