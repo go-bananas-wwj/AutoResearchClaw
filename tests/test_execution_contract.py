@@ -316,3 +316,21 @@ def test_resources_key_ignores_summary_details():
     assert resources_key(a) == resources_key(b)
     b["real_data"][0]["entries"] = 4
     assert resources_key(a) != resources_key(b)
+
+
+def test_accepted_package_init_files_still_bind(tmp_path):
+    plan, _, source = plan_fixture()
+    (tmp_path / "stage-09").mkdir()
+    (tmp_path / "stage-09/exp_plan.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
+    (tmp_path / "research_brief.json").write_text(json.dumps(source, ensure_ascii=False))
+    stage = tmp_path / "stage-10"
+    exp = stage / "experiment"
+    (exp / "methods" / "__pycache__").mkdir(parents=True)
+    files = {"main.py": "print('error: 0')", "methods/__init__.py": ""}
+    for name, text in files.items():
+        (exp / name).write_text(text)
+    (exp / "methods/__pycache__/x.py").write_text("cache")
+    receipt = {"ok": True, "code_hash": digest(files), "plan_hash": digest(plan), "source_hash": digest(source),
+               "files": {n: hashlib.sha256(t.encode()).hexdigest() for n, t in files.items()}}
+    (stage / "execution_acceptance.json").write_text(json.dumps(receipt))
+    verify_accepted_code(exp, tmp_path)  # 包的 __init__.py 参与验收，__pycache__ 不计

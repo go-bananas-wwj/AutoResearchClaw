@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 from researchclaw.pipeline.activity import clean
-from researchclaw.pipeline.execution_contract import confirmed_method, digest
+from researchclaw.pipeline.execution_contract import confirmed_method, digest, is_code_path
 from researchclaw.server.research_workspace import workspace_evidence
 
 
@@ -46,7 +46,7 @@ def implementation_artifacts(root: Path) -> list[dict]:
     for base, role in folders:
         for path in sorted(base.rglob("*")):
             name = path.relative_to(base)
-            if any(part.startswith((".", "__")) for part in name.parts):
+            if not is_code_path(name.parts):
                 continue
             if path.suffix in (".py", ".yaml", ".yml", ".json", ".md") or path.name == "requirements.txt":
                 paths[str(path.relative_to(root))] = role

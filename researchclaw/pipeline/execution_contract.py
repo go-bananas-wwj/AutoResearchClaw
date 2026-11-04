@@ -795,6 +795,15 @@ def accept_final_code(files: dict[str, str], plan: dict, config: Any, run_dir: P
     return node
 
 
+def is_code_path(parts: tuple[str, ...]) -> bool:
+    """实验源码路径：跳过隐藏项与 __pycache__ 这类目录，但保留包的 __init__.py。
+
+    Tower 的脚手架为 methods/、checks/ 生成 __init__.py 并一同验收；旧规则跳过所有 "__" 开头的段，
+    阶段 12 因此把它们算成"已删除"，判定代码在验收后变化。"""
+    *dirs, name = parts
+    return not name.startswith(".") and not any(d.startswith((".", "__")) for d in dirs)
+
+
 def verify_accepted_code(exp_dir: Path, run_dir: Path) -> None:
     """Bind formal execution to the exact accepted code, method and plan."""
     receipt_path = exp_dir.parent / "execution_acceptance.json"
@@ -804,7 +813,7 @@ def verify_accepted_code(exp_dir: Path, run_dir: Path) -> None:
     plan = yaml.safe_load((run_dir / "stage-09" / "exp_plan.yaml").read_text())
     files = {name: (exp_dir / name).read_text() for name in receipt.get("files", {})}
     current_names = {str(p.relative_to(exp_dir)) for p in exp_dir.rglob("*.py")
-                     if not any(part.startswith((".", "__")) for part in p.relative_to(exp_dir).parts)}
+                     if is_code_path(p.relative_to(exp_dir).parts)}
     approved_names = {name for name in files if name.endswith(".py")}
     if (receipt.get("ok") is not True or current_names != approved_names
             or digest(files) != receipt.get("code_hash")

@@ -84,3 +84,9 @@
 - 现象：repair-11 被要求"修复 experiment_spec.json 的 manifest_sha256 与计划 source_manifest_sha256 不一致"，代码 mission 无权改宿主文件，8 次均因越界或未修复失败。
 - 根因：① 清单摘要改为排除时间戳的稳定哈希后，阶段 9 计划里仍存旧值，审查把宿主事实差异当代码问题；② `Tower.repair` 不区分宿主文件问题；③ （排查测试偶发失败时发现）`_fresh_worktree` 在 rebase 后再读 base，`_merge` 不持锁，并行合并推进 base 时把其他 mission 的文件算成本 mission 的删除，误判越界。
 - 修复：审查提示词把规格/哈希等宿主事实排除出审查范围（宿主由数据回执逐个核对 SHA-256）；指向 HOST_OWNED 文件的问题只登记不派工；重试前固定一次 base 提交用于 rebase 与比较，合并持 git 锁。
+
+### 2026-11-05 00:48 阶段 10 通过；阶段 12 因 __init__.py 被跳过误判"代码在验收后变化"
+
+- 现象：Tower 合并完成，阶段 10 全部关卡通过，阶段 11 完成；阶段 12 `verify_accepted_code` 报"代码、任务书或计划在验收后发生变化"。实测代码/计划/任务书哈希全部一致。
+- 根因：验收记录含 Tower 脚手架生成的 `methods/__init__.py`、`checks/__init__.py`，而阶段 12 收集当前文件时跳过所有 `__` 开头的路径段，两边文件名集合不等。
+- 修复：`is_code_path` 只跳过隐藏项与 `__pycache__` 等目录，保留包的 `__init__.py`；实施面板文件列表用同一规则。
