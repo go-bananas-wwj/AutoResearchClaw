@@ -157,6 +157,8 @@ class PatchCodeAgent:
         spec = {k: self.spec.get(k) for k in ("topic", "scientific_question", "primary_metric",
                 "secondary_metrics", "validation_level", "datasets", "real_data", "method_requirements",
                 "baselines", "ablations", "entrypoint", "resources", "deferred_validation")}
+        if self.spec.get("prepared_data"):  # 仅有实验准备产物时加入，旧项目提示词与缓存不变
+            spec["prepared_data"] = self.spec["prepared_data"]
         parts = [f"## 当前步骤：{step}\n{instruction}",
                  "## ExperimentSpec\n" + json.dumps(spec, ensure_ascii=False, indent=1),
                  "## 实验计划（完整）\n" + self.plan_text,
@@ -237,7 +239,9 @@ class PatchCodeAgent:
     def generate(self, initial: dict[str, str] | None = None) -> dict[str, str]:
         files = dict(initial or {})
         files = self.step("layout", "建立工作区骨架：config.py（全部超参数与路径，含 RC_VALIDATION=1 时缩小规模的设置）、"
-                          "data.py（按 ExperimentSpec 数据清单与 data_manifest.json 读取数据的函数签名与最小实现）、"
+                          + ("data.py（只通过 ExperimentSpec.prepared_data 中列出的绝对路径用 numpy.load 读取实验准备阶段产出的数组；"
+                             "不再直接解析原始数据清单）、" if self.spec.get("prepared_data") else
+                             "data.py（按 ExperimentSpec 数据清单与 data_manifest.json 读取数据的函数签名与最小实现）、") +
                           "method_checks.py（导入各模块、最后打印 RC_METHOD_CHECKS_OK 的骨架）、main.py（入口骨架），"
                           "以及按方法要求划分的空模块与函数签名。只写骨架与文档字符串，不写完整算法。", files)
         for req in self.spec.get("method_requirements", []):

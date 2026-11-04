@@ -63,6 +63,7 @@ experiment:
     max_code_repairs: 2          # 同一失败（签名不变）连续修复次数
     max_code_repairs_total: 16   # 失败持续推进时的修复总次数：方法断言→dry-run→指标→数据回执→审查共五道关卡，8 次实测不够
     validation_timeout_sec: 180
+    prepare_data: true           # 实验准备：阶段10前由模型写 prepare.py，宿主运行并验收 prepared/ 与数据卡
     data_roots: [data, datasets]
     data_base: "/home/wwj/rc-data"   # 阶段9由模型起草数据方案、宿主校验后获取；共享存储与每运行清单都在此目录下
     data_max_credits: 2000           # HyP3 等按量服务的单次运行上限

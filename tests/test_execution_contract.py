@@ -266,3 +266,31 @@ def test_mounted_real_data_receipt_checks_host_manifest(tmp_path):
     assert receipt["manifest_entry"] == "site/phase.tif"
     real.write_bytes(b"tampered!!")  # 与宿主清单哈希不符即拒绝
     assert validate_workspace(work, timeout=20) == 1
+
+
+def test_receipt_accepts_registered_prepared_files(tmp_path):
+    import sys
+    from researchclaw.data_acquisition.manifest import Manifest
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    syn = prepared / "syn.npy"
+    syn.write_bytes(b"synthetic-bytes")
+    m = Manifest(prepared)
+    m.add_file("D1/syn.npy", syn, source_url="prepare.py", license="synthetic", kind="prepared", dataset_id="D1")
+    m.save()
+    work = tmp_path / "work"
+    work.mkdir()
+    exp = ExperimentConfig(mode="sandbox", time_budget_sec=20, metric_key="rmse",
+                           sandbox=SandboxConfig(python_path=sys.executable))
+    prepare_agent_tools(work, exp)
+    settings = json.loads((work / ".rc_execution.json").read_text())
+    settings["prepared_root"] = str(prepared)
+    (work / ".rc_execution.json").write_text(json.dumps(settings))
+    (work / "method_checks.py").write_text("assert 1 + 1 == 2\nprint('RC_METHOD_CHECKS_OK')\n")
+    plan, _, _ = plan_fixture()  # D1 为合成数据集
+    (work / "EXPERIMENT_PLAN.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
+    (work / "main.py").write_text("import json\nopen('data_manifest.json','w').write(json.dumps("
+                                  "[{'id':'D1','path':%r}]))\nprint('rmse: 0.5')\n" % str(syn))
+    assert validate_workspace(work, timeout=20) == 0
+    syn.write_bytes(b"changed-bytes!!")
+    assert validate_workspace(work, timeout=20) == 1

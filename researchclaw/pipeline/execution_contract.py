@@ -393,6 +393,9 @@ def prepare_agent_tools(workspace: Path, exp: Any) -> None:
     root = run_from_path(workspace)
     if root is not None:
         settings["activity_run_dir"] = str(root.resolve())
+        base = getattr(getattr(exp, "execution_check", None), "data_base", "")
+        if base:  # 实验准备产物（宿主已登记、只读挂载），数据回执据此复核
+            settings["prepared_root"] = str(Path(base) / "runs" / root.name / "prepared")
     write_json(workspace / ".rc_execution.json", settings)
     package_root = str(Path(__file__).resolve().parents[2])
     (workspace / ".rc_validate.py").write_text(
@@ -468,7 +471,8 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
         manifest_path = project / "data_manifest.json"
         fmt = ("入口须在工作目录根（与入口同目录）写 data_manifest.json：JSON 列表，每项 "
                "{\"id\": 计划 datasets 中的 id, \"path\": 实际读取的文件}；真实数据（kind=local）的 path 用 "
-               "files_root 下的绝对路径（须是宿主清单中的文件），合成数据须把生成的数据写成文件、"
+               "files_root 下的绝对路径（须是宿主清单中的文件）；实验准备阶段产出的文件（含合成数据）用 "
+               "ExperimentSpec.prepared_data 中的绝对路径；其余合成数据须把生成的数据写成文件、"
                "与下载文件一样用相对工作目录的路径。")
         try:
             try:
@@ -484,12 +488,18 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
                     raise ValueError("缺少数据文件：" + dataset["id"] + "。" + fmt)
                 # 本地适配：kind=local 的真实数据经 docker.data_mounts 同路径只读挂载，不在工作目录内；
                 # 只接受宿主清单（researchclaw.data_acquisition）登记的文件，并按清单 SHA-256 复核。
+                from researchclaw.data_acquisition.manifest import Manifest
                 host_files: dict[str, dict] = {}
                 if dataset.get("kind") == "local":
-                    from researchclaw.data_acquisition.manifest import Manifest
                     host = Manifest(Path(str(dataset.get("path", ""))))
                     host_files = {str((host.root / e["path"]).resolve()): e
                                   for e in host.data["entries"] if e.get("path")}
+                # 实验准备阶段为该数据集产出并登记的文件（含合成数据），同样按登记的 SHA-256 复核
+                if settings.get("prepared_root") and (Path(settings["prepared_root"]) / "data_manifest.json").is_file():
+                    prepared = Manifest(Path(settings["prepared_root"]))
+                    host_files.update({str((prepared.root / e["path"]).resolve()): e
+                                       for e in prepared.data["entries"]
+                                       if e.get("path") and e.get("dataset_id") == dataset["id"]})
                 for entry in entries:
                     raw = str(entry["path"])
                     path = (Path(raw) if Path(raw).is_absolute() else project / raw).resolve()

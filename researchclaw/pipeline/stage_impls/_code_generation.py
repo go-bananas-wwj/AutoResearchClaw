@@ -819,6 +819,15 @@ def _execute_code_generation(
         if _spec is None:
             return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED, artifacts=(),
                                evidence_refs=(), error="缺少 stage-09/experiment_spec.json，请从 EXPERIMENT_DESIGN 恢复")
+        # 实验准备：先把原始数据变成实验可直接读取、宿主已验收的数组（docs/TOWER_DESIGN_CN.md §4）
+        from researchclaw.pipeline.experiment_prep import PrepError, card_summary, ensure_prepared
+        try:
+            _card = ensure_prepared(config, run_dir, llm, _spec, exp_plan)
+        except PrepError as exc:
+            return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED, artifacts=(),
+                               evidence_refs=(), error=str(exc))
+        if _card:
+            _spec["prepared_data"] = card_summary(_card)
         _patch = PatchCodeAgent(
             llm, run_dir=run_dir, stage_dir=stage_dir, spec=_spec, plan_text=exp_plan,
             step_max_tokens=config.experiment.code_agent.step_max_tokens,
