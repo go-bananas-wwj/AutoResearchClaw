@@ -124,3 +124,13 @@ def test_metrics_contract_line_with_chinese_key():
     from researchclaw.experiment.sandbox import parse_metrics
     out = 'noise\nMETRICS {"留一滑坡CRPS": 1.5, "x": null, "metrics": {"cov": 0.9, "ok": true}}\n'
     assert parse_metrics(out) == {"留一滑坡CRPS": 1.5, "cov": 0.9}
+
+
+def test_failure_signature_ignores_passing_outputs():
+    import json
+    from researchclaw.pipeline.execution_contract import failure_signature
+    ok_tests = json.dumps({"returncode": 0, "stdout": "M1 PASS\nRC_METHOD_CHECKS_OK\n", "ok": True})
+    metric = failure_signature("x\n" + json.dumps({"failure": "没有有限的目标科研指标"}) + "\n" + ok_tests)
+    data = failure_signature("x\n" + json.dumps({"failure": ""}) + "\n" + ok_tests + "\n"
+                             + json.dumps({"ok": False, "error": "工作目录根缺少 data_manifest.json"}))
+    assert metric != data  # 方法断言都通过后，不同的失败不能因共享通过日志而被判为同一失败

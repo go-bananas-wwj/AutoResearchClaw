@@ -1722,7 +1722,8 @@ def _execute_code_generation(
                 feedback = str(exc)
                 for path in (stage_dir / "method_acceptance.json",
                              exp_dir / ".rc-validation" / "execution.json",
-                             exp_dir / ".rc-validation" / "method_tests.json"):
+                             exp_dir / ".rc-validation" / "method_tests.json",
+                             exp_dir / ".rc-validation" / "data_receipts.json"):
                     if path.is_file():
                         feedback += "\n" + path.read_text()
                 _sig = failure_signature(feedback)

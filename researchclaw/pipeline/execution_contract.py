@@ -195,16 +195,22 @@ measured_resources.real_data 列出已下载并带 SHA-256 清单的真实数据
 
 
 def failure_signature(text: str) -> str:
-    """Where and why acceptance failed (function + exception line), without line numbers.
+    """Where and why acceptance failed, without line numbers or run-specific values.
 
-    Repairs that move the failure to a different check are progress; the same
-    signature again means the model is not getting closer.
+    Built from the failure fields (execution ``failure``, data receipt ``error``)
+    and the last traceback frame + exception line. Passing outputs (e.g. a
+    successful method_checks log) are not part of it, so a repair that moves
+    the failure to another check counts as progress.
     """
-    frames = re.findall(r'File "[^"]*?([^/"]+)", line \d+, in (\w+)', text)
-    errors = re.findall(r"^\s*(\w+(?:Error|Exception)\b.*)$", text, re.MULTILINE)
+    reasons = re.findall(r'"(?:failure|error)":\s*"((?:[^"\\]|\\.)+)"', text)
+    frames = re.findall(r'File \\?"[^"]*?([^/"\\]+)\\?", line \d+, in (\w+)', text)
+    errors = re.findall(r"(?:^|\\n|\n)\s*(\w+(?:Error|Exception)\b[^\n\\]*)", text)
     where = "/".join(frames[-1]) if frames else ""
-    return digest([where, errors[-1][:200] if errors else text.strip()[-300:]])
-
+    parts = [re.sub(r"\d+(?:\.\d+)?", "#", r)[:200] for r in reasons]
+    parts += [where, re.sub(r"\d+(?:\.\d+)?", "#", errors[-1])[:200] if errors else ""]
+    if not any(parts):
+        parts = [text.strip()[:300]]
+    return digest(parts)
 
 def ensure_real_data(config: Any, run_dir: Path, llm: Any) -> None:
     """Data is a resumable pipeline step: the model plans it, the host validates and acquires it."""
@@ -503,6 +509,8 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
             write_json(output / "data_receipts.json", receipts)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             print("实际数据验收失败：" + str(exc))
+            # 写成文件：修复反馈只读验收产物，不读活动日志
+            write_json(output / "data_receipts.json", {"ok": False, "error": str(exc)})
             emit("validation", "实际数据验收失败", str(exc), run_dir=activity_root, phase="validation", status="failed")
             return 1
     return 0
