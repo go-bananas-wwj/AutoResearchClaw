@@ -643,7 +643,9 @@ class Tower:
         host = [i for i in (str(i) for i in audit.get("issues") or []) if any(h in i for h in HOST_OWNED)]
         if host:
             self._log("宿主文件问题不派给代码 mission", "", "; ".join(host)[:1500], "failed")
-        issues = [str(i) for i in audit.get("issues") or [] if str(i) not in host]
+        # 审查者自身的引文失误不是代码问题：派给代码 mission 只会"没有任何改动"直到用尽次数
+        from researchclaw.pipeline.execution_contract import EVIDENCE_MISMATCH
+        issues = [str(i) for i in audit.get("issues") or [] if str(i) not in host and str(i) != EVIDENCE_MISMATCH]
         missing = [r.get("id") for r in audit.get("requirements") or []
                    if isinstance(r, dict) and r.get("status") != "implemented" and r.get("id") in self.missions]
         reopened: list[str] = []
@@ -658,7 +660,7 @@ class Tower:
             if owner:
                 self._reopen(owner, "集成关卡失败（只修本 mission 负责的部分）：\n" + feedback[-3000:])
                 reopened.append(owner)
-            elif not host:
+            elif not host and EVIDENCE_MISMATCH not in map(str, audit.get("issues") or []):
                 # 保留首尾：失败说明在开头（如正式运行失败），traceback/输出在末尾
                 rest = rest or [feedback if len(feedback) <= 4000 else feedback[:1500] + "\n…\n" + feedback[-2500:]]
         if missing:

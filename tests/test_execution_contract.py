@@ -372,3 +372,22 @@ def test_failed_gate_revokes_best(tmp_path):
 def tw_gates():
     from researchclaw.pipeline.experiment_tree import GATES
     return GATES
+
+
+def test_audit_reasks_when_only_quotes_mismatch():
+    plan, _, source = plan_fixture()
+    files = {"main.py": "def solve():\n    return solve_normal_equation()\n",
+             "method_checks.py": "assert recovered == 2\n"}
+    good = {"ok": True, "issues": [], "requirements": [{"id": "M1", "status": "implemented",
+            "code_evidence": [{"file": "main.py", "quote": "return   solve_normal_equation()"}],
+            "test_evidence": [{"file": "method_checks.py", "quote": "assert recovered == 2"}]}]}
+    bad = json.loads(json.dumps(good))
+    bad["requirements"][0]["code_evidence"][0]["quote"] = "made_up()"
+    seen = []
+
+    def chat(*a, **kw):
+        user = kw["messages"][-1]["content"] if "messages" in kw else a[0][-1]["content"]
+        seen.append("evidence_problem" in user)
+        return LLMResponse(content=json.dumps(good if seen[-1] else bad), model="reviewer")
+    audit = audit_implementation(files, plan, source, SimpleNamespace(chat=chat))
+    assert audit["ok"] and seen == [False, True]  # 只重问审查者；空白差异不算不逐字
