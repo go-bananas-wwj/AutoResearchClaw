@@ -53,3 +53,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 ### 2026-11-04 补丁回复提前停止：续写而非整步重来
 - 新契约下阶段 10 在 `req:M4` 失败：DeepSeek 一次在正文混入原生工具调用标记（`｜｜DSML｜｜ invoke/parameter`）后停止，另一次输出完整编辑块后缺 `<<<DONE>>>`。原逻辑整条回复作废、整步重来，同样的事情又发生。
 - 修复：`complete_prefix` 截掉工具调用标记和半个块，保留最后一个完整编辑块之前的内容；`PatchCodeAgent._continue` 带上已保留的块请模型续写（最多 2 轮，按提示词哈希缓存）。SYSTEM 中说明没有可调用的工具。截断的半个块仍不接受。
+
+### 2026-11-04 生成代码含子包时写盘失败
+- 续写生效：阶段 10 的 14 个补丁步骤全部完成（15 次模型调用）。随后宿主写盘时 `FileNotFoundError: experiment/methods/__init__.py`：模型把方法组织成 `methods/` 子包，`_code_generation.py` 的 6 处与阶段 13 `_write_project` 写文件前没建父目录。
+- 修复：这些位置写盘前 `parent.mkdir(parents=True)`；BUG-184 跨文件导入检查把子包与标准库视为已知模块（原先把 `fractions`、`methods` 误报为缺失）。

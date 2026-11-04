@@ -1099,6 +1099,7 @@ def _execute_iterative_refine(
     def _write_project(target_dir: Path, project_files: dict[str, str]) -> None:
         target_dir.mkdir(parents=True, exist_ok=True)
         for fname, code in project_files.items():
+            (target_dir / fname).parent.mkdir(parents=True, exist_ok=True)
             (target_dir / fname).write_text(code, encoding="utf-8")
 
     # --- Helper: format all files for LLM context ---
