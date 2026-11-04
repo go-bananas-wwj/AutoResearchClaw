@@ -93,3 +93,14 @@ def test_truncation_doubles_only_that_step_budget(tmp_path):
     llm.budgets = []
     _agent(tmp_path, llm).generate()
     assert llm.budgets == [16384, 16384, 32768, 65536, 16384]  # 下一步骤回到原上限
+
+
+def test_reply_stopping_after_complete_block_is_continued_not_restarted(tmp_path):
+    from researchclaw.pipeline.patch_agent import complete_prefix
+    partial = LLMResponse(content='<<<EDIT method.py>>>\n<<<SEARCH>>>\n    pass\n<<<REPLACE>>>\n    return x % 6.283\n'
+                          '<<<END>>>\n<<<EDIT main.py>>>\n<<<SEARCH>>>\nimp\n</｜｜DSML｜｜ parameter>\n',
+                          model='m', finish_reason='stop')
+    assert complete_prefix(partial.content).endswith('<<<END>>>')
+    llm = Scripted([LAYOUT, partial, reply(''), WIRE])
+    files = _agent(tmp_path, llm).generate()
+    assert 'return x % 6.283' in files['method.py'] and llm.calls == 4  # M1 = 一次回复 + 一次续写

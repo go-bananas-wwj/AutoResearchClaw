@@ -49,3 +49,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 ### 2026-11-04 真实数据契约缺路径规则
 - 进展修复预算生效：方法断言 M1–M10 全部通过，进入 RC_VALIDATION dry-run。主指标报 not computable："wrapped phase / coherence / baseline unavailable"。原因是清单条目 path 相对顶层 `files_root`（共享库），而模型只拿到计数摘要、从未见清单结构，于是按清单目录解析，找不到任何文件。
 - 修复：`manifest_summary` 增加 `files_root`、`path_rule`、按文件类型（扩展名 + 文件名小写末段，如 `wrapped_phase.tif`）计数的 `file_variants`，并给每类一个 `entry_examples`；`load_spec` 按清单现状刷新 real_data（宿主摘要，非模型决策）；规划提示词同步写明路径规则。
+
+### 2026-11-04 补丁回复提前停止：续写而非整步重来
+- 新契约下阶段 10 在 `req:M4` 失败：DeepSeek 一次在正文混入原生工具调用标记（`｜｜DSML｜｜ invoke/parameter`）后停止，另一次输出完整编辑块后缺 `<<<DONE>>>`。原逻辑整条回复作废、整步重来，同样的事情又发生。
+- 修复：`complete_prefix` 截掉工具调用标记和半个块，保留最后一个完整编辑块之前的内容；`PatchCodeAgent._continue` 带上已保留的块请模型续写（最多 2 轮，按提示词哈希缓存）。SYSTEM 中说明没有可调用的工具。截断的半个块仍不接受。
