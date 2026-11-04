@@ -508,7 +508,8 @@ class Tower:
             if not ok:
                 return {"ok": False, "issues": ["checks/check_" + _slug(mission.id) + ".py 实际运行失败（已提交的改动保留，"
                                                 "下次在此基础上修正。先在函数 docstring 中写明每个数组参数的形状与轴含义，"
-                                                "再让实现与检查都按同一约定构造数据）：\n" + output[-2500:]],
+                                                "再让实现与检查都按同一约定构造数据；下面的 traceback 附有失败处的局部变量值）：\n"
+                                                + output[-4000:]],
                         "model_calls": agent.model_calls}
         review = self._review(mission, base_files, after, changed)
         calls = agent.model_calls + review.pop("model_calls", 0)
@@ -627,8 +628,19 @@ class Tower:
         return None
 
 
-_CHECK_ENTRY = """import importlib, sys
-importlib.import_module("checks." + sys.argv[1]).check()
+# 失败时输出带局部变量的 traceback：真实运行中 M6 三次只看到裸 AssertionError，worker 不知道两边差在哪里只能盲改
+_CHECK_ENTRY = """import importlib, sys, traceback
+try:
+    import numpy
+    numpy.set_printoptions(threshold=24, edgeitems=4, precision=6)
+except ImportError:
+    pass
+try:
+    importlib.import_module("checks." + sys.argv[1]).check()
+except BaseException as exc:
+    frames = traceback.TracebackException.from_exception(exc, capture_locals=True)
+    print("".join(frames.format()))
+    sys.exit(1)
 print("RC_MISSION_CHECK_OK")
 """
 

@@ -251,8 +251,8 @@ def test_real_check_failure_is_fed_back_and_retry_continues_from_branch(tmp_path
     runner = tw.make_check_runner(exp, tmp_path / "chk", 60)
     m1_first = (f"<<<FILE methods/m1.py>>>\ndef f():\n    return 'm1 done'\n<<<END>>>\n"
                 f"<<<FILE checks/check_m1.py>>>\nfrom methods import m1\n\n\ndef check():\n"
-                f"    assert m1.f() == 'wrong', 'mismatch'\n<<<END>>>\n{DONE}\n")
-    m1_fix = _edit("checks/check_m1.py", "    assert m1.f() == 'wrong', 'mismatch'", "    assert m1.f() == 'm1 done'")
+                f"    got = m1.f()\n    assert got == 'wrong', 'mismatch'\n<<<END>>>\n{DONE}\n")
+    m1_fix = _edit("checks/check_m1.py", "    assert got == 'wrong', 'mismatch'", "    assert got == 'm1 done'")
     m2 = (f"<<<FILE methods/m2.py>>>\ndef f():\n    return 'm2 done'\n<<<END>>>\n"
           f"<<<FILE checks/check_m2.py>>>\nfrom methods import m2\n\n\ndef check():\n    assert m2.f() == 'm2 done'\n"
           f"<<<END>>>\n{DONE}\n")
@@ -266,8 +266,9 @@ def test_real_check_failure_is_fed_back_and_retry_continues_from_branch(tmp_path
             return super().chat(messages, system=system, **kw)
     llm = Rec(workers={"M1#0": m1_first, "M1#1": m1_fix, "M2": m2})
     files = tw.Tower(llm, run_dir=tmp_path, spec=SPEC, plan_text="plan", check_runner=runner).run()
-    assert "assert m1.f() == 'm1 done'" in files["checks/check_m1.py"]
+    assert "assert got == 'm1 done'" in files["checks/check_m1.py"]
     assert "mismatch" in prompts["M1#1"] and "AssertionError" in prompts["M1#1"]  # 真实 traceback 反馈给 worker
+    assert "got = 'm1 done'" in prompts["M1#1"]  # 附有失败处的局部变量值
     assert "return 'm1 done'" in prompts["M1#1"]  # 第二次在上次提交的分支上继续，而不是从 base 重来
     assert "review:M1" in llm.calls and llm.calls.count("review:M1") == 1  # 检查失败的那次没有送审
 
