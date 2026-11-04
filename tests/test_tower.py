@@ -406,3 +406,12 @@ def test_retry_after_rejection_shows_worker_its_diff_against_base(tmp_path):
     llm.chat = spy
     _tower(tmp_path, llm).run()
     assert "相对 base 的改动" in prompts.get("retry", "") and "+    return 'm1 done'" in prompts["retry"]
+
+
+def test_host_file_issues_are_not_routed_to_code_missions(tmp_path):
+    _tower(tmp_path, FakeDeepSeek()).run()
+    t = _tower(tmp_path, FakeDeepSeek())
+    t.repair("方法实现未通过验收", {"issues": ["experiment_spec.json 的 manifest_sha256 与计划不一致"],
+                                    "requirements": [{"id": "M1", "status": "implemented"}]})
+    assert not [m for m in t.missions if m.startswith("repair-")]
+    assert "宿主文件问题不派给代码 mission" in (tmp_path / ".tower" / "comms.jsonl").read_text()

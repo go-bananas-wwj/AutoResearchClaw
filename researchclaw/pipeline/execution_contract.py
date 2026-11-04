@@ -578,6 +578,8 @@ def audit_implementation(files: dict[str, str], plan: dict, source: dict, llm: A
 严查用通用网络替换状态空间/边缘化等确认机制，伪造数据、恒定指标、数据泄漏、空断言、只打印测试成功。
 每条 method_requirements 必须实际实现，并有可执行数学/接口测试；不以注释、名字相似或 README 声明作证据。
 检查所有核心机制与终点是否遗漏，所有方法是否经过主入口。没有实验结果时不得宣称真实数据有效。
+experiment_spec.json 与数据清单哈希、文件哈希等是宿主维护的事实，由宿主另行校验（数据回执逐个核对 SHA-256），
+不在本审查范围：不要把计划或规格中哈希字段的差异列为问题，代码也无权修改这些文件。
 输出 JSON {ok:布尔,issues:[问题],requirements:[{id,status:'implemented/missing',
 code_evidence:[{file,quote:逐字源码片段}],test_evidence:[{file,quote:逐字断言或测试片段}],
 reason:status 为 missing 时写明缺什么}]}。

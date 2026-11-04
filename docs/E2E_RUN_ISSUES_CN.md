@@ -78,3 +78,9 @@
 - 现象：M1 重开后合并，19 个 mission 全部合并过；随后集成审查连续驳回，repair-6～8 修通主流程，repair-9 的任务只有两行"仍有未实现的方法要求"。worker 不知道该补什么，就去改已合并的 m8/m6，被审查以"改变确认方法"驳回；之后的重试在本分支上继续，worker 看不到自己相对 base 改了什么，没法还原，8 次用尽。
 - 根因：① `audit_implementation` 把 missing 行写成不带编号的泛泛问题，Tower 无法按编号路由，只能另建修复 mission；② 重试时 worker 只看到当前文件，看不到本 mission 累积的改动。
 - 修复：审查问题写成"<编号> 仍未实现：<理由>"（提示词要求 missing 行给 reason）；已有负责 mission 重开时，不点名的泛泛问题不再单独建修复任务；重试提示附本 mission 相对 base 的 diff（2 万字符上限），审查要求撤销时可按 `-` 行还原。
+
+### 2026-11-04 15:45 宿主哈希差异被派给代码 mission；并行合并竞态把别人的文件算成本 mission 删除
+
+- 现象：repair-11 被要求"修复 experiment_spec.json 的 manifest_sha256 与计划 source_manifest_sha256 不一致"，代码 mission 无权改宿主文件，8 次均因越界或未修复失败。
+- 根因：① 清单摘要改为排除时间戳的稳定哈希后，阶段 9 计划里仍存旧值，审查把宿主事实差异当代码问题；② `Tower.repair` 不区分宿主文件问题；③ （排查测试偶发失败时发现）`_fresh_worktree` 在 rebase 后再读 base，`_merge` 不持锁，并行合并推进 base 时把其他 mission 的文件算成本 mission 的删除，误判越界。
+- 修复：审查提示词把规格/哈希等宿主事实排除出审查范围（宿主由数据回执逐个核对 SHA-256）；指向 HOST_OWNED 文件的问题只登记不派工；重试前固定一次 base 提交用于 rebase 与比较，合并持 git 锁。

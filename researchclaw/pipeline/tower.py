@@ -262,27 +262,29 @@ class Tower:
         path = self.worktrees / mission.id
         branch = f"mission/{mission.id}"
         with self._git_lock:
+            # 先固定 base 提交：rebase 与之后的改动比较用同一个提交，并行合并推进 base 也不会把别人的文件算成本 mission 的删除
+            base = self._git(self.repo, "rev-parse", BASE).stdout.strip()
             conflicted = bool(mission.feedback) and mission.feedback[-1].startswith("与已合并")
             if (path / ".git").exists() and not conflicted:
-                ahead = self._git(path, "rev-list", "--count", f"{BASE}..HEAD", check=False)
+                ahead = self._git(path, "rev-list", "--count", f"{base}..HEAD", check=False)
                 if ahead.returncode == 0 and ahead.stdout.strip() not in ("", "0"):
                     self._git(path, "reset", "-q", "--hard")
                     self._git(path, "clean", "-qfdx")
-                    if self._git(path, "rebase", "-q", BASE, check=False).returncode == 0:
-                        return path, self._git(self.repo, "rev-parse", BASE).stdout.strip()
+                    if self._git(path, "rebase", "-q", base, check=False).returncode == 0:
+                        return path, base
                     self._git(path, "rebase", "--abort", check=False)
-            self._reset_worktree(path, branch)
-            return path, self._git(self.repo, "rev-parse", BASE).stdout.strip()
+            self._reset_worktree(path, branch, base)
+            return path, base
 
-    def _reset_worktree(self, path: Path, branch: str) -> Path:
+    def _reset_worktree(self, path: Path, branch: str, base: str = BASE) -> Path:
         if not (path / ".git").exists():
             if path.exists():
                 shutil.rmtree(path)
             self._git(self.repo, "worktree", "prune")
-            self._git(self.repo, "worktree", "add", "-q", "-B", branch, str(path), BASE)
+            self._git(self.repo, "worktree", "add", "-q", "-B", branch, str(path), base)
         else:
-            self._git(path, "checkout", "-q", "-B", branch, BASE)
-            self._git(path, "reset", "-q", "--hard", BASE)
+            self._git(path, "checkout", "-q", "-B", branch, base)
+            self._git(path, "reset", "-q", "--hard", base)
             self._git(path, "clean", "-qfdx")
         return path
 
@@ -605,20 +607,25 @@ class Tower:
     def _merge(self, mission: Mission) -> str:
         """Rebase the mission branch on base and fast-forward; returns a conflict note or ''."""
         path = self.worktrees / mission.id
-        rebase = self._git(path, "rebase", "-q", BASE, check=False)
-        if rebase.returncode != 0:
-            self._git(path, "rebase", "--abort", check=False)
-            return "与已合并的其他 mission 冲突，需基于最新 base 重做"
-        merge = self._git(self.repo, "merge", "-q", "--ff-only", f"mission/{mission.id}", check=False)
-        if merge.returncode != 0:
-            return "无法快进合并到 base：" + (merge.stderr or merge.stdout).strip()[:300]
+        with self._git_lock:
+            rebase = self._git(path, "rebase", "-q", BASE, check=False)
+            if rebase.returncode != 0:
+                self._git(path, "rebase", "--abort", check=False)
+                return "与已合并的其他 mission 冲突，需基于最新 base 重做"
+            merge = self._git(self.repo, "merge", "-q", "--ff-only", f"mission/{mission.id}", check=False)
+            if merge.returncode != 0:
+                return "无法快进合并到 base：" + (merge.stderr or merge.stdout).strip()[:300]
         return ""
 
     # ------------------------------------------------------------ integration repair (coordinator)
     def repair(self, feedback: str, audit: dict | None = None) -> dict[str, str]:
         """Route an integration failure back to the owning missions, run them, return base files."""
         audit = audit or {}
-        issues = [str(i) for i in audit.get("issues") or []]
+        # 指向宿主文件（规格、method_checks 入口）的问题代码 mission 无权修改，交给它只会反复越界直到用尽次数
+        host = [i for i in (str(i) for i in audit.get("issues") or []) if any(h in i for h in HOST_OWNED)]
+        if host:
+            self._log("宿主文件问题不派给代码 mission", "", "; ".join(host)[:1500], "failed")
+        issues = [str(i) for i in audit.get("issues") or [] if str(i) not in host]
         missing = [r.get("id") for r in audit.get("requirements") or []
                    if isinstance(r, dict) and r.get("status") != "implemented" and r.get("id") in self.missions]
         reopened: list[str] = []
@@ -633,7 +640,7 @@ class Tower:
             if owner:
                 self._reopen(owner, "集成关卡失败（只修本 mission 负责的部分）：\n" + feedback[-3000:])
                 reopened.append(owner)
-            else:
+            elif not host:
                 rest = rest or [feedback[-3000:]]
         if missing:
             # 只有不点名任何 mission 且已有负责 mission 重开时，泛泛的问题不再单独生成修复任务
