@@ -1828,9 +1828,13 @@ Multi-file experiment project with {len(files)} file(s): {file_list}
 
 def _tower(config: RCConfig, run_dir: Path, llm: Any, spec: dict, exp_plan: str) -> Any:
     from researchclaw.pipeline.activity import emit as _emit
-    from researchclaw.pipeline.tower import Tower
+    from researchclaw.pipeline.tower import Tower, make_check_runner
     agent = config.experiment.code_agent
+    runner = None
+    if getattr(config.experiment, "execution_check", None) is not None and config.experiment.execution_check.enabled:
+        runner = make_check_runner(config.experiment, Path(run_dir).resolve() / ".tower" / "check_sandbox",
+                                   config.experiment.execution_check.validation_timeout_sec)
     return Tower(llm, run_dir=run_dir, spec=spec, plan_text=exp_plan, step_max_tokens=agent.step_max_tokens,
-                 max_parallel=agent.tower_parallel, max_attempts=agent.tower_max_attempts,
+                 max_parallel=agent.tower_parallel, max_attempts=agent.tower_max_attempts, check_runner=runner,
                  emit=lambda kind, title, detail="", status="running": _emit(
                      kind, title, detail, run_dir=run_dir, phase="implementation", status=status))

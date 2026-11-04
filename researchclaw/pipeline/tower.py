@@ -128,6 +128,19 @@ class Mission:
     attempts: int = 0
     feedback: list[str] = field(default_factory=list)
     reviews: int = 0
+    framework: str = ""  # 判失败时的框架版本；框架修复后恢复会重开该 mission
+
+
+def framework_version() -> str:
+    """实现链路源码的哈希：mission 失败后框架被修改，恢复时给它新的机会；未改则仍是真失败。"""
+    import hashlib
+    here = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for name in ("tower.py", "patch_agent.py", "execution_contract.py", "experiment_prep.py"):
+        path = here / name
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def _slug(rid: str) -> str:
@@ -152,7 +165,8 @@ def _now() -> str:
 
 class Tower:
     def __init__(self, llm: Any, *, run_dir: Path, spec: dict, plan_text: str, step_max_tokens: int = 16384,
-                 max_parallel: int = 3, max_attempts: int = 3, emit: Callable[..., None] | None = None) -> None:
+                 max_parallel: int = 3, max_attempts: int = 3, emit: Callable[..., None] | None = None,
+                 check_runner: Callable[[Path, str], tuple[bool, str]] | None = None) -> None:
         from researchclaw.pipeline.execution_contract import digest
         self.llm = llm
         # 绝对路径：git -C <repo> worktree add <path> 会按 repo 目录解析相对路径（真实运行 run_dir 是相对路径）
@@ -163,6 +177,8 @@ class Tower:
         self.max_parallel = max(1, max_parallel)
         self.max_attempts = max(1, max_attempts)
         self._emit = emit or (lambda *a, **k: None)
+        # 宿主实际运行 req mission 的 checks/check_<id>.check()；None 时只做静态检查与审查（单元测试）
+        self.check_runner = check_runner
         self.root = run_dir / TOWER_DIR
         self.repo = self.root / "repo"
         self.worktrees = self.root / "worktrees"
@@ -196,12 +212,26 @@ class Tower:
         self._init_repo()
         return self._tree_files(BASE)
 
-    def _fresh_worktree(self, mission: Mission) -> Path:
-        """Worktree for the mission branch, reset to the current base."""
+    def _fresh_worktree(self, mission: Mission) -> tuple[Path, str]:
+        """Worktree for the mission branch; returns (path, base commit it is based on).
+
+        重试时在本 mission 分支上次的提交上继续改（rebase 到最新 base），不推倒重来；
+        只有上次与已合并改动冲突或 rebase 失败时，才从 base 重新开始。
+        """
         path = self.worktrees / mission.id
         branch = f"mission/{mission.id}"
         with self._git_lock:
-            return self._reset_worktree(path, branch)
+            conflicted = bool(mission.feedback) and mission.feedback[-1].startswith("与已合并")
+            if (path / ".git").exists() and not conflicted:
+                ahead = self._git(path, "rev-list", "--count", f"{BASE}..HEAD", check=False)
+                if ahead.returncode == 0 and ahead.stdout.strip() not in ("", "0"):
+                    self._git(path, "reset", "-q", "--hard")
+                    self._git(path, "clean", "-qfdx")
+                    if self._git(path, "rebase", "-q", BASE, check=False).returncode == 0:
+                        return path, self._git(self.repo, "rev-parse", BASE).stdout.strip()
+                    self._git(path, "rebase", "--abort", check=False)
+            self._reset_worktree(path, branch)
+            return path, self._git(self.repo, "rev-parse", BASE).stdout.strip()
 
     def _reset_worktree(self, path: Path, branch: str) -> Path:
         if not (path / ".git").exists():
@@ -230,6 +260,10 @@ class Tower:
             mission = Mission(**row)
             if mission.status == "running":  # 上次进程在该 mission 进行中被中断：重新派工
                 mission.status = "planned"
+            elif mission.status == "failed" and mission.framework != framework_version():
+                # 失败之后框架被修复：保留反馈、清零次数重新派工（框架没变则仍判真失败，不无限重试）
+                mission.status, mission.attempts = "planned", 0
+                mission.feedback.append("（框架已更新，重新尝试；以上为此前未通过的原因）")
             self.missions[mission.id] = mission
 
     def _save(self) -> None:
@@ -381,6 +415,7 @@ class Tower:
         mission.attempts += 1
         if mission.attempts >= self.max_attempts:
             mission.status = "failed"
+            mission.framework = framework_version()
             self._log("失败", mission.id, mission.feedback[-1], "failed")
         else:
             mission.status = "planned"
@@ -390,8 +425,9 @@ class Tower:
     # ------------------------------------------------------------ worker + reviewer (threads)
     def _work(self, mission: Mission) -> dict:
         from researchclaw.pipeline.patch_agent import PatchCodeAgent, PatchError, static_problems
-        path = self._fresh_worktree(mission)
-        # 以本 worktree 的起点为准：并行合并期间 base 可能已经前进
+        path, base_ref = self._fresh_worktree(mission)
+        # base_files：本 mission 所基于的 base（并行合并期间 base 可能已前进）；before：本次尝试的起点
+        base_files = self._tree_files(base_ref)
         before = self._tree_files(self._git(path, "rev-parse", "HEAD").stdout.strip())
         agent = PatchCodeAgent(self.llm, run_dir=self.run_dir, stage_dir=self._mission_dir(mission),
                                spec=self.spec, plan_text=self.plan_text, step_max_tokens=self.step_max_tokens,
@@ -405,7 +441,9 @@ class Tower:
             after = agent.step(f"{mission.id}#{mission.attempts}", instruction, before)
         except PatchError as exc:
             return {"ok": False, "issues": [f"实现未完成：{exc}"], "model_calls": agent.model_calls}
-        changed = sorted(n for n in set(after) | set(before) if after.get(n) != before.get(n))
+        now = sorted(n for n in set(after) | set(before) if after.get(n) != before.get(n))
+        # scope、静态检查与审查都针对本 mission 相对 base 的全部改动，而不只是本次增量
+        changed = sorted(n for n in set(after) | set(base_files) if after.get(n) != base_files.get(n))
         outside = [n for n in changed if not in_scope(n, mission.scope) or n in HOST_OWNED]
         if not changed:
             return {"ok": False, "issues": ["没有任何改动"], "model_calls": agent.model_calls}
@@ -415,13 +453,21 @@ class Tower:
         problems = static_problems({n: after[n] for n in changed if n in after})
         if problems:
             return {"ok": False, "issues": problems, "model_calls": agent.model_calls}
-        for name in changed:
+        for name in now:
             target = path / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(after[name], encoding="utf-8")
         self._git(path, "add", "-A")
-        self._git(path, "commit", "-q", "-m", f"{mission.id}: attempt {mission.attempts}")
-        review = self._review(mission, before, after, changed)
+        self._git(path, "commit", "-q", "--allow-empty", "-m", f"{mission.id}: attempt {mission.attempts}")
+        if self.check_runner is not None and mission.kind == "req":
+            # 送审前实际运行本要求的检查：断言与实现不一致这类问题由真实 traceback 暴露，不靠审查"脑内执行"
+            ok, output = self.check_runner(path, "check_" + _slug(mission.id))
+            self._log("检查通过" if ok else "检查失败", mission.id, output[-1500:], "completed" if ok else "failed")
+            if not ok:
+                return {"ok": False, "issues": ["checks/check_" + _slug(mission.id) + ".py 实际运行失败（已提交的改动保留，"
+                                                "下次在此基础上修正）：\n" + output[-2500:]],
+                        "model_calls": agent.model_calls}
+        review = self._review(mission, base_files, after, changed)
         calls = agent.model_calls + review.pop("model_calls", 0)
         if not review["approve"]:
             return {"ok": False, "issues": review["issues"] or ["审查未通过"], "model_calls": calls}
@@ -535,3 +581,28 @@ class Tower:
                     if mission.kind == kind and in_scope(name, mission.scope):
                         return mission.id
         return None
+
+
+_CHECK_ENTRY = """import importlib, sys
+importlib.import_module("checks." + sys.argv[1]).check()
+print("RC_MISSION_CHECK_OK")
+"""
+
+
+def make_check_runner(experiment: Any, workdir: Path, timeout_sec: int) -> Callable[[Path, str], tuple[bool, str]]:
+    """在实验沙箱中运行一个 mission 的检查（与集成关卡同一沙箱、同样只读挂载数据）。"""
+    def run(worktree: Path, module: str) -> tuple[bool, str]:
+        import tempfile
+        from researchclaw.experiment.factory import create_sandbox
+        workdir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=workdir) as tmp:
+            project = Path(tmp) / "project"
+            shutil.copytree(worktree, project, ignore=shutil.ignore_patterns(".git"))
+            (project / "_rc_mission_check.py").write_text(_CHECK_ENTRY, encoding="utf-8")
+            sandbox = create_sandbox(experiment, Path(tmp) / "sandbox")
+            result = sandbox.run_project(project, entry_point="_rc_mission_check.py", timeout_sec=timeout_sec,
+                                         args=[module])
+            output = (result.stdout or "")[-6000:] + "\n" + (result.stderr or "")[-6000:]
+            ok = result.returncode == 0 and not result.timed_out and "RC_MISSION_CHECK_OK" in (result.stdout or "")
+            return ok, output
+    return run

@@ -242,3 +242,42 @@ def test_workspace_has_host_spec_for_runtime(tmp_path):
     files = tw.Tower(FakeDeepSeek(), run_dir=tmp_path, spec=spec, plan_text="plan").run()
     assert json.loads(files["experiment_spec.json"])["prepared_data"]["files"][0]["path"] == "/data/x.npz"
     assert "experiment_spec.json" in tw.HOST_OWNED
+
+
+def test_real_check_failure_is_fed_back_and_retry_continues_from_branch(tmp_path):
+    import sys
+    from researchclaw.config import ExperimentConfig, SandboxConfig
+    exp = ExperimentConfig(mode="sandbox", time_budget_sec=60, sandbox=SandboxConfig(python_path=sys.executable))
+    runner = tw.make_check_runner(exp, tmp_path / "chk", 60)
+    m1_first = (f"<<<FILE methods/m1.py>>>\ndef f():\n    return 'm1 done'\n<<<END>>>\n"
+                f"<<<FILE checks/check_m1.py>>>\nfrom methods import m1\n\n\ndef check():\n"
+                f"    assert m1.f() == 'wrong', 'mismatch'\n<<<END>>>\n{DONE}\n")
+    m1_fix = _edit("checks/check_m1.py", "    assert m1.f() == 'wrong', 'mismatch'", "    assert m1.f() == 'm1 done'")
+    m2 = (f"<<<FILE methods/m2.py>>>\ndef f():\n    return 'm2 done'\n<<<END>>>\n"
+          f"<<<FILE checks/check_m2.py>>>\nfrom methods import m2\n\n\ndef check():\n    assert m2.f() == 'm2 done'\n"
+          f"<<<END>>>\n{DONE}\n")
+    prompts = {}
+
+    class Rec(FakeDeepSeek):
+        def chat(self, messages, system=None, **kw):
+            m = re.search(r"## 当前步骤：(\S+)", messages[0]["content"])
+            if m:
+                prompts[m.group(1)] = messages[0]["content"]
+            return super().chat(messages, system=system, **kw)
+    llm = Rec(workers={"M1#0": m1_first, "M1#1": m1_fix, "M2": m2})
+    files = tw.Tower(llm, run_dir=tmp_path, spec=SPEC, plan_text="plan", check_runner=runner).run()
+    assert "assert m1.f() == 'm1 done'" in files["checks/check_m1.py"]
+    assert "mismatch" in prompts["M1#1"] and "AssertionError" in prompts["M1#1"]  # 真实 traceback 反馈给 worker
+    assert "return 'm1 done'" in prompts["M1#1"]  # 第二次在上次提交的分支上继续，而不是从 base 重来
+    assert "review:M1" in llm.calls and llm.calls.count("review:M1") == 1  # 检查失败的那次没有送审
+
+
+def test_failed_mission_reopens_only_after_framework_change(tmp_path, monkeypatch):
+    bad = FakeDeepSeek(workers={"M1": f"<<<FILE methods/m2.py>>>\nx = 1\n<<<END>>>\n{DONE}\n"})
+    with pytest.raises(tw.TowerError):
+        _tower(tmp_path, bad).run()
+    with pytest.raises(tw.TowerError):  # 框架未变：仍是真失败，不重试
+        _tower(tmp_path, FakeDeepSeek()).run()
+    monkeypatch.setattr(tw, "framework_version", lambda: "changed")
+    files = _tower(tmp_path, FakeDeepSeek()).run()  # 框架修复后恢复：重开失败的 mission
+    assert "m1 done" in files["methods/m1.py"]

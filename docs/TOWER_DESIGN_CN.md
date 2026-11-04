@@ -72,4 +72,7 @@ base 级关卡失败时，协调者把失败归到具体 mission 或新开一个
 - **mission 级关卡**：语法静态检查 + 独立审查（证据必须是改动后文件中的逐字片段，否则驳回）。审查分成 blocking/suggestions，只有阻断类问题（未完成核心任务、伪造或冒充、接口必然出错、越界）才驳回；审查能看到本 mission 之前的意见，不得前后矛盾。工作区里有宿主生成的 `experiment_spec.json`，供代码在运行时读取路径与指标键。沙箱实际运行仍在 base 级集成关卡里做（方法断言、dry-run、数据回执、全局审查），沿用阶段 10 的进展式修复预算。
 - **合并**：worker 在 `mission/<id>` 分支提交 → 宿主在该 worktree 上 `rebase base` → `merge --ff-only`。冲突时中止 rebase，退回 worker 基于最新 base 重做，计一次尝试。
 - **恢复**：`missions.json` 里 merged 的 mission 不再重做；running 的重新派工。尝试次数只在失败时增加，所以中断后的重新派工沿用同一步骤名，补丁回复按提示词哈希命中缓存。审查回复也按内容哈希缓存在 `.tower/missions/<id>/reviews/`。规格或计划变化时整个 `.tower/` 归档为 `.tower_superseded_<时间>` 后重建。
-- **未做**：框架版本感知的自动恢复（§5 第 3 步）；mission 级沙箱运行该要求的检查；用 `.cache/` 回放做离线回归。
+- **mission 级实际检查**（2026-11-04 补）：req mission 提交后、送审前，宿主在实验沙箱运行该要求的 `checks/check_<id>.check()`，失败则把真实 traceback 回给 worker，不送审。
+- **增量重试**：重试在本 mission 分支上次的提交上继续（rebase 到最新 base）；只有与已合并改动冲突或 rebase 失败时才从 base 重来。scope、静态检查与审查都针对相对 base 的全部改动。
+- **框架版本感知恢复**：mission 判失败时记录 `framework_version()`（tower/patch_agent/execution_contract/experiment_prep 源码哈希）；恢复时框架变了就重开该 mission，没变仍判真失败。
+- **未做**：阶段级（非 Tower）失败的框架版本感知自动重试，目前仍需经 API 恢复；用 `.cache/` 回放做离线回归。
