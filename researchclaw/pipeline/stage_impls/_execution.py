@@ -1302,7 +1302,7 @@ def _execute_iterative_refine(
                 timeout_refine_attempts,
             )
 
-        _patch_mode = getattr(config.experiment.code_agent, "backend", "blueprint") == "patch"
+        _patch_mode = getattr(config.experiment.code_agent, "backend", "blueprint") in ("patch", "tower")
         if _patch_mode:
             # 本地适配：改进同样以补丁步骤生成（小步编辑、单步截断只重试该步、可复用）
             from researchclaw.pipeline.experiment_spec import load_spec

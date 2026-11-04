@@ -809,7 +809,7 @@ def _execute_code_generation(
             artifacts=(), evidence_refs=(), error="当前配置要求 OpenCode，尚未完成必需的 agent 执行")
 
     if (not _beast_mode_used and llm is not None
-            and getattr(config.experiment.code_agent, "backend", "blueprint") == "patch"):
+            and getattr(config.experiment.code_agent, "backend", "blueprint") in ("patch", "tower")):
         # ── 本地适配：ExperimentSpec 驱动的补丁式小步实现 ───────────────────
         from researchclaw.pipeline.activity import emit as _emit
         from researchclaw.pipeline.experiment_spec import load_spec
@@ -827,14 +827,23 @@ def _execute_code_generation(
             return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED, artifacts=(),
                                evidence_refs=(), error=str(exc))
         if _card:
-            _spec["prepared_data"] = card_summary(_card)
+            _spec["prepared_data"] = card_summary(_card)  # 与 experiment_prep.attach_card 相同
         _patch = PatchCodeAgent(
             llm, run_dir=run_dir, stage_dir=stage_dir, spec=_spec, plan_text=exp_plan,
             step_max_tokens=config.experiment.code_agent.step_max_tokens,
             emit=lambda kind, title, detail="": _emit(kind, title, detail, run_dir=run_dir,
                                                       phase="implementation", status="running"))
         try:
-            files = _patch.generate()
+            if config.experiment.code_agent.backend == "tower":
+                # 多智能体：mission 分支并行实现、独立审查、合并到 base（已合并的 mission 恢复时不重做）
+                from researchclaw.pipeline.tower import TowerError
+                try:
+                    files = _tower(config, run_dir, llm, _spec, exp_plan).run()
+                except TowerError as exc:
+                    return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED,
+                                       artifacts=(), evidence_refs=(), error=f"Tower 实现未完成：{exc}")
+            else:
+                files = _patch.generate()
         except PatchError as exc:
             return StageResult(stage=Stage.CODE_GENERATION, status=StageStatus.FAILED, artifacts=("patch_steps.json",),
                                evidence_refs=(), error=f"补丁式实现未完成：{exc}")
@@ -1204,7 +1213,7 @@ def _execute_code_generation(
     # 本地适配：补丁后端下，上游整文件重写式修复（深度质量/选题对齐重生成/消融重写）会从自由文本
     # 抽出平铺文件替换工作区、丢掉子包路径并绕过编辑块协议；改由验收关卡（method_checks、
     # dry-run、数据回执、模型审查）与补丁式修复处理，这些检查仅记录告警。
-    _patch_backend = getattr(config.experiment.code_agent, "backend", "blueprint") == "patch"
+    _patch_backend = getattr(config.experiment.code_agent, "backend", "blueprint") in ("patch", "tower")
     # --- P1.1+P1.2: Deep quality analysis (class quality, scoping, API) ---
     deep_warnings = deep_validate_files(files)
     for w in deep_warnings:
@@ -1816,3 +1825,12 @@ Multi-file experiment project with {len(files)} file(s): {file_list}
         evidence_refs=tuple(f"stage-10/{a}" for a in artifacts),
     )
 
+
+def _tower(config: RCConfig, run_dir: Path, llm: Any, spec: dict, exp_plan: str) -> Any:
+    from researchclaw.pipeline.activity import emit as _emit
+    from researchclaw.pipeline.tower import Tower
+    agent = config.experiment.code_agent
+    return Tower(llm, run_dir=run_dir, spec=spec, plan_text=exp_plan, step_max_tokens=agent.step_max_tokens,
+                 max_parallel=agent.tower_parallel, max_attempts=agent.tower_max_attempts,
+                 emit=lambda kind, title, detail="", status="running": _emit(
+                     kind, title, detail, run_dir=run_dir, phase="implementation", status=status))

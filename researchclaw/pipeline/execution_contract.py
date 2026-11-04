@@ -597,7 +597,7 @@ def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, ll
             time_budget_sec=config.experiment.time_budget_sec)
         if not result.success:
             raise ExecutionContractError("OpenCode 验收修复失败：" + result.error)
-    elif getattr(config.experiment.code_agent, "backend", "blueprint") == "patch":
+    elif getattr(config.experiment.code_agent, "backend", "blueprint") in ("patch", "tower"):
         # 补丁式修复：只输出编辑块，单步截断只重试本步，不整文件重写
         from researchclaw.pipeline.experiment_spec import load_spec
         from researchclaw.pipeline.patch_agent import PatchCodeAgent, PatchError
@@ -605,6 +605,25 @@ def repair_acceptance_code(files: dict[str, str], feedback: str, config: Any, ll
         spec = load_spec(run_dir)
         if spec is None:
             raise ExecutionContractError("缺少 ExperimentSpec，无法进行补丁式修复")
+        from researchclaw.pipeline.experiment_prep import attach_card
+        spec = attach_card(spec, run_dir)
+        if config.experiment.code_agent.backend == "tower":
+            from researchclaw.pipeline.stage_impls._code_generation import _tower
+            from researchclaw.pipeline.tower import TowerError
+            audit_path = stage_dir / "method_acceptance.json"
+            audit = {}
+            if feedback.startswith("方法实现未通过验收") and audit_path.is_file():
+                try:
+                    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                except ValueError:
+                    audit = {}
+            tower = _tower(config, run_dir, llm, spec, exp_plan)
+            try:
+                repaired = tower.repair(feedback, audit)
+            except TowerError as exc:
+                raise ExecutionContractError("Tower 验收修复失败：" + str(exc)) from exc
+            REPAIR_STATS["model_calls"] = tower.model_calls
+            return repaired
         emit("repair", "补丁式修复验收问题", feedback, run_dir=run_dir, phase="implementation", status="running")
         agent = PatchCodeAgent(llm, run_dir=run_dir, stage_dir=stage_dir, spec=spec, plan_text=exp_plan,
                                step_max_tokens=config.experiment.code_agent.step_max_tokens)

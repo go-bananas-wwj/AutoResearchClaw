@@ -1,6 +1,6 @@
 # 实验实施多智能体架构（参考 Kimi Code Tower）设计稿
 
-状态：§4 实验准备已实现（2026-11-04，`researchclaw/pipeline/experiment_prep.py`）；§3 Tower 式编排待实施。背景问题见 `docs/E2E_RUN_ISSUES_CN.md`。
+状态：§4 实验准备已实现（2026-11-04，`researchclaw/pipeline/experiment_prep.py`）；§3 Tower 式编排已实现（2026-11-04，`researchclaw/pipeline/tower.py`，`code_agent.backend: tower`，遥感预设默认启用）。背景问题见 `docs/E2E_RUN_ISSUES_CN.md`。
 
 ## 1. 参考：Kimi Code Tower 怎么做
 
@@ -63,3 +63,12 @@ base 级关卡失败时，协调者把失败归到具体 mission 或新开一个
 2. Tower 式 mission 编排：先串行（并发 1），把 mission 图、分支、审查、合并、持久化做对。
 3. 打开并发，再加入框架版本感知的自动恢复。
 4. 用本次运行 `.cache/` 里的真实 DeepSeek 回复做离线回放回归测试。
+
+## 6. 实现说明（与设计的差异）
+
+- **协调者**：DeepSeek 只负责判断方法要求之间的实现依赖（宿主校验 id 与无环，有环或失败时按互不依赖调度并记入协议）。mission 骨架（layout → 每条要求一个 req → wire）由宿主按规格生成。集成失败的分派是确定性的：审查判定缺失的要求重开对应 req；traceback 最内层文件归属的 mission 重开；其余新建 `repair-N`。分派不交给模型猜。
+- **scope**：layout 生成"每条要求一个模块 `methods/<id>.py` + 一个检查 `checks/check_<id>.py`"的结构，`method_checks.py` 自动发现并断言检查数。req mission 只能改自己的两个文件，wire 只能改顶层文件。宿主按 diff 逐段匹配路径（`*` 不跨目录），越界直接退回，不送审。
+- **mission 级关卡**：语法静态检查 + 独立审查（证据必须是改动后文件中的逐字片段，否则驳回）。沙箱实际运行仍在 base 级集成关卡里做（方法断言、dry-run、数据回执、全局审查），沿用阶段 10 的进展式修复预算。
+- **合并**：worker 在 `mission/<id>` 分支提交 → 宿主在该 worktree 上 `rebase base` → `merge --ff-only`。冲突时中止 rebase，退回 worker 基于最新 base 重做，计一次尝试。
+- **恢复**：`missions.json` 里 merged 的 mission 不再重做；running 的重新派工。尝试次数只在失败时增加，所以中断后的重新派工沿用同一步骤名，补丁回复按提示词哈希命中缓存。审查回复也按内容哈希缓存在 `.tower/missions/<id>/reviews/`。规格或计划变化时整个 `.tower/` 归档为 `.tower_superseded_<时间>` 后重建。
+- **未做**：框架版本感知的自动恢复（§5 第 3 步）；mission 级沙箱运行该要求的检查；用 `.cache/` 回放做离线回归。

@@ -291,3 +291,14 @@ def _card_intact(card: dict) -> bool:
             return False
     return bool(card.get("files"))
 
+
+def attach_card(spec: dict, run_dir: Path) -> dict:
+    """把已验收的数据卡挂到规格上（阶段 10 实现与验收修复用同一份，提示词与 Tower 状态一致）。"""
+    try:
+        record = json.loads((run_dir / PREP_DIR / "record.json").read_text(encoding="utf-8"))
+        card = json.loads((run_dir / PREP_DIR / "dataset_card.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return spec
+    if record.get("ok"):
+        spec["prepared_data"] = card_summary(card)
+    return spec
