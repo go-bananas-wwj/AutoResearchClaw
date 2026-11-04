@@ -237,3 +237,32 @@ def test_repair_promotion_uses_current_cycle_and_real_best_run_metrics(tmp_path)
         "cycle_history": [{"cycle": 1, "repair_applied": True, "error": ""}]}))
     assert _promote_best_repair_code(tmp_path, "test")
     assert (target / "main.py").read_text() == "print('rmse: 1')"
+
+
+def test_mounted_real_data_receipt_checks_host_manifest(tmp_path):
+    import sys
+    from researchclaw.data_acquisition.manifest import Manifest
+    store, run = tmp_path / "store", tmp_path / "store" / "runs" / "rc-x"
+    (store / "shared").mkdir(parents=True)
+    real = store / "shared" / "phase.tif"
+    real.write_bytes(b"real-bytes")
+    m = Manifest(run, files_root=store)
+    m.add_file("site/phase.tif", real, source_url="https://x", license="c", kind="insar_product")
+    m.save()
+    work = tmp_path / "work"
+    work.mkdir()
+    exp = ExperimentConfig(mode="sandbox", time_budget_sec=20, metric_key="rmse",
+                           sandbox=SandboxConfig(python_path=sys.executable))
+    prepare_agent_tools(work, exp)
+    (work / "method_checks.py").write_text("assert 1 + 1 == 2\nprint('RC_METHOD_CHECKS_OK')\n")
+    plan, _, _ = plan_fixture()
+    plan["execution"]["datasets"] = [{"id": "R", "kind": "local", "path": str(run)}]
+    (work / "EXPERIMENT_PLAN.yaml").write_text(yaml.safe_dump(plan, allow_unicode=True))
+    (work / "main.py").write_text(
+        "import json\nopen('data_manifest.json','w').write(json.dumps([{'id':'R','path':%r}]))\n"
+        "print('rmse: 0.5')\n" % str(real))
+    assert validate_workspace(work, timeout=20) == 0
+    receipt = json.loads((work / ".rc-validation/data_receipts.json").read_text())[0]
+    assert receipt["manifest_entry"] == "site/phase.tif"
+    real.write_bytes(b"tampered!!")  # 与宿主清单哈希不符即拒绝
+    assert validate_workspace(work, timeout=20) == 1

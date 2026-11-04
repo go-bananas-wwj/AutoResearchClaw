@@ -457,27 +457,49 @@ def validate_workspace(workspace: Path, *, timeout: int = 180) -> int:
         plan = yaml.safe_load(plan_path.read_text()) or {}
         datasets = plan.get("execution", {}).get("datasets", [])
         manifest_path = project / "data_manifest.json"
+        fmt = ("入口须在工作目录根（与入口同目录）写 data_manifest.json：JSON 列表，每项 "
+               "{\"id\": 计划 datasets 中的 id, \"path\": 实际读取的文件}；真实数据（kind=local）的 path 用 "
+               "files_root 下的绝对路径（须是宿主清单中的文件），合成数据须把生成的数据写成文件、"
+               "与下载文件一样用相对工作目录的路径。")
         try:
-            manifest = json.loads(manifest_path.read_text())
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except FileNotFoundError:
+                raise ValueError("工作目录根缺少 data_manifest.json。" + fmt) from None
             if not isinstance(manifest, list):
-                raise ValueError("data_manifest.json 必须为列表")
+                raise ValueError("data_manifest.json 必须为列表。" + fmt)
             receipts = []
             for dataset in datasets:
                 entries = [d for d in manifest if isinstance(d, dict) and d.get("id") == dataset["id"]]
                 if not entries:
-                    raise ValueError("缺少数据文件：" + dataset["id"])
+                    raise ValueError("缺少数据文件：" + dataset["id"] + "。" + fmt)
+                # 本地适配：kind=local 的真实数据经 docker.data_mounts 同路径只读挂载，不在工作目录内；
+                # 只接受宿主清单（researchclaw.data_acquisition）登记的文件，并按清单 SHA-256 复核。
+                host_files: dict[str, dict] = {}
+                if dataset.get("kind") == "local":
+                    from researchclaw.data_acquisition.manifest import Manifest
+                    host = Manifest(Path(str(dataset.get("path", ""))))
+                    host_files = {str((host.root / e["path"]).resolve()): e
+                                  for e in host.data["entries"] if e.get("path")}
                 for entry in entries:
-                    path = (project / entry["path"]).resolve()
-                    if not path.is_relative_to(project.resolve()) or not path.is_file() or not path.stat().st_size:
-                        raise ValueError("数据文件不存在、为空或越出沙箱：" + str(entry["path"]))
+                    raw = str(entry["path"])
+                    path = (Path(raw) if Path(raw).is_absolute() else project / raw).resolve()
+                    registered = host_files.get(str(path))
+                    if registered is None and not path.is_relative_to(project.resolve()):
+                        raise ValueError("数据文件既不在宿主真实数据清单中，也不在沙箱工作目录内：" + raw)
+                    if not path.is_file() or not path.stat().st_size:
+                        raise ValueError("数据文件不存在或为空：" + raw)
                     if dataset["kind"] == "download" and entry.get("source_url") != dataset["url"]:
                         raise ValueError("实际数据来源与计划不一致")
                     hasher = hashlib.sha256()
                     with path.open("rb") as handle:
                         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                             hasher.update(chunk)
+                    if registered is not None and hasher.hexdigest() != registered.get("sha256"):
+                        raise ValueError("真实数据文件哈希与宿主清单不符：" + raw)
                     receipts.append({"id": dataset["id"], "kind": dataset["kind"],
-                        "path": entry["path"], "bytes": path.stat().st_size, "sha256": hasher.hexdigest()})
+                        "path": raw, "bytes": path.stat().st_size, "sha256": hasher.hexdigest(),
+                        **({"manifest_entry": registered["id"]} if registered else {})})
             write_json(output / "data_receipts.json", receipts)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             print("实际数据验收失败：" + str(exc))
