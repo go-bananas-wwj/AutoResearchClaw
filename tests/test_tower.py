@@ -367,3 +367,42 @@ def test_bounded_files_keeps_head_and_tail():
     out = tw._bounded_files({"a.py": "x" * 10, "b.py": "H" + "y" * 100000 + "T"}, limit=5000)
     assert out["a.py"] == "x" * 10
     assert out["b.py"].startswith("H") and out["b.py"].endswith("T") and "省略" in out["b.py"]
+
+
+def test_generic_missing_issue_does_not_spawn_empty_repair(tmp_path):
+    _tower(tmp_path, FakeDeepSeek()).run()
+    fixer = FakeDeepSeek(workers={"M1#0": _edit("methods/m1.py", "    return 'm1 done'", "    return 'm1 complete'")})
+    audit = {"issues": ["M1 仍未实现：缺少平滑器", "某条方法要求 仍未实现"],
+             "requirements": [{"id": "M1", "status": "missing"}, {"id": "M2", "status": "implemented"}]}
+    seen = []
+    original = fixer.chat
+    fixer.chat = lambda messages, system=None, **kw: (seen.append(messages[0]["content"]),
+                                                      original(messages, system=system, **kw))[1]
+    t = _tower(tmp_path, fixer)
+    t.repair("方法实现未通过验收", audit)
+    assert not [m for m in t.missions if m.startswith("repair-")]
+    assert any("缺少平滑器" in p and "M1#0" in p for p in seen)
+
+
+def test_retry_after_rejection_shows_worker_its_diff_against_base(tmp_path):
+    prompts = {}
+
+    def reviewer(data):
+        if data["mission"] == "M1" and not data["previous_feedback"]:
+            return {"blocking": ["撤销对 helper 的修改"], "suggestions": [], "evidence": []}
+        file = [l[6:] for l in data["diff"].splitlines() if l.startswith("+++ b/")][-1]
+        quote = [l[1:] for l in data["diff"].splitlines() if l.startswith("+") and not l.startswith("+++")
+                 and l[1:].strip()][-1]
+        return {"blocking": [], "suggestions": [], "evidence": [{"file": file, "quote": quote}]}
+    llm = FakeDeepSeek(reviewer=reviewer, workers={"M1#1": _edit("methods/m1.py", "    return 'm1 done'",
+                                                                   "    return 'm1 done'  # ok")})
+    original = llm.chat
+
+    def spy(messages, system=None, **k):
+        msg = messages[0]["content"]
+        if "M1#1" in msg:
+            prompts.setdefault("retry", msg)
+        return original(messages, system=system, **k)
+    llm.chat = spy
+    _tower(tmp_path, llm).run()
+    assert "相对 base 的改动" in prompts.get("retry", "") and "+    return 'm1 done'" in prompts["retry"]
