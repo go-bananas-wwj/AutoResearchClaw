@@ -455,6 +455,8 @@ def _execute_experiment_run(
                     _t.promote(_formal_node)
             failure = execution_failure(result, config.experiment.metric_key)
             if failure:
+                from researchclaw.pipeline.execution_contract import record_formal_failure
+                record_formal_failure(run_dir, Path(exp_dir_path).parent if exp_dir_path else None, failure, result)
                 (runs_dir / "run-1.json").write_text(json.dumps({"status": "failed",
                     "metrics": result.metrics, "returncode": result.returncode,
                     "stdout": result.stdout, "stderr": result.stderr,

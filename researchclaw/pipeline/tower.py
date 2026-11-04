@@ -641,7 +641,8 @@ class Tower:
                 self._reopen(owner, "集成关卡失败（只修本 mission 负责的部分）：\n" + feedback[-3000:])
                 reopened.append(owner)
             elif not host:
-                rest = rest or [feedback[-3000:]]
+                # 保留首尾：失败说明在开头（如正式运行失败），traceback/输出在末尾
+                rest = rest or [feedback if len(feedback) <= 4000 else feedback[:1500] + "\n…\n" + feedback[-2500:]]
         if missing:
             # 只有不点名任何 mission 且已有负责 mission 重开时，泛泛的问题不再单独生成修复任务
             rest = [i for i in rest if not re.fullmatch(r"\S*\s*仍未实现", i.strip())]

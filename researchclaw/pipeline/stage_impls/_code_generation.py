@@ -1728,7 +1728,7 @@ def _execute_code_generation(
     # --- Write spec ---
     if config.experiment.execution_check.enabled:
         from researchclaw.pipeline.execution_contract import (accept_final_code, ExecutionContractError,
-                                                               failure_signature)
+                                                               failure_signature, formal_failure_for)
         # 修复预算按进展计：失败推进到别的检查不消耗"同一失败"次数；同一签名连续出现
         # max_code_repairs 次后停止，总次数封顶 max_code_repairs_total。验收标准不变。
         _check = config.experiment.execution_check
@@ -1736,10 +1736,15 @@ def _execute_code_generation(
         while True:
             try:
                 accept_final_code(files, _execution_plan, config, run_dir, stage_dir, llm)
+                # 验收通过但正是正式运行失败过的那份代码：把正式运行的失败当作验收反馈继续修
+                _formal = formal_failure_for(run_dir, files)
+                if _formal:
+                    raise ExecutionContractError(_formal)
                 break
             except ExecutionContractError as exc:
                 feedback = str(exc)
-                for path in (stage_dir / "method_acceptance.json",
+                # 正式运行失败时验收产物都是通过的，附上只会把关键失败挤出修复任务的上下文窗口
+                for path in () if feedback.startswith("正式运行") else (stage_dir / "method_acceptance.json",
                              exp_dir / ".rc-validation" / "execution.json",
                              exp_dir / ".rc-validation" / "method_tests.json",
                              exp_dir / ".rc-validation" / "data_receipts.json"):

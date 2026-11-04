@@ -507,6 +507,23 @@ def _repair_and_retry_experiment_run(
     无可用修复代码时返回 None。
     """
     result = None
+    _check = getattr(config.experiment, "execution_check", None)
+    if (getattr(_check, "enabled", False)
+            and config.experiment.code_agent.backend in ("patch", "tower")
+            and (run_dir / "formal_failure.json").is_file()):
+        # 执行契约路径：正式运行失败回到阶段 10，由同一套补丁/Tower 修复与全部验收关卡处理，
+        # 不走旧的整项目重写修复（多文件项目一次性重写易截断，且其重跑不经验收关卡）
+        for attempt in range(1, _MAX_EXPERIMENT_RUN_REPAIRS + 1):
+            print(f"{prefix} 正式运行失败 — 回到阶段 10 修复并重新验收（第 {attempt}/{_MAX_EXPERIMENT_RUN_REPAIRS} 次）")
+            fixed = execute_stage(Stage.CODE_GENERATION, run_dir=run_dir, run_id=run_id, config=config,
+                                  adapters=adapters, auto_approve_gates=auto_approve_gates)
+            if fixed.status == StageStatus.FAILED:
+                return fixed
+            result = execute_stage(stage, run_dir=run_dir, run_id=run_id, config=config,
+                                   adapters=adapters, auto_approve_gates=auto_approve_gates)
+            if result.status != StageStatus.FAILED:
+                return result
+        return result
     for attempt in range(1, _MAX_EXPERIMENT_RUN_REPAIRS + 1):
         logger.warning(
             "[%s] Stage 12 hard failure — repair loop attempt %d/%d",

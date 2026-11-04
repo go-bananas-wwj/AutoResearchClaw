@@ -96,3 +96,9 @@
 - 现象：阶段 12 两秒内失败，`docker run -d` 报 `artifacts/.../.formal_runs/c30e99-n135 includes invalid characters for a local volume name`。
 - 根因：worker 的 run_dir 是相对路径，detached 正式运行把它直接作为 bind-mount 源；`_host_visible` 只翻译 `/app/` 开头的绝对路径，相对路径原样交给 docker，被当成具名卷。
 - 修复：`_host_visible` 先 `resolve()` 为绝对路径再翻译，所有沙箱挂载统一受益。
+
+### 2026-11-05 01:13 正式运行主指标 CRPS 为负（-858）却被接受到阶段 15
+
+- 现象：阶段 12 完成，留一滑坡 CRPS=-858.15（负对照 -348.9），主指标方向 minimize，负值被当成"最佳"晋升 best.json，阶段 13/14/15 继续推进。验收试跑同一代码 CRPS=+1309.8，只有完整数据暴露问题。
+- 根因：① 框架只检查"有有限主指标"，不检查指标的数学定义域（CRPS/RMSE/MAE 按定义非负，覆盖率/概率在 [0,1]）；② 阶段 12 失败后走上游整项目重写修复（多文件 Tower 项目易截断，重跑不经验收关卡）；③ 关卡复核失败的节点仍占据 best，修正后的正值在 minimize 下永远"不更优"。
+- 修复：`metric_domain_problems` 通用定义域检查并入 `execution_failure`（差值/增益类派生量不查）；阶段 12 失败按验收代码哈希写 `formal_failure.json`，执行契约 + patch/tower 后端时回到阶段 10，验收通过但代码哈希命中正式失败即作为反馈交 Tower 修复，再重跑阶段 12；`ExperimentTree.gate` 失败时撤销指向该节点的 best。

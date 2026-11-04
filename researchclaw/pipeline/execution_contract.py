@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 import yaml
-from researchclaw.pipeline.activity import emit, run_from_path
+from researchclaw.pipeline.activity import clean, emit, run_from_path
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +387,35 @@ def execution_failure(result: Any, metric: str = "") -> str:
         return ("没有有限的目标科研指标，退出码 0 不构成通过。宿主只从 stdout 解析指标，接受两种格式："
                 f"单独一行 `{metric or '<主指标键>'}: <数值>`，或单独一行 "
                 f"`METRICS {{\"{metric or '<主指标键>'}\": <数值>, ...}}`（键须与主指标键完全一致）")
+    problems = metric_domain_problems(metrics)
+    if problems:
+        return ("指标超出其数学定义域，说明评分实现有误（不是结果好坏问题），请修正计算后重跑：" + "；".join(problems[:8]))
     return ""
+
+
+# 按定义非负的误差/评分类指标；名字含差值、增益等字样的派生量可以为负，不检查
+_NONNEG = re.compile(r"crps|rmse|rmsd|(?<![a-z])mse|(?<![a-z])mae|brier|log_?loss|(?<![a-z])error|(?<![a-z])loss", re.I)
+_SIGNED = re.compile(r"delta|diff|minus|gain|improv|change|skill|reduction|relative|ratio|bias|signed|_vs_|相对|差|增益|改进", re.I)
+_UNIT = re.compile(r"coverage|probability|(?<![a-z])prob|accuracy|precision|recall|fraction|rate|覆盖率|概率", re.I)
+
+
+def metric_domain_problems(metrics: dict) -> list[str]:
+    """通用数学定义域检查：CRPS/RMSE/MAE 等不可能为负，覆盖率/概率/比例只能在 [0,1]。
+
+    真实运行中留一滑坡 CRPS 输出 -858（主指标为 minimize，负值看起来"极好"），一路被接受到阶段 15。
+    这是指标定义本身的约束，与具体研究无关。"""
+    problems = []
+    for key, value in (metrics or {}).items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+            continue
+        name = str(key).rsplit("/", 1)[-1]
+        if _SIGNED.search(name):
+            continue
+        if _NONNEG.search(name) and value < 0:
+            problems.append(f"{key}={value:g} 为负，而该类指标按定义非负")
+        elif _UNIT.search(name) and not _NONNEG.search(name) and not 0 <= value <= 1 and not 1 < value <= 100:
+            problems.append(f"{key}={value:g} 不在 [0,1]（或百分数 [0,100]）内")
+    return problems
 
 
 def read_sandbox_metrics(sandbox: Any, result: Any, mode: str, project: Path | None = None) -> Any:
@@ -793,6 +821,33 @@ def accept_final_code(files: dict[str, str], plan: dict, config: Any, run_dir: P
         "plan_hash": digest(plan), "source_hash": audit["source_hash"], "validation_level": plan["execution"]["validation_level"],
         "node": node})
     return node
+
+
+def record_formal_failure(run_dir: Path, accepted_dir: Path | None, failure: str, result: Any) -> None:
+    """阶段 12 正式运行失败时，按验收代码哈希记录失败，供阶段 10 的验收修复循环作为反馈。
+
+    正式运行的数据规模与试跑不同（真实运行中试跑 CRPS 为正、正式运行为负），这类缺陷只有正式运行暴露；
+    记录绑定代码哈希，代码一改即失效，不会把旧失败套到新代码上。"""
+    try:
+        receipt = json.loads((accepted_dir / "execution_acceptance.json").read_text()) if accepted_dir else {}
+    except (OSError, ValueError):
+        receipt = {}
+    write_json(run_dir / "formal_failure.json", {
+        "code_hash": receipt.get("code_hash"), "failure": failure,
+        "stdout_tail": clean(str(getattr(result, "stdout", "") or ""))[-4000:],
+        "stderr_tail": clean(str(getattr(result, "stderr", "") or ""))[-3000:]})
+
+
+def formal_failure_for(run_dir: Path, files: dict[str, str]) -> str:
+    """当前代码若正是正式运行失败的那份，返回失败说明（否则空串）。"""
+    try:
+        data = json.loads((run_dir / "formal_failure.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    if not data.get("code_hash") or data.get("code_hash") != digest(files):
+        return ""
+    return ("正式运行（阶段 12，完整数据）失败，验收试跑未暴露该问题：" + str(data.get("failure"))
+            + "\n正式运行输出末尾：\n" + str(data.get("stdout_tail") or "") + "\n" + str(data.get("stderr_tail") or ""))
 
 
 def is_code_path(parts: tuple[str, ...]) -> bool:

@@ -334,3 +334,41 @@ def test_accepted_package_init_files_still_bind(tmp_path):
                "files": {n: hashlib.sha256(t.encode()).hexdigest() for n, t in files.items()}}
     (stage / "execution_acceptance.json").write_text(json.dumps(receipt))
     verify_accepted_code(exp, tmp_path)  # 包的 __init__.py 参与验收，__pycache__ 不计
+
+
+def test_metric_domain_rejects_negative_crps_and_bad_coverage():
+    from researchclaw.pipeline.execution_contract import metric_domain_problems
+    probs = metric_domain_problems({"留一滑坡CRPS": -858.1, "rmse": 0.2, "crps_delta": -3.0,
+                                    "phase_only_minus_full_crps_mm": -9.0, "interval_coverage_90": 120.0,
+                                    "success_rate": 1.0, "coverage_pct": 95.0})
+    assert any("留一滑坡CRPS" in p for p in probs) and any("interval_coverage_90" in p for p in probs)
+    assert not any(k in "".join(probs) for k in ("rmse=", "crps_delta", "minus_full", "success_rate", "coverage_pct"))
+
+
+def test_formal_failure_binds_to_accepted_code_hash(tmp_path):
+    from types import SimpleNamespace
+    from researchclaw.pipeline.execution_contract import formal_failure_for, record_formal_failure
+    files = {"main.py": "print(1)"}
+    stage = tmp_path / "stage-10"
+    stage.mkdir()
+    (stage / "execution_acceptance.json").write_text(json.dumps({"code_hash": digest(files)}))
+    record_formal_failure(tmp_path, stage, "指标超出其数学定义域", SimpleNamespace(stdout="CRPS -1", stderr=""))
+    assert "指标超出其数学定义域" in formal_failure_for(tmp_path, files)
+    assert formal_failure_for(tmp_path, {"main.py": "print(2)"}) == ""  # 代码改了，旧失败不再套用
+
+
+def test_failed_gate_revokes_best(tmp_path):
+    from researchclaw.pipeline.experiment_tree import ExperimentTree
+    tree = ExperimentTree(tmp_path, "minimize")
+    node = tree.add({"main.py": "x"}, action="implement", parent=None, stage=10)
+    for gate in tw_gates():
+        tree.gate(node["id"], gate, True)
+    tree.set_metric(node["id"], -858.0)
+    assert tree.promote(node["id"])[0]
+    tree.gate(node["id"], "formal", False, "指标超出其数学定义域")
+    assert tree.best() is None
+
+
+def tw_gates():
+    from researchclaw.pipeline.experiment_tree import GATES
+    return GATES

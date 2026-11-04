@@ -114,6 +114,10 @@ class ExperimentTree:
         node["gates"][gate] = {"ok": bool(ok), "detail": str(detail)[:2000], "at": _now()}
         if not ok:
             node["status"] = "failed"
+            current = self.best()
+            if current and current.get("node") == node_id:
+                # 关卡复核失败（如指标定义域检查新增后重评）的节点不能继续当最佳，否则正确的新结果永远"不更优"
+                self.best_path.unlink(missing_ok=True)
         return self._append(node)
 
     def set_metric(self, node_id: str, value: float | None) -> dict[str, Any]:
