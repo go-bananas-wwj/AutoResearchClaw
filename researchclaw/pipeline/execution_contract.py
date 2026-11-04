@@ -190,7 +190,7 @@ methods 中写清公式、输入输出、维度和数据划分；设置独立 me
 execution_target 是服务端已保存的主指标及方向，必须原样使用其键（含中文键）；可增加清晰别名和辅助指标，不能换掉主指标。
 主指标在 execution_target、metrics 等所有位置的方向必须与 execution_target.direction 完全一致，不得另写相反的 scoring_direction。
 measured_resources.real_data 列出已下载并带 SHA-256 清单的真实数据；存在时必须作为 kind='local' 使用（path 为该 root），
-代码通过 root 下 data_manifest.json 的 entries 定位文件，并写出所用文件的 data_manifest.json；validation_level 相应为 real 或 mixed。
+代码通过 root 下 data_manifest.json 的 entries 定位文件（按 real_data.path_rule：files_root + entry.path，参照 entry_examples/file_variants 的真实格式），并写出所用文件的 data_manifest.json；validation_level 相应为 real 或 mixed。
 """
 
 

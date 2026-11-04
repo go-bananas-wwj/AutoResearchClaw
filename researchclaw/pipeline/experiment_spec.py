@@ -42,7 +42,31 @@ def manifest_summary(root: Path) -> dict[str, Any] | None:
     for entry in entries:
         kinds[entry.get("kind", "?")] = kinds.get(entry.get("kind", "?"), 0) + 1
         total += int(entry.get("bytes") or 0)
+    files_root = str(data.get("files_root") or root) if isinstance(data, dict) else str(root)
+    # 代码要能据此定位文件：给出路径规则、各 kind 的扩展名与示例条目（模型看不到清单原文）
+    examples: dict[str, list[dict]] = {}
+    extensions: dict[str, dict[str, int]] = {}
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        kind = entry.get("kind", "?")
+        name = Path(entry["path"]).name if entry.get("path") else ""
+        # 文件"类型"按扩展名与文件名末段（如 _wrapped_phase.tif / _corr.tif）区分，每类给一个示例
+        ext = name.split(".", 1)[-1] if "." in name else ""
+        tail = []
+        for token in reversed(name.split(".", 1)[0].split("_")):
+            if not (token.isalpha() and token.islower()):
+                break
+            tail.insert(0, token)
+        variant = ("_".join(tail) + "." if tail else "") + ext if name else ""
+        extensions.setdefault(kind, {})[variant] = extensions.get(kind, {}).get(variant, 0) + 1
+        if (kind, variant) not in seen and len(examples.setdefault(kind, [])) < 12:
+            seen.add((kind, variant))
+            examples[kind].append(entry)
     return {"root": str(root), "manifest": str(path), "manifest_sha256": digest(entries),
+            "files_root": files_root,
+            "path_rule": f"文件绝对路径 = files_root + '/' + entry['path']（entry['path'] 相对 {files_root}，"
+                         "不是相对清单目录）；清单顶层为 {'files_root':..., 'entries':[...]}",
+            "file_variants": extensions, "entry_examples": examples,
             "entries": len(entries), "by_kind": kinds, "bytes": total,
             "sites": sorted({e["site"] for e in entries if e.get("site")}),
             "references": [{k: e.get(k) for k in ("id", "source_url", "failure_date", "site")}
@@ -129,9 +153,14 @@ def write_spec(run_dir: Path, spec: dict) -> Path:
 
 def load_spec(run_dir: Path) -> dict | None:
     try:
-        return json.loads((run_dir / "stage-09" / SPEC_FILE).read_text(encoding="utf-8"))
+        spec = json.loads((run_dir / "stage-09" / SPEC_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    # real_data 是宿主对清单的摘要（非模型决策），按清单现状刷新，旧规格也能拿到路径规则
+    if isinstance(spec, dict) and isinstance(spec.get("real_data"), list):
+        spec["real_data"] = [manifest_summary(Path(d["root"])) or d if isinstance(d, dict) and d.get("root") else d
+                             for d in spec["real_data"]]
+    return spec
 
 
 def primary_direction(run_dir: Path, fallback: str) -> str:

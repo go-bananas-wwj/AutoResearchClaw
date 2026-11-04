@@ -59,3 +59,17 @@ def test_spec_roundtrip_and_direction_lookup(tmp_path):
     write_spec(tmp_path, spec)
     assert primary_direction(tmp_path, 'maximize') == 'minimize'
     assert primary_direction(tmp_path / 'missing', 'maximize') == 'maximize'
+
+
+def test_manifest_summary_tells_code_how_to_find_files(tmp_path):
+    import json as _json
+    from researchclaw.pipeline.experiment_spec import manifest_summary
+    run = tmp_path / "runs" / "rc-x"
+    run.mkdir(parents=True)
+    entries = [{"id": f"a/{n}", "kind": "insar_product", "path": f"shared/p/S1_1_IW2_ABCD_{n}.tif", "bytes": 1}
+               for n in ("wrapped_phase", "corr")] * 2
+    (run / "data_manifest.json").write_text(_json.dumps({"files_root": str(tmp_path), "entries": entries}))
+    s = manifest_summary(run)
+    assert s["files_root"] == str(tmp_path) and "files_root" in s["path_rule"]
+    assert s["file_variants"]["insar_product"] == {"wrapped_phase.tif": 2, "corr.tif": 2}
+    assert len(s["entry_examples"]["insar_product"]) == 2

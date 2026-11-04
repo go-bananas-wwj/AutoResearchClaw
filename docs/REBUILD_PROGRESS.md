@@ -45,3 +45,7 @@ P2 实验树已接入；等待真实数据下载完成后用真实项目跑通�
 ### 2026-11-04 阶段 10 修复预算按进展计
 - 依赖检测修复后代码实际运行。验收修复 2 次均有进展：失败依次推进 M2 相干性 → M6/M7 强度 → M10 oracle 覆盖率 1.0 超出 [0.85,0.95]。但固定 `max_code_repairs=2` 在模型仍在推进时就终止阶段。
 - 修复：`execution_contract.failure_signature`（最后一帧函数 + 异常行，不含行号）。失败签名变化即进展，不计入同一失败次数；同一签名连续 `max_code_repairs` 次才停止，总次数封顶 `max_code_repairs_total=8`。验收标准不变。
+
+### 2026-11-04 真实数据契约缺路径规则
+- 进展修复预算生效：方法断言 M1–M10 全部通过，进入 RC_VALIDATION dry-run。主指标报 not computable："wrapped phase / coherence / baseline unavailable"。原因是清单条目 path 相对顶层 `files_root`（共享库），而模型只拿到计数摘要、从未见清单结构，于是按清单目录解析，找不到任何文件。
+- 修复：`manifest_summary` 增加 `files_root`、`path_rule`、按文件类型（扩展名 + 文件名小写末段，如 `wrapped_phase.tif`）计数的 `file_variants`，并给每类一个 `entry_examples`；`load_spec` 按清单现状刷新 real_data（宿主摘要，非模型决策）；规划提示词同步写明路径规则。
