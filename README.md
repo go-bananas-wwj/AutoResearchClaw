@@ -1,3 +1,13 @@
+## About this personal fork
+
+[中文说明](README.zh-CN.md) · [Upstream project](https://github.com/aiming-lab/AutoResearchClaw) · [Docker setup branch](https://github.com/go-bananas-wwj/AutoResearchClaw/tree/docker-setup)
+
+This is my personal fork of AutoResearchClaw. My Docker setup work is kept on the separate `docker-setup` branch; the default `main` branch retains the upstream research pipeline. Features, benchmark claims, papers and authorship in the original README below belong to the upstream project unless a fork-specific change is explicitly identified.
+
+For the container configuration, start with the Docker branch and follow its files and configuration requirements. Model-provider credentials and optional model/data assets are configured separately. This note does not claim the Docker work is merged into `main` or that it changes the research method.
+
+---
+
 <p align="center">
   <img src="image/logo.png" width="700" alt="AutoResearchClaw Logo">
 </p>
