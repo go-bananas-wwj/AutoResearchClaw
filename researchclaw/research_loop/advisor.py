@@ -85,8 +85,10 @@ def review_round(llm: Any, run_dir: Path, payload: dict[str, Any], *, final_roun
     pool = candidate_pool(run_dir)
     payload = {**payload, "candidate_pool": pool, "final_round": final_round}
     errors: list[str] = []
+    last = None  # 上次未通过的回复：重试时让模型在它上面修正，而不是整份重写
     for _ in range(attempts):
-        reply = ask_json(llm, SYSTEM, {**payload, "previous_errors": errors}, max_tokens=max_tokens)
+        reply = ask_json(llm, SYSTEM, {**payload, "previous_errors": errors, "previous_reply": last}, max_tokens=max_tokens)
+        last = reply
         errors = [reply["_error"]] if "_error" in reply else validate(
             reply, final_round=final_round, pool=pool, run_dir=run_dir, artifacts=artifacts)
         if not errors:

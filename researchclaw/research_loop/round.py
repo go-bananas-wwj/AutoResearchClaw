@@ -175,9 +175,11 @@ class Round:
                    "user_notes": _user_notes(self.run_dir, self.n), "best": self.tree.best(),
                    "artifact_paths": self._artifact_paths(), "code": _files_overview(files)}
         errors: list[str] = []
+        last = None  # 上次未通过的回复：重试时在它上面修正，而不是整份重写
         for _ in range(3):
-            reply = ask_json(self.llm, PLAN_SYSTEM, {**payload, "previous_errors": errors},
+            reply = ask_json(self.llm, PLAN_SYSTEM, {**payload, "previous_errors": errors, "previous_reply": last},
                              max_tokens=self.cfg.student_max_tokens)
+            last = reply
             errors = [reply["_error"]] if "_error" in reply else [
                 f"缺少 {k}" for k in ("hypothesis", "variable_changed", "implementation_instruction", "decision_rule")
                 if not str(reply.get(k) or "").strip()]
@@ -364,9 +366,11 @@ class Round:
                    "artifact_paths": self._artifact_paths() + [f"{self.rel}/metrics.json", f"{self.rel}/run_log.txt",
                                                                f"{self.rel}/plan.md"]}
         errors: list[str] = []
+        last = None  # 上次未通过的回复：重试时在它上面修正，而不是整份重写
         for _ in range(3):
-            reply = ask_json(self.llm, REPORT_SYSTEM, {**payload, "previous_errors": errors},
+            reply = ask_json(self.llm, REPORT_SYSTEM, {**payload, "previous_errors": errors, "previous_reply": last},
                              max_tokens=self.cfg.student_max_tokens)
+            last = reply
             errors = [reply["_error"]] if "_error" in reply else [
                 f"缺少 {k}" for k in ("summary", "hypothesis_status", "gap_to_threshold") if not reply.get(k)]
             if "_error" not in reply:
