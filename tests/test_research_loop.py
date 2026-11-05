@@ -56,6 +56,11 @@ def test_charter_validation():
     assert any(KEY in e for e in errors) and any('baselines' in e for e in errors) and any('max_rounds' in e for e in errors)
 
 
+def test_charter_accepts_prefixed_metric_key():
+    alias = {**GOOD, 'success_criteria': [{**GOOD['success_criteria'][0], 'metric': f'metrics/{KEY}'}]}
+    assert charter.validate(alias, metric_key=KEY, direction='minimize', max_rounds=6) == []
+
+
 def test_charter_inherits_brief_and_is_reused(tmp_path):
     run, _ = _run(tmp_path)
     llm = FakeLLM([{**GOOD, 'scientific_question': '模型想改题目'}])

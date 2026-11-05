@@ -36,15 +36,25 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
+def metric_name(value: Any) -> str:
+    """结果文件里同一指标常以 metrics/<键> 或 primary_metric/<键> 出现；比较时去掉这些前缀。"""
+    name = str(value or "").strip()
+    for prefix in ("metrics/", "primary_metric/"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    return name
+
+
 def validate(charter: dict[str, Any], *, metric_key: str, direction: str, max_rounds: int) -> list[str]:
     errors = []
     crit = charter.get("success_criteria")
     if not isinstance(crit, list) or not crit:
         errors.append("success_criteria 为空")
     else:
-        primary = [c for c in crit if isinstance(c, dict) and c.get("metric") == metric_key]
+        primary = [c for c in crit if isinstance(c, dict) and metric_name(c.get("metric")) == metric_key]
         if not primary:
-            errors.append(f"success_criteria 缺少主指标 {metric_key!r} 的条件")
+            got = [c.get("metric") for c in crit if isinstance(c, dict)]
+            errors.append(f"success_criteria 缺少主指标条件：须有一条 metric 字段精确写成 {metric_key!r}（当前为 {got}）")
         for c in primary:
             if c.get("direction") not in (None, direction):
                 errors.append(f"主指标方向必须为 {direction}")
@@ -88,12 +98,18 @@ def draft(run_dir: Path, config: Any, llm: Any, *, context: dict[str, Any], atte
     payload = {"research_brief": inherited, "primary_metric": {"key": metric_key, "direction": direction},
                "venue": venue, "max_rounds_limit": loop_cfg.max_rounds, "context": context}
     errors: list[str] = []
+    attempts_log = []
     for _ in range(attempts):
         reply = ask_json(llm, SYSTEM, {**payload, "previous_errors": errors},
                          max_tokens=loop_cfg.student_max_tokens)
         errors = [reply["_error"]] if "_error" in reply else validate(
             reply, metric_key=metric_key, direction=direction, max_rounds=loop_cfg.max_rounds)
+        attempts_log.append({"reply": reply, "errors": errors})
+        write_json(loop_dir(run_dir) / "charter_attempts.json", attempts_log)  # 失败可查：每次回复与校验结果
         if not errors:
+            for c in reply.get("success_criteria") or []:
+                if isinstance(c, dict) and metric_name(c.get("metric")) == metric_key:
+                    c["metric"] = metric_key
             # 任务书字段放在模型回复之后：来自用户选定的创新点，模型不能改写
             charter = {**reply, **{k: v for k, v in inherited.items() if v},
                        "primary_metric": {"key": metric_key, "direction": direction},
