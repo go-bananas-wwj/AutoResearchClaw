@@ -60,6 +60,11 @@ experiment:
     timeout_sec: 1800
     max_retries: 1
     workspace_cleanup: false   # 保留工具调用、失败代码与调试证据
+  research_loop:                 # v2：阶段 13 改为"学生汇报—AI 导师审阅"多轮迭代（docs/AUTORESEARCH_V2_CN.md）
+    enabled: true
+    venue: grsl                  # 目标期刊：IEEE GRSL（≤5 页，3–5 张图，英文）
+    max_rounds: 6
+    max_fix_attempts: 3
   execution_check:
     enabled: true
     max_plan_repairs: 2

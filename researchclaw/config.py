@@ -536,6 +536,19 @@ class ExecutionCheckConfig:
 
 
 @dataclass(frozen=True)
+class ResearchLoopConfig:
+    """v2 研究循环（docs/AUTORESEARCH_V2_CN.md）：阶段 13 改为"学生汇报—导师审阅"的多轮迭代。"""
+
+    enabled: bool = False
+    venue: str = "grsl"  # 目标期刊，决定页数、图数、语言与模板
+    max_rounds: int = 6  # 立项书可以更少，不能更多
+    max_fix_attempts: int = 3  # 每轮内关卡/正式运行失败后的修复次数
+    student_max_tokens: int = 16384
+    advisor_max_tokens: int = 16384
+    figures_timeout_sec: int = 300
+
+
+@dataclass(frozen=True)
 class BenchmarkAgentConfig:
     """Configuration for the BenchmarkAgent multi-agent system."""
 
@@ -645,6 +658,7 @@ class ExperimentConfig:
     code_agent: CodeAgentConfig = field(default_factory=CodeAgentConfig)
     opencode: OpenCodeConfig = field(default_factory=OpenCodeConfig)
     execution_check: ExecutionCheckConfig = field(default_factory=ExecutionCheckConfig)
+    research_loop: ResearchLoopConfig = field(default_factory=ResearchLoopConfig)
     benchmark_agent: BenchmarkAgentConfig = field(default_factory=BenchmarkAgentConfig)
     figure_agent: FigureAgentConfig = field(default_factory=FigureAgentConfig)
     repair: ExperimentRepairConfig = field(default_factory=ExperimentRepairConfig)
@@ -1512,6 +1526,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
         stat_agent=_parse_stat_agent_config(data.get("stat_agent") or {}),
         code_agent=_parse_code_agent_config(data.get("code_agent") or {}),
         opencode=_parse_opencode_config(data.get("opencode") or {}),
+        research_loop=_parse_research_loop(data.get("research_loop") or {}),
         execution_check=ExecutionCheckConfig(
             enabled=bool((data.get("execution_check") or {}).get("enabled", False)),
             max_plan_repairs=max(0, _safe_int((data.get("execution_check") or {}).get("max_plan_repairs"), 2)),
@@ -1595,6 +1610,19 @@ def _parse_cli_agent_config(data: dict[str, Any]) -> CliAgentConfig:
         max_budget_usd=_safe_float(data.get("max_budget_usd"), 5.0),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
         extra_args=tuple(data.get("extra_args") or ()),
+    )
+
+
+def _parse_research_loop(data: dict[str, Any]) -> ResearchLoopConfig:
+    d = ResearchLoopConfig()
+    return ResearchLoopConfig(
+        enabled=bool(data.get("enabled", d.enabled)),
+        venue=str(data.get("venue") or d.venue),
+        max_rounds=max(1, _safe_int(data.get("max_rounds"), d.max_rounds)),
+        max_fix_attempts=max(0, _safe_int(data.get("max_fix_attempts"), d.max_fix_attempts)),
+        student_max_tokens=max(1024, _safe_int(data.get("student_max_tokens"), d.student_max_tokens)),
+        advisor_max_tokens=max(1024, _safe_int(data.get("advisor_max_tokens"), d.advisor_max_tokens)),
+        figures_timeout_sec=max(30, _safe_int(data.get("figures_timeout_sec"), d.figures_timeout_sec)),
     )
 
 

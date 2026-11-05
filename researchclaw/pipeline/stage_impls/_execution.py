@@ -45,6 +45,24 @@ _LOSS_LINE_RE = re.compile(
 )
 
 
+def load_project_files(root: Path) -> dict[str, str]:
+    """递归读取实验项目的文本文件（键为相对路径）。
+
+    多模块项目（methods/、checks/ 子包）只读顶层文件时，阶段 13 候选缺子包，
+    `import methods` 被依赖检测当成第三方包去 pip 安装，所有候选都在沙箱 Phase 0 失败。"""
+    from researchclaw.pipeline.execution_contract import is_code_path
+    files: dict[str, str] = {}
+    for src_file in sorted(root.rglob("*")):
+        rel = src_file.relative_to(root)
+        if src_file.is_file() and is_code_path(rel.parts) and src_file.suffix in (
+            ".py", ".txt", ".yaml", ".yml", ".json", ".cfg", ".ini", ".sh",
+        ) and src_file.stat().st_size <= 1_000_000:
+            try:
+                files[rel.as_posix()] = src_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                pass  # skip binary files
+    return files
+
 def _build_experiment_receipt(
     *,
     code_text: str,
@@ -734,6 +752,23 @@ def _execute_iterative_refine(
 ) -> StageResult:
     from researchclaw.experiment.factory import create_sandbox
 
+    if config.experiment.research_loop.enabled:
+        # v2 研究循环：学生汇报—导师审阅的多轮迭代替代线性改进（docs/AUTORESEARCH_V2_CN.md）
+        from researchclaw.research_loop import run_research_loop
+        try:
+            outcome = run_research_loop(run_dir, stage_dir, config, llm, hitl=getattr(adapters, "hitl", None))
+        except (ValueError, RuntimeError, OSError) as exc:
+            return StageResult(stage=Stage.ITERATIVE_REFINE, status=StageStatus.FAILED,
+                               artifacts=(), evidence_refs=(), error=f"研究循环未完成：{exc}")
+        if outcome["status"] != "write":
+            # 换方向/停止/未批准都如实结束本阶段，不进入写作
+            return StageResult(stage=Stage.ITERATIVE_REFINE, status=StageStatus.FAILED,
+                               artifacts=("refinement_log.json",), evidence_refs=("stage-13/refinement_log.json",),
+                               error=f"研究循环结束于 {outcome['status']}：{outcome.get('reason', '')}")
+        return StageResult(stage=Stage.ITERATIVE_REFINE, status=StageStatus.DONE,
+                           artifacts=("refinement_log.json", "experiment_final/"),
+                           evidence_refs=("stage-13/refinement_log.json", "stage-13/experiment_final/"))
+
     if config.experiment.execution_check.enabled and config.experiment.opencode.required:
         from researchclaw.pipeline.execution_contract import refine_with_opencode, ExecutionContractError
         try:
@@ -1044,14 +1079,7 @@ def _execute_iterative_refine(
     if exp_dir_text and Path(exp_dir_text).is_dir():
         # BUG-EX-02: Load ALL text files (not just .py) — requirements.txt,
         # setup.py, config files are needed for Docker sandbox phases.
-        for src_file in sorted(Path(exp_dir_text).iterdir()):
-            if src_file.is_file() and src_file.suffix in (
-                ".py", ".txt", ".yaml", ".yml", ".json", ".cfg", ".ini", ".sh",
-            ):
-                try:
-                    best_files[src_file.name] = src_file.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    pass  # skip binary files
+        best_files = load_project_files(Path(exp_dir_text))
     if not best_files:
         # Backward compat: single experiment.py
         original_code = _read_prior_artifact(run_dir, "experiment.py") or ""

@@ -253,6 +253,7 @@ const ProjectHome = {
     if (!body) return;
     body.innerHTML = `
       <div id="proj-banner-slot">${this._bannerHtml()}</div>
+      <section class="card proj-loop" id="proj-loop" data-no-i18n hidden></section>
       <section class="card proj-implementation" id="proj-implementation" data-no-i18n>
         <div id="proj-impl-live"><p class="proj-empty">正在读取最新实施记录…</p></div>
         <div id="proj-impl-body"></div><div id="proj-impl-file" hidden></div>
@@ -265,6 +266,7 @@ const ProjectHome = {
         <div class="card"><h2>Paper</h2><div id="proj-paper-card"><p style="color:var(--text-muted)">Loading...</p></div></div>
       </div>
       ${this._activityHtml()}`;
+    this._loadResearchLoop();
     this._renderImplementation();
     this._renderImplementationFile();
     this._loadImplementation();
@@ -333,6 +335,84 @@ const ProjectHome = {
     if (phase && phaseNames[phase[1]]) return phaseNames[phase[1]];
     if (title.includes('CodeAgent.generate()')) return '开始实现已确认的方法';
     return this._trunc(title, 100);
+  },
+
+  /* ---- v2 研究日志：立项书、每轮计划/汇报/导师意见/图、用户意见 ---- */
+  _loopMd(text) {
+    const lines = String(text || '').split('\n').filter(l => !/^\s*<\/?(details|summary)/.test(l) && !/^!\[/.test(l));
+    const inline = t => this._esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    let html = '', table = [];
+    const flush = () => {
+      if (!table.length) return;
+      const rows = table.filter(r => !/^\|[\s|:-]+\|$/.test(r)).map(r => r.slice(1, -1).split('|').map(c => inline(c.trim())));
+      html += '<table class="proj-loop-table">' + rows.map((r, i) => '<tr>' + r.map(c => i ? `<td>${c}</td>` : `<th>${c}</th>`).join('') + '</tr>').join('') + '</table>';
+      table = [];
+    };
+    for (const line of lines) {
+      if (/^\|.*\|\s*$/.test(line.trim())) { table.push(line.trim()); continue; }
+      flush();
+      const h = line.match(/^(#{1,3})\s+(.*)/);
+      if (h) html += `<h${h[1].length + 2}>${inline(h[2])}</h${h[1].length + 2}>`;
+      else if (/^\s*[-*]\s+/.test(line)) html += `<div class="proj-loop-li">• ${inline(line.replace(/^\s*[-*]\s+/, ''))}</div>`;
+      else if (/^>\s?/.test(line)) html += `<div class="proj-loop-warn">${inline(line.replace(/^>\s?/, ''))}</div>`;
+      else if (line.trim()) html += `<p>${inline(line)}</p>`;
+    }
+    flush();
+    return html;
+  },
+
+  async _loadResearchLoop() {
+    const el = document.getElementById('proj-loop');
+    if (!this.runId || !el) return;
+    const runId = this.runId;
+    try {
+      const data = await API.researchLoop(runId);
+      if (this.runId !== runId || !document.getElementById('proj-loop')) return;
+      if (!data.enabled) { el.hidden = true; return; }
+      if (JSON.stringify(data) === JSON.stringify(this._loopData) && el.dataset.loaded === 'true') return;
+      const openRounds = new Set([...el.querySelectorAll('details[data-round][open]')].map(d => d.dataset.round));
+      this._loopData = data;
+      el.hidden = false;
+      el.dataset.loaded = 'true';
+      const st = data.state || {};
+      const badge = {continue: '继续', write: '开始写作', pivot: '换方向', stop: '停止'};
+      const results = (data.results || []).length ? `<table class="proj-loop-table"><tr><th>轮</th><th>假设</th><th>主指标</th><th>此前最佳</th><th>改进</th><th>决策</th></tr>${
+        data.results.map(r => `<tr><td>${this._esc(r.round)}</td><td>${this._esc(r.hypothesis)}</td><td>${this._esc(r.primary_metric)}</td><td>${this._esc(r.best_before)}</td><td>${r.improved === 'True' ? '是' : '否'}</td><td>${this._esc(badge[r.decision] || r.decision)}</td></tr>`).join('')}</table>` : '<p class="proj-empty">还没有完成的轮次。</p>';
+      const rounds = (data.rounds || []).slice().reverse().map(r => {
+        const last = r.round === Math.max(...data.rounds.map(x => x.round));
+        const figs = (r.figures || []).map(f => `<figure class="proj-loop-fig"><img loading="lazy" alt="${this._esc(f)}" src="/api/runs/${encodeURIComponent(runId)}/research-loop/figure?path=${encodeURIComponent(f)}"><figcaption>${this._esc(f.split('/').pop())}</figcaption></figure>`).join('');
+        return `<details class="proj-loop-round" data-round="${r.round}" ${openRounds.has(String(r.round)) || (last && !openRounds.size) ? 'open' : ''}>
+          <summary>第 ${r.round} 轮 ${r.decision ? `· 导师决策：${this._esc(badge[r.decision] || r.decision)}` : '· 进行中'}${r.failure ? ' · 运行未通过' : ''}</summary>
+          ${(r.user_notes || []).map(n => `<div class="proj-loop-note">你的意见：${this._esc(n)}</div>`).join('')}
+          ${r.plan ? `<div class="proj-loop-part">${this._loopMd(r.plan)}</div>` : ''}
+          ${r.report ? `<div class="proj-loop-part">${this._loopMd(r.report)}</div>` : ''}
+          ${figs ? `<div class="proj-loop-figs">${figs}</div>` : ''}
+          ${r.review ? `<div class="proj-loop-part proj-loop-review">${this._loopMd(r.review)}</div>` : ''}
+        </details>`;
+      }).join('');
+      el.innerHTML = `<div class="proj-section-head"><h2>研究日志</h2><span class="proj-caption">状态：${this._esc(st.status || '未开始')}${st.round ? ` · 第 ${this._esc(st.round)} 轮` : ''}</span></div>
+        ${data.charter ? `<details class="proj-loop-round"><summary>立项书</summary><div class="proj-loop-part">${this._loopMd(data.charter)}</div></details>` : ''}
+        ${results}${rounds}
+        <div class="proj-loop-compose"><textarea id="proj-loop-note" rows="2" placeholder="写给学生和 AI 导师的意见（下一次计划与审阅会读取，优先于 AI 导师）"></textarea>
+        <button type="button" class="proj-btn" onclick="ProjectHome._sendLoopNote()">提交意见</button><span id="proj-loop-note-msg" class="proj-caption"></span></div>`;
+    } catch (error) {
+      if (this.runId === runId) el.hidden = true;
+    }
+  },
+
+  async _sendLoopNote() {
+    const box = document.getElementById('proj-loop-note');
+    const msg = document.getElementById('proj-loop-note-msg');
+    if (!box || !box.value.trim()) return;
+    try {
+      const res = await API.researchLoopNote(this.runId, box.value.trim());
+      box.value = '';
+      if (msg) msg.textContent = '已记录：' + res.path;
+      this._loopData = null;
+      this._loadResearchLoop();
+    } catch (error) {
+      if (msg) msg.textContent = '提交失败：' + error.message;
+    }
   },
 
   async _loadWorkspace() {
@@ -628,6 +708,7 @@ const ProjectHome = {
     this._updateHead();
     if (this.tab === 'overview') {
       this._loadStages();
+      this._loadResearchLoop();
       this._loadWorkspace();
       this._loadMetrics();
       this._loadPaperCard();

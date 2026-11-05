@@ -1159,6 +1159,23 @@ def _execute_research_decision(
         if agent_decision is not None:
             return agent_decision
 
+    if config.experiment.research_loop.enabled:
+        # v2：是否继续实验由研究循环的导师决策（阶段 13）决定，这里只把它记成阶段 15 的产物，
+        # 不再用 REFINE/PIVOT 计数回到阶段 13（旧逻辑曾在空分析与陈旧教训上两次判 REFINE）
+        from researchclaw.research_loop.common import loop_dir, read_json as _rj, state as _loop_state
+        _st = _loop_state(run_dir)
+        _rounds = sorted((loop_dir(run_dir) / "rounds").glob("round-*/review.md"))
+        decision_md = (f"## Decision\nPROCEED\n\n研究循环结果：{_st.get('status')}（第 {_st.get('round')} 轮）\n\n"
+                       + (_rounds[-1].read_text(encoding="utf-8") if _rounds else ""))
+        (stage_dir / "decision.md").write_text(decision_md, encoding="utf-8")
+        (stage_dir / "decision_structured.json").write_text(json.dumps(
+            {"decision": "proceed", "source": "research_loop", "loop_state": _st,
+             "review": _rj(_rounds[-1].with_suffix(".json")) if _rounds else None, "generated": _utcnow_iso()},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        return StageResult(stage=Stage.RESEARCH_DECISION, status=StageStatus.DONE,
+                           artifacts=("decision.md", "decision_structured.json"),
+                           evidence_refs=("stage-15/decision.md",), decision="proceed")
+
     analysis = _read_prior_artifact(run_dir, "analysis.md") or ""
 
     # P6: Detect degenerate REFINE cycles — inject warning if metrics stagnate

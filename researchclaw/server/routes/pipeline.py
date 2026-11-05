@@ -456,6 +456,45 @@ def research_workspace(run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, **workspace_evidence(root)}
 
 
+@router.get("/runs/{run_id}/research-loop")
+def research_loop_journal(run_id: str) -> dict[str, Any]:
+    """v2 研究日志：立项书、每轮计划/汇报/导师意见/图、results.tsv。"""
+    root = _validated_run_dir(run_id)
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    from researchclaw.research_loop.journal import journal
+    return {"run_id": run_id, **journal(root)}
+
+
+@router.get("/runs/{run_id}/research-loop/figure")
+def research_loop_figure(run_id: str, path: str) -> Any:
+    from fastapi.responses import FileResponse
+    from researchclaw.research_loop.journal import figure_path
+    try:
+        return FileResponse(figure_path(_validated_run_dir(run_id), path), media_type="image/png")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="图不存在") from None
+
+
+class ResearchNoteRequest(BaseModel):
+    text: str
+
+
+@router.post("/runs/{run_id}/research-loop/note")
+def research_loop_note(run_id: str, req: ResearchNoteRequest) -> dict[str, Any]:
+    """用户意见：写入当前/下一轮，学生计划与导师审阅都会读取，优先级高于 AI 导师。"""
+    root = _validated_run_dir(run_id)
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    from researchclaw.research_loop.journal import add_user_note
+    try:
+        return {"run_id": run_id, "path": add_user_note(root, req.text)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
 @router.get("/runs/{run_id}/implementation")
 def implementation_status(run_id: str) -> dict[str, Any]:
     root = _validated_run_dir(run_id)

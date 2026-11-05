@@ -1732,10 +1732,8 @@ def _multi_perspective_generate(
         try:
             system = _render(role_prompts["system"], variables)
             user = _render(role_prompts["user"], variables)
-            resp = llm.chat(
-                [{"role": "user", "content": user}],
-                system=system,
-            )
+            # 截断按次翻倍重试；裸 llm.chat 用默认上限，推理开启时三个视角全部截断（真实运行 0/3）
+            resp = _chat_with_prompt(llm, system, user)
             results[role_name] = resp.content
             (perspectives_dir / f"{role_name}.md").write_text(
                 resp.content, encoding="utf-8"
@@ -1745,6 +1743,9 @@ def _multi_perspective_generate(
             logger.warning("Debate perspective '%s' failed: %s", role_name, exc)
     if len(results) < 2:
         logger.error("Multi-perspective debate: only %d/%d roles succeeded", len(results), len(roles))
+    if roles and not results:
+        # 没有任何视角时综合只能"分析空气"，下游决策会基于空分析与陈旧教训——如实失败
+        raise RuntimeError(f"多视角分析全部失败（0/{len(roles)}），不在空输入上综合")
     return results
 
 
@@ -1760,10 +1761,7 @@ def _synthesize_perspectives(
         parts.append(f"### Perspective: {role_name}\n{text}")
     combined = "\n\n---\n\n".join(parts)
     sp = prompts.sub_prompt(sub_prompt_name, perspectives=combined)
-    resp = llm.chat(
-        [{"role": "user", "content": sp.user}],
-        system=sp.system,
-    )
+    resp = _chat_with_prompt(llm, sp.system, sp.user)
     return resp.content
 
 

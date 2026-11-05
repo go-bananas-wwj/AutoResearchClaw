@@ -1092,3 +1092,22 @@ button, a { touch-action: manipulation; }
   .proj-agent-event { gap:6px; }
   .proj-agent-event-title { gap:8px; }
 }
+
+/* v2 研究日志 */
+.proj-loop h2 { margin: 0; }
+.proj-loop-round { border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.proj-loop-round > summary { cursor: pointer; font-weight: 600; }
+.proj-loop-part { margin: 8px 0; line-height: 1.6; overflow-x: auto; }
+.proj-loop-part h3, .proj-loop-part h4, .proj-loop-part h5 { margin: 10px 0 4px; }
+.proj-loop-review { border-left: 3px solid var(--accent, #0072B2); padding-left: 10px; }
+.proj-loop-table { border-collapse: collapse; font-size: 13px; margin: 6px 0; width: 100%; }
+.proj-loop-table th, .proj-loop-table td { border: 1px solid var(--border, #ddd); padding: 3px 6px; text-align: left; vertical-align: top; }
+.proj-loop-li { margin: 2px 0 2px 8px; }
+.proj-loop-warn { background: rgba(213, 94, 0, .08); border-left: 3px solid #D55E00; padding: 4px 8px; margin: 4px 0; }
+.proj-loop-note { background: rgba(0, 158, 115, .08); border-left: 3px solid #009E73; padding: 4px 8px; margin: 4px 0; }
+.proj-loop-figs { display: flex; flex-wrap: wrap; gap: 10px; }
+.proj-loop-fig { margin: 0; max-width: 360px; }
+.proj-loop-fig img { width: 100%; border: 1px solid var(--border, #ddd); border-radius: 4px; background: #fff; }
+.proj-loop-fig figcaption { font-size: 12px; color: var(--text-muted, #666); }
+.proj-loop-compose { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; flex-wrap: wrap; }
+.proj-loop-compose textarea { flex: 1 1 280px; min-width: 0; }
