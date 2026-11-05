@@ -52,6 +52,8 @@ FIGURE_SYSTEM = """你为期刊论文编写画图脚本 paper_figures.py（Pytho
 要求：import matplotlib; matplotlib.use("Agg")；plt.style.use("rcstyle.mplstyle")；读取当前目录的 results.json；
 对每个 kind=data 的图，按其 plot 描述画出并保存为 figures/<id>.pdf（单栏宽 3.5 in，通栏 7.16 in，高度按内容）；
 坐标轴必须有英文文字标签与单位（set_xlabel/set_ylabel），图例清楚，不要标题（图注在论文里），不画装饰；
+刻度标签不得重叠：每个坐标轴最多约 8 个刻度（用 matplotlib.ticker.MaxNLocator(nbins=6, integer=...) 或手动挑选），
+类别轴标签过长时换行或旋转；多子图用 (a)(b) 标注并保证在单栏宽度下文字可读（字号不小于 6 pt）；
 只使用 results.json 里真实存在的数据，缺数据就打印原因并跳过该图（不得编造或插值造数据）；最后打印 RC_FIGURES_OK。
 只输出完整的 Python 源码，不要解释，不要 Markdown 围栏。"""
 
@@ -528,6 +530,8 @@ class PaperWriter:
         else:
             inner = f"\\includegraphics[width={width}]{{figures/{f['id']}.pdf}}"
         caption = f.get("caption_zh") if chinese and f.get("caption_zh") else f.get("caption", "")
+        # 编号由 LaTeX 生成；模型写进图注的 "Fig. 2." / "图 2：" 前缀去掉，避免出现 "Fig. 2. Fig. 2."
+        caption = re.sub(r"^\s*(?:Fig(?:ure)?\.?|图)\s*\d+\s*[.:：]?\s*", "", str(caption))
         return (f"\\begin{{figure{star}}}[t]\n\\centering\n{inner}\n\\caption{{{_tex_escape(caption)}}}\n"
                 f"\\label{{fig:{f['id']}}}\n\\end{{figure{star}}}\n")
 
