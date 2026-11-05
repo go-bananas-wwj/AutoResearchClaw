@@ -595,6 +595,10 @@ _STAGE_EXECUTORS: dict[Stage, Callable[..., StageResult]] = {
 }
 
 
+_V2_WRITER_STAGES = frozenset({Stage.PAPER_DRAFT, Stage.PEER_REVIEW, Stage.PAPER_REVISION, Stage.QUALITY_GATE,
+                               Stage.KNOWLEDGE_ARCHIVE})
+
+
 def execute_stage(
     stage: Stage,
     *,
@@ -605,6 +609,16 @@ def execute_stage(
     auto_approve_gates: bool = False,
 ) -> StageResult:
     """Execute one pipeline stage, validate outputs, and apply gate logic."""
+
+    if config.experiment.research_loop.enabled and stage in _V2_WRITER_STAGES:
+        # v2：初稿、模拟评审、修订、质量门由阶段 16 的写作器完成（含独立审稿与主张校验），不再重复，也不在这些阶段暂停
+        _dir = run_dir / f"stage-{int(stage):02d}"
+        _dir.mkdir(parents=True, exist_ok=True)
+        (_dir / "skipped.md").write_text("由 v2 写作器（research_loop/paper）在阶段 16 完成。\n", encoding="utf-8")
+        result = StageResult(stage=stage, status=StageStatus.DONE, artifacts=("skipped.md",),
+                             evidence_refs=(f"stage-{int(stage):02d}/skipped.md",))
+        _write_stage_meta(_dir, stage, run_id, result)
+        return result
 
     # --- HITL pre-stage hook ---
     hitl_result = _run_hitl_pre_stage(stage, run_dir, adapters, config=config)

@@ -135,9 +135,17 @@ def run_research_loop(run_dir: Path, stage_dir: Path, config: Any, llm: Any, *, 
         else:
             break
     if st.get("status") in ("write", "stop", "pivot") and previous and previous.get("decision") == st["status"]:
-        outcome = LoopOutcome(status=st["status"], reason=st.get("reason", ""), round=start - 1, review=previous)
-        _finalize(run_dir, stage_dir, tree, outcome)
-        return outcome
+        notes = sorted(round_dir(run_dir, start).glob("advisor_note*.md")) if start <= max_rounds else []
+        if st["status"] == "write" and notes:
+            # 写作决策之后又有新意见（审稿人要求补实验或用户意见）：重开循环，从下一轮继续
+            emit("research", f"收到新的意见，研究循环从第 {start} 轮继续", "；".join(p.name for p in notes),
+                 run_dir=run_dir, phase="research", status="running")
+            previous = {**previous, "decision": "continue", "base": "best",
+                        "next_task": "\n".join(p.read_text(encoding="utf-8") for p in notes)}
+        else:
+            outcome = LoopOutcome(status=st["status"], reason=st.get("reason", ""), round=start - 1, review=previous)
+            _finalize(run_dir, stage_dir, tree, outcome)
+            return outcome
 
     for n in range(start, max_rounds + 1):
         save_state(run_dir, status="running", round=n)

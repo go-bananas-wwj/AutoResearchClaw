@@ -1,0 +1,14 @@
+# 论文编译镜像（v2 写作：真实编译数页、检查 IEEEtran/ctex 是否能编）。
+# 由控制面经 docker socket 以兄弟容器运行（与实验沙箱相同的挂载路径翻译），只读输入、无网络。
+# Build: docker build -f docker/Dockerfile.latex -t researchclaw/latex:latest docker/
+FROM debian:bookworm-slim
+# slim 基础镜像没有 CA 证书，镜像源用 http（apt 仍校验软件包签名）
+ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|g; s|http://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-publishers \
+        texlive-science texlive-fonts-recommended texlive-pictures texlive-bibtex-extra \
+        texlive-xetex texlive-lang-chinese fonts-noto-cjk lmodern latexmk poppler-utils \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+WORKDIR /work

@@ -1624,6 +1624,15 @@ def _execute_export_publish(
     llm: LLMClient | None = None,
     prompts: PromptManager | None = None,
 ) -> StageResult:
+    if config.experiment.research_loop.enabled:
+        # v2：导出研究循环写作器的稿件（英文定稿 + 中文对照稿 + 图 + 文献），阶段 23 在此基础上做主张与引用校验
+        from researchclaw.research_loop.paper import export_paper
+        files = export_paper(run_dir, stage_dir)
+        if "paper.tex" not in files:
+            return StageResult(stage=Stage.EXPORT_PUBLISH, status=StageStatus.FAILED, artifacts=(),
+                               evidence_refs=(), error="研究循环写作器没有产出 paper.tex")
+        return StageResult(stage=Stage.EXPORT_PUBLISH, status=StageStatus.DONE, artifacts=tuple(files),
+                           evidence_refs=tuple(f"stage-22/{f}" for f in files))
     revised = _read_prior_artifact(run_dir, "paper_revised.md") or ""
 
     # --- Detect domain once for export-stage formatting decisions ---

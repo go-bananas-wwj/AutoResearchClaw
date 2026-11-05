@@ -1092,6 +1092,13 @@ def _package_deliverables(
     dest = run_dir / "deliverables"
     dest.mkdir(parents=True, exist_ok=True)
 
+    if config.experiment.research_loop.enabled:
+        # v2：论文由研究循环的写作器产出，阶段 22 已放入 deliverables；不再从旧 Markdown 重新生成 paper.tex
+        from researchclaw.research_loop.paper import export_paper, paper_dir
+        if (paper_dir(run_dir) / "paper.tex").is_file():
+            export_paper(run_dir, run_dir / "stage-22")
+        return dest
+
     packaged: list[str] = []
 
     # --- 0. Resolve effective conference template ---

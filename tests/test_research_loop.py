@@ -272,3 +272,16 @@ def test_journal_figures_and_user_notes(tmp_path):
     assert view['enabled'] and view['rounds'][0]['figures'] == ['research_loop/rounds/round-01/figures/crps.png']
     with pytest.raises(ValueError):
         jr.add_user_note(run, '  ')
+
+
+def test_new_note_after_write_reopens_loop(tmp_path, monkeypatch):
+    from researchclaw.research_loop.common import save_state
+    run, _ = _run(tmp_path)
+    ran = _patch_rounds(monkeypatch, ['write', 'write'])
+    stage = run / 'stage-13'
+    stage.mkdir()
+    assert loop.run_research_loop(run, stage, _config(), FakeLLM([]))['round'] == 1
+    (round_dir(run, 2) / 'advisor_note_review.md').write_text('审稿人：补负对照')
+    ran.clear()
+    out = loop.run_research_loop(run, stage, _config(), FakeLLM([]))
+    assert out['status'] == 'write' and out['round'] == 2 and ran == [(2, 'continue')]

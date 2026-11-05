@@ -144,6 +144,15 @@ def pull_run_from_overleaf(
 def maybe_sync_run(run_dir: Path, run_id: str, config: Any) -> None:
     """Pipeline 收尾钩子：尽力同步，绝不阻断流水线。"""
     try:
+        loop = getattr(getattr(config, "experiment", None), "research_loop", None)
+        if loop is not None and getattr(loop, "enabled", False):
+            # v2：英文定稿推 en/，中文对照稿推 zh/
+            for lang, name in (("en", "paper_en.tex"), ("zh", "paper_zh.tex")):
+                if (run_dir / "deliverables" / name).is_file():
+                    result = sync_run_to_overleaf(run_dir, run_id, config, language=lang, tex_name=name)
+                    if result.get("ok"):
+                        logger.info("Overleaf synced: %s", result["folder"])
+            return
         result = sync_run_to_overleaf(run_dir, run_id, config)
         if result.get("ok"):
             logger.info("Overleaf synced: %s", result["folder"])

@@ -62,6 +62,35 @@ def _execute_paper_outline(
     llm: LLMClient | None = None,
     prompts: PromptManager | None = None,
 ) -> StageResult:
+    if config.experiment.research_loop.enabled:
+        # v2：按目标期刊与论文方法论从研究循环写出英文稿（含图、编译、主张校验、独立审稿、中文对照稿）
+        from researchclaw.research_loop import run_research_loop
+        from researchclaw.research_loop.common import read_json as _rj, round_dir, save_state, state as _loop_state
+        from researchclaw.research_loop.paper import review_feedback_note, write_paper
+        try:
+            status = write_paper(run_dir, config, llm)
+            # 审稿人认为需要补实验：意见写进研究循环下一轮，重开循环做实验，再按新结果重写（最多一次）
+            if status.get("needs_experiments") and not _loop_state(run_dir).get("review_reopened"):
+                _next = len([r for r in (run_dir / "research_loop" / "rounds").glob("round-*")
+                             if _rj(r / "review.json") is not None and int(r.name.split("-")[1]) >= 1]) + 1
+                (round_dir(run_dir, _next) / "advisor_note_review.md").write_text(review_feedback_note(status), encoding="utf-8")
+                save_state(run_dir, review_reopened=True)
+                outcome = run_research_loop(run_dir, run_dir / "stage-13", config, llm, hitl=getattr(adapters, "hitl", None))
+                if outcome["status"] == "write":
+                    status = write_paper(run_dir, config, llm)
+        except (ValueError, RuntimeError, OSError) as exc:
+            return StageResult(stage=Stage.PAPER_OUTLINE, status=StageStatus.FAILED, artifacts=(),
+                               evidence_refs=(), error=f"写作未完成：{exc}")
+        (stage_dir / "paper_status.json").write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
+        if not status["ok"]:
+            review = (status.get("review") or {}).get("recommendation")
+            return StageResult(stage=Stage.PAPER_OUTLINE, status=StageStatus.FAILED, artifacts=("paper_status.json",),
+                               evidence_refs=("stage-16/paper_status.json",),
+                               error=(f"论文未达标：编译={status['compile_ok']} 页数={status['pages']}/{status['max_pages']} "
+                                      f"无出处主张={len(status['unsupported'])} 审稿={review} "
+                                      f"待补实验={len(status.get('needs_experiments') or [])}（稿件已保存在 research_loop/paper/）"))
+        return StageResult(stage=Stage.PAPER_OUTLINE, status=StageStatus.DONE, artifacts=("paper_status.json",),
+                           evidence_refs=("stage-16/paper_status.json",))
     analysis = _read_best_analysis(run_dir)
     decision = _read_prior_artifact(run_dir, "decision.md") or ""
     preamble = _build_context_preamble(

@@ -109,3 +109,15 @@ GRSL 写作（模板 + 方法论骨架 + 图表计划 + 编译数页）→ 主�
 - 接入：阶段 13 在 `experiment.research_loop.enabled` 时由研究循环接管（write 才进入写作，其余如实结束）；阶段 15 只记录循环决策。
 - 网页：项目总览顶部"研究日志"展示立项书、results.tsv、各轮计划/汇报/图/导师意见，可直接提交意见。API 为 `GET /api/runs/{id}/research-loop`、`GET …/research-loop/figure?path=`、`POST …/research-loop/note`。
 - 门控：Web 协同模式（`auto_approve=false`）下，立项书、开始写作、换方向三处暂停等用户；不批准时用户意见写入下一轮。
+
+### P2 GRSL 写作（2026-11-05 已实现）
+
+- `researchclaw/research_loop/paper.py`：
+  - 方法论大纲：一个核心贡献、OCAR 叙事、摘要五句；每条主张必须指向账本、文献或图。
+  - 论文图：模型编写 `paper_figures.py`，在沙箱里从最佳节点的结果画 PDF 图；示意图用 TikZ。
+  - 逐节写作与摘要。
+  - 检查：真实编译、页数（≤5）、证据账本主张校验，问题回给对应小节修改。
+  - 独立 GRSL 审稿人：major 意见回小节修订，最多 2 轮。
+  - 中文对照稿：逐节翻译并核对数字，用 xelatex 编译。
+- `researchclaw/research_loop/latex.py` + `docker/Dockerfile.latex`：论文编译兄弟容器（IEEEtran、ctex、TikZ），无网络。
+- 接入：阶段 16 运行写作器，阶段 17–21 跳过；阶段 22 导出并推 Overleaf en/zh；阶段 23 照常做引用与主张校验。
