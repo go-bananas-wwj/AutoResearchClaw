@@ -11,7 +11,6 @@ const ProjectHome = {
   _lastRunId: undefined,
 
   /* 跨 tab 持久的状态 */
-  _chatCache: {},           // runId|'__new__' -> [{role, content}]
   _stagesMeta: null,        // /api/pipeline/stages（静态，缓存一次）
   _run: undefined,          // /api/runs/{id}
 
@@ -44,8 +43,6 @@ const ProjectHome = {
   /* 定时器 / WS */
   _waitingTimer: null,
   _runTimer: null,
-  _onChatResp: null,
-  _onChatErr: null,
   _activityTimer: null,
   _activityEvents: [],
   _activityCursor: 0,
@@ -78,22 +75,6 @@ const ProjectHome = {
     this.project = opts.project || null;   // null 时头部回退 runId，待 _refreshRun 同步
     if (runChanged) this._resetRunState();
 
-    if (!runId) {
-      container.innerHTML = `
-        <div id="proj-root">
-          <div class="proj-head">
-            <div class="proj-head-title">New Research</div>
-            <div class="proj-head-sub">
-              <span>New research — describe your topic or idea to start</span>
-            </div>
-          </div>
-          <div id="proj-body"></div>
-        </div>`;
-      this._renderInteract();
-      this._attachChat();
-      return;
-    }
-
     container.innerHTML = `
       <div id="proj-root">
         <div class="proj-head" id="proj-head">${this._headHtml()}</div>
@@ -101,7 +82,6 @@ const ProjectHome = {
         <div id="proj-body"></div>
       </div>`;
     this._renderBody();
-    this._attachChat();
     this._startTimers();
     this._refreshWaiting();
     this._refreshRun();
@@ -111,7 +91,6 @@ const ProjectHome = {
     this._activityEpoch++;
     this._activityBusy = false;
     this._clearTimers();
-    this._detachChat();
   },
 
   onEvent(event) {
@@ -252,19 +231,20 @@ const ProjectHome = {
     const body = document.getElementById('proj-body');
     if (!body) return;
     body.innerHTML = `
+      <div id="proj-gate-slot">${this._gate ? this._gateHtml() : ''}</div>
       <div id="proj-banner-slot">${this._bannerHtml()}</div>
-      <section class="card proj-loop" id="proj-loop" data-no-i18n hidden></section>
-      <section class="card proj-implementation" id="proj-implementation" data-no-i18n>
-        <div id="proj-impl-live"><p class="proj-empty">正在读取最新实施记录…</p></div>
-        <div id="proj-impl-body"></div><div id="proj-impl-file" hidden></div>
-      </section>
       <section class="card proj-research" id="proj-research"><p class="proj-empty">正在读取已确认的研究材料…</p></section>
-      <details class="card proj-stage-details" ${this._hasConfirmedIdea() ? 'open' : ''}><summary id="proj-stage-summary">${this._esc(this._hasConfirmedIdea() ? '实验实施' : I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
+      <details class="card proj-stage-details"><summary id="proj-stage-summary">${this._esc(this._hasConfirmedIdea() ? '实验实施' : I18N.t('Stages'))}</summary><div id="proj-stages"><p style="color:var(--text-muted)">Loading...</p></div></details>
       <section class="card"><div class="proj-section-head"><h2 data-no-i18n>实验与证据</h2><span class="proj-caption" data-no-i18n>仅展示本轮正式运行</span></div><div id="proj-experiments"><p class="proj-empty">正在读取实验记录…</p></div></section>
       <div class="proj-ov-grid">
         <div class="card"><h2>Key Metrics</h2><div id="proj-metrics"><p style="color:var(--text-muted)">Loading...</p></div></div>
         <div class="card"><h2>Paper</h2><div id="proj-paper-card"><p style="color:var(--text-muted)">Loading...</p></div></div>
       </div>
+      <section class="card proj-loop" id="proj-loop" data-no-i18n hidden></section>
+      <details class="card proj-implementation" id="proj-implementation" data-no-i18n><summary>方法实现与代码验收</summary>
+        <div id="proj-impl-live"><p class="proj-empty">正在读取最新实施记录…</p></div>
+        <div id="proj-impl-body"></div><div id="proj-impl-file" hidden></div>
+      </details>
       ${this._activityHtml()}`;
     this._loadResearchLoop();
     this._renderImplementation();
@@ -674,13 +654,22 @@ const ProjectHome = {
   },
 
   _bannerHtml() {
-    if (!this._gate) return '';
-    const g = this._gate;
-    return `
-      <div class="proj-banner">
-        <span>${I18N.t('Gate: waiting for your decision')} · ${I18N.t('Stage')} ${g.stage ?? '?'} ${this._esc(I18N.t(g.stage_name || ''))}${g.reason ? ` · ${this._esc(g.reason)}` : ''}</span>
-        <button class="proj-btn primary" onclick="ProjectHome.switchTab('interact')">${this._esc(I18N.t('Go handle it'))}</button>
-      </div>`;
+    if (!this._gate && this.project?.status === 'results_ready') {
+      return `<div class="proj-banner">实验结果已就绪
+        <button class="proj-btn primary" onclick="ProjectHome.startWriting(this)">继续撰稿</button></div>`;
+    }
+    return '';
+  },
+
+  async startWriting(button) {
+    button.disabled = true;
+    try {
+      await API.startPipeline({resume_run_id: this.runId, from_stage: 'RESEARCH_DECISION', write_from_results: true});
+      await App._loadProjects();
+    } catch (error) {
+      alert(error.message);
+      button.disabled = false;
+    }
   },
 
   _updateBanner() {
@@ -832,125 +821,28 @@ const ProjectHome = {
 
   /* ================= Interact tab：对话 ================= */
 
-  _chatKey() { return this.runId || '__new__'; },
-
-  _chatMessages() {
-    const key = this._chatKey();
-    if (!this._chatCache[key]) {
-      this._chatCache[key] = [{
-        role: 'assistant',
-        content: this.runId
-          ? 'This is the conversation bound to the current project. Confirm plans, inject ideas, or ask about progress here — I will answer in this project\'s context.'
-          : 'Welcome! Two ways to work: (1) give me a research topic directly ("start research: XXX") and I\'ll launch the 23-stage pipeline for you; (2) just chat about your insight and I\'ll help sharpen it into a topic. You can also ask "what stage are we at?", "how are the results?", "stop", or "switch the primary model to xxx".',
-      }];
-    }
-    return this._chatCache[key];
-  },
-
   _renderInteract() {
     const body = document.getElementById('proj-body');
     if (!body) return;
     body.innerHTML = `
-      <div id="proj-gate-slot">${this.runId ? this._gateHtml() : ''}</div>
-      ${this.runId ? this._activityHtml() : ''}
-      <div class="proj-chat" id="proj-chat-messages"></div>
-      <div class="proj-chat-input">
-        <input id="proj-chat-input" type="text" autocomplete="off"
-               placeholder="${this.runId ? 'Chat with this project...' : 'New research — describe your topic or idea to start'}" />
-        <button class="proj-send" id="proj-chat-send">Send</button>
-      </div>
-      ${this.runId ? `
-      <div class="card" style="margin-top:20px">
-        <h2>Paper Review</h2>
-        <div id="proj-paper-body"><p style="color:var(--text-muted)">Loading...</p></div>
-      </div>` : ''}`;
-
-    const msgs = document.getElementById('proj-chat-messages');
-    msgs.innerHTML = this._chatMessages().map(m => this._msgHtml(m.role, m.content)).join('');
-    msgs.scrollTop = msgs.scrollHeight;
-
-    const input = document.getElementById('proj-chat-input');
-    const send = document.getElementById('proj-chat-send');
-    send.addEventListener('click', () => this._sendChat());
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._sendChat(); }
-    });
-
-    if (this.runId) {
-      this._renderActivityFeed();
-      this._refreshActivity();
-      this._renderGateSlot();
-      this._updatePaper();
-      this._paperFetchVersions();
-    }
-  },
-
-  _attachChat() {
-    this._detachChat();
-    this._onChatResp = (data) => {
-      this._addMessage('assistant', (data && data.message) || '');
-    };
-    this._onChatErr = (data) => {
-      const err = (data && data.error) || 'unknown';
-      this._addMessage('assistant', I18N.t('Error') + ': ' + (typeof err === 'string' ? err : I18N.t('connection error')));
-    };
-    chatWS.on('chat_response', this._onChatResp);
-    chatWS.on('error', this._onChatErr);
-    if (!chatWS.ws || chatWS.ws.readyState === WebSocket.CLOSED) chatWS.connect();
-  },
-
-  _detachChat() {
-    if (this._onChatResp) { chatWS.off('chat_response', this._onChatResp); this._onChatResp = null; }
-    if (this._onChatErr) { chatWS.off('error', this._onChatErr); this._onChatErr = null; }
-  },
-
-  _sendChat() {
-    const input = document.getElementById('proj-chat-input');
-    if (!input) return;
-    const text = input.value.trim();
-    if (!text) return;
-    this._addMessage('user', text);
-    const payload = { text };
-    if (this.runId) payload.run_id = this.runId;   // 绑定项目对话
-    chatWS.send(JSON.stringify(payload));
-    input.value = '';
-    input.focus();
-  },
-
-  _addMessage(role, content) {
-    if (!content) return;
-    this._chatMessages().push({ role, content });
-    const msgs = document.getElementById('proj-chat-messages');
-    if (msgs) {
-      msgs.insertAdjacentHTML('beforeend', this._msgHtml(role, content));
-      msgs.scrollTop = msgs.scrollHeight;
-    }
-  },
-
-  _msgHtml(role, content) {
-    if (role === 'sys') {
-      return `<div class="proj-msg sys">${this._esc(content)}</div>`;
-    }
-    const who = role === 'assistant' ? '<div class="who">ResearchClaw</div>' : '';
-    return `<div class="proj-msg ${role}">${who}${this._mdLite(content)}</div>`;
-  },
-
-  // 先转义再做轻量 markdown（防服务端内容注入）
-  _mdLite(content) {
-    return this._esc(content)
-      .replace(/```([\s\S]*?)```/g, (m, code) => `<pre class="proj-pre">${code}</pre>`)
-      .replace(/`([^`\n]+)`/g, '<code class="proj-code">$1</code>')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br>');
+      <div id="proj-gate-slot">${this._gateHtml()}</div>
+      <section class="card"><h2>Paper Review</h2>
+        <div id="proj-paper-body"></div>
+      </section>`;
+    this._renderGateSlot();
+    this._updatePaper();
+    this._paperFetchVersions();
   },
 
   /* ================= Interact tab：门控卡片 ================= */
 
   async _refreshWaiting() {
     if (!this.runId || !document.getElementById('proj-root')) return;
+    const runId = this.runId;
     let w;
-    try { w = await API.hitlRunWaiting(this.runId); } catch (e) { return; }
+    try { w = await API.hitlRunWaiting(runId); } catch (e) { return; }
     if (!document.getElementById('proj-root')) return;
+    if (this.runId !== runId) return;
     const gate = (w && w.waiting) ? w : null;
     const key = gate ? `${gate.stage}:${gate.since || ''}` : '';
     if (key === this._gateKey && !!gate === !!this._gate) { this._updateHead(); return; }
@@ -989,7 +881,7 @@ const ProjectHome = {
 
   _renderGateSlot() {
     const el = document.getElementById('proj-gate-slot');
-    if (el) el.innerHTML = this._gateHtml();
+    if (el) el.innerHTML = this.tab === 'overview' && !this._gate ? '' : this._gateHtml();
   },
 
   _gateHtml() {
@@ -1158,7 +1050,6 @@ const ProjectHome = {
     try {
       await API.hitlRespond(runId, body);
       this._gateNotice(I18N.t('Response sent.'), false);
-      this._addMessage('sys', `Gate ${body.action}: ${I18N.t('Response sent.')}`);
       await this._refreshWaiting();
       return true;
     } catch (e) {

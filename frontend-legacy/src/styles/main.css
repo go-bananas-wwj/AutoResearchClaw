@@ -593,31 +593,11 @@ button, a { touch-action: manipulation; }
 .proj-btn[disabled] { opacity: .5; cursor: not-allowed; }
 
 /* ── 对话流 ── */
-.proj-chat { display: flex; flex-direction: column; gap: 14px; }
-.proj-msg { max-width: 82%; padding: 10px 14px; border-radius: var(--radius); font-size: 14px; white-space: pre-wrap; word-break: break-word; }
-.proj-msg.user { align-self: flex-end; background: var(--accent-soft); border: 1px solid rgba(0,113,227,.18); }
-.proj-msg.assistant { align-self: flex-start; background: var(--bg-card); border: 1px solid var(--border); }
-.proj-msg.sys { align-self: center; max-width: 100%; padding: 2px 10px; font-size: 12px; color: var(--text-muted); background: none; border: none; }
-.proj-msg .who { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
-.proj-code { background: var(--bg-tertiary); padding: 2px 4px; border-radius: 3px; font-size: 13px; font-family: var(--font-mono); }
 .proj-pre {
   background: var(--bg-primary); border: 1px solid var(--border); border-radius: 6px;
   padding: 10px; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap;
   word-break: break-word; max-height: 360px; overflow-y: auto; color: var(--text-secondary);
 }
-.proj-chat-input { display: flex; gap: 10px; margin-top: 16px; position: sticky; bottom: 0; background: rgba(245, 245, 247, 0.88); padding: 12px 0 4px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
-.proj-chat-input input {
-  flex: 1; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px; color: var(--text-primary); font-size: 14px; outline: none;
-}
-.proj-chat-input input:focus { border-color: var(--accent); }
-.proj-send {
-  padding: 0 20px; border-radius: var(--radius); border: none;
-  background: var(--accent); color: #fff; font-weight: 500; cursor: pointer;
-}
-.proj-send:hover { background: var(--accent-hover); }
-
-/* ── 门控卡片（插在对话流顶部）── */
 .proj-gate {
   border: 1px solid var(--warning); border-radius: var(--radius);
   background: var(--warning-soft); padding: 14px 16px; margin-bottom: 14px;
@@ -698,7 +678,6 @@ button, a { touch-action: manipulation; }
 
 @media (max-width: 900px) {
   .proj-ov-grid { grid-template-columns: 1fr; }
-  .proj-msg { max-width: 94%; }
 }
 
 /* Shared controls and ideation keep the same light surface treatment. */
@@ -707,7 +686,7 @@ button, a { touch-action: manipulation; }
 .proj-btn.primary:hover:not(:disabled), .gate-btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
 .proj-pbar, .proj-pbar-lg { background: rgba(118, 118, 128, 0.09); }
 .proj-pbar { margin-top: 12px; height: 3px; }
-.proj-chat-input input:focus, .gate-input:focus, .gate-textarea:focus,
+.gate-input:focus, .gate-textarea:focus,
 #idea-direction:focus, #set-editor:focus { outline: 3px solid rgba(0, 113, 227, 0.12); outline-offset: 1px; border-color: var(--accent); }
 .idea-step { background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .idea-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; margin-top: 20px; }
@@ -829,9 +808,6 @@ button, a { touch-action: manipulation; }
   .proj-side-bottom { display: flex; gap: 12px; margin-top: 0; padding-top: 4px; }
   .proj-welcome h2 { font-size: 25px; }
   .proj-grid { margin-top: 20px; }
-  .proj-chat-input { gap: 8px; }
-  .proj-chat-input input { min-width: 0; }
-  .proj-send { padding: 0 16px; }
   .proj-head-title { overflow-wrap: anywhere; }
 }
 

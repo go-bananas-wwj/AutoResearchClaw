@@ -110,4 +110,3 @@ class RCWebSocket {
 
 // Singleton instances
 const eventsWS = new RCWebSocket('/ws/events');
-const chatWS = new RCWebSocket('/ws/chat');

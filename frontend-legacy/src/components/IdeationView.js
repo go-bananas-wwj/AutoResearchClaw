@@ -62,9 +62,9 @@ const IdeationView = {
   },
   _newHtml() { return `<div class="card ideation-intake"><label for="idea-direction">你想研究什么？</label>
     <textarea id="idea-direction" class="gate-textarea" rows="3" placeholder="例如：我想研究流域建模的 LS 因子"></textarea>
-    <div class="ideation-limit"><label for="idea-paper-limit">调研文献上限</label><select id="idea-paper-limit" class="gate-input"><option value="10">10 篇</option><option value="20" selected>20 篇</option><option value="30">30 篇</option></select></div>
+    <div class="ideation-limit"><label for="idea-paper-limit">调研文献上限</label><select id="idea-paper-limit" class="gate-input"><option value="10" selected>10 篇</option><option value="20">20 篇</option><option value="30">30 篇</option></select></div>
     <button class="proj-btn primary" data-action="start" ${this.busy?'disabled':''}>${this.busy?'正在创建调研…':'开始调研'}</button>
-    <p class="idea-evidence-note">先找到相关文献，再请你确认研究方向。</p></div>`; },
+    <p class="idea-evidence-note">系统检索并阅读全文。确认方向后，你可以从有文献依据的候选问题中选一个开展实验。</p></div>`; },
   _sessionHtml(d) {
     const active=['running','pending','stopping'].includes(d.status), locked=active || this.busy || d.status==='handoff' || !!d.run_id;
     return `<div class="card ideation-route-card" id="ideation-workflow" data-material-stage="workflow">${this._progressHtml(d,active)}</div>

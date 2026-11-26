@@ -45,6 +45,7 @@ class PipelineStartRequest(BaseModel):
     from_stage: str | None = None
     idempotency_key: str | None = None
     resume_run_id: str | None = None
+    write_from_results: bool = False
 
 
 def _parse_from_stage(raw: str) -> "Any":
@@ -121,9 +122,11 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                         status=(_active_run or {}).get("status", "interrupted"), output_dir=str(origin.parent))
         state = _get_app_state()
         config = state["config"]
+        previous_job = {}
         if _worker_mode(config):
             from researchclaw.worker.jobs import ACTIVE_STATES, read_job
-            if resume_dir is not None and (read_job(resume_dir) or {}).get("state") in ACTIVE_STATES:
+            previous_job = (read_job(resume_dir) or {}) if resume_dir else {}
+            if resume_dir is not None and previous_job.get("state") in ACTIVE_STATES:
                 raise HTTPException(status_code=409, detail="该项目已在排队或运行中")
         elif _active_run and _active_run.get("status") in ("running", "stopping"):
             raise HTTPException(status_code=409, detail="A pipeline is already running")
@@ -216,6 +219,12 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
         import hashlib
         from datetime import datetime, timezone
 
+        from researchclaw.pipeline.stages import Stage
+
+        if req.write_from_results and (
+            previous_job.get("state") != "results_ready" or forced_from_stage != Stage.RESEARCH_DECISION
+        ):
+            raise HTTPException(409, detail="只能从已就绪的实验结果继续撰稿")
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         topic_hash = hashlib.sha256((config.research.topic + (req.idempotency_key or "")).encode()).hexdigest()[:6]
         run_id = req.resume_run_id or f"rc-{ts}-{topic_hash}"
@@ -226,7 +235,7 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                 'metric_key': config.experiment.metric_key,
                 'direction': config.experiment.metric_direction,
                 'source': 'explicit_pipeline_override', 'at': datetime.now(timezone.utc).isoformat()}))
-        if resume_dir is not None:
+        if resume_dir is not None and not req.write_from_results:
             archived = _archive_resume_outputs(run_dir, forced_from_stage)
             with (run_dir / 'resume_history.jsonl').open('a') as history:
                 history.write(json.dumps({'at':datetime.now(timezone.utc).isoformat(), 'from_stage':forced_from_stage.name,
@@ -250,6 +259,15 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
             if not job["config_path"]:
                 raise HTTPException(500, detail="worker 模式需要服务以 --config 启动")
             from researchclaw.worker import jobs as _jobs
+            # 新调研项目先交付实验结果。重试仍遵守原任务的终点。
+            if (req.idempotency_key and config.server.results_first) or (
+                previous_job.get("to_stage") and forced_from_stage <= previous_job["to_stage"]
+            ):
+                job["to_stage"] = int(Stage.RESULT_ANALYSIS)
+                job["auto_approve"] = False
+            if req.write_from_results:
+                job["write_from_results"] = True
+                job["auto_approve"] = False
             _jobs.clear_cancel(run_dir)
             _jobs.write_job(run_dir, {**job, "state": "queued", "queued_at": _jobs.now(),
                                       "auto_resumes": 0, "attempts": 0})

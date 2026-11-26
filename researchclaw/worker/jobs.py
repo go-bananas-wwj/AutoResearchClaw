@@ -21,7 +21,7 @@ from typing import Any, Iterator
 JOB_FILE = "job.json"
 CONTROL_DIR = ".control"
 ACTIVE_STATES = ("queued", "running", "stopping")
-FINAL_STATES = ("completed", "failed", "blocked", "stopped", "interrupted")
+FINAL_STATES = ("results_ready", "completed", "failed", "blocked", "stopped", "interrupted")
 
 
 def now() -> str:

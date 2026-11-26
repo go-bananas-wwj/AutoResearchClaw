@@ -210,7 +210,7 @@
 
   /* ---------- 状态词 ---------- */
   var STATUS = {
-    'idle': '空闲', 'running': '运行中', 'completed': '已完成', 'failed': '失败',
+    'results_ready': '实验结果已就绪', 'idle': '空闲', 'running': '运行中', 'completed': '已完成', 'failed': '失败',
     'pending': '等待中', 'unknown': '未知', 'paused': '已暂停', 'gate': '待审批',
     'set': '已设置', 'missing': '未设置', 'waiting': '待审批', 'no_checkpoint': '无检查点',
   };

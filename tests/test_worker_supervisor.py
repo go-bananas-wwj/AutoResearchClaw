@@ -110,17 +110,18 @@ def test_concurrency_limit_and_backoff(tmp_path):
     assert jobs.read_job(root)['state'] == 'queued' and not procs
 
 
-def test_child_executes_job_and_writes_final_state(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("end", "status"), [(None, "completed"), (14, "results_ready")])
+def test_child_executes_job_and_writes_final_state(tmp_path, monkeypatch, end, status):
     from researchclaw.pipeline.executor import StageResult
     from researchclaw.pipeline.stages import Stage, StageStatus
     from researchclaw.worker import child, execution
 
-    root = _run(tmp_path, state='running', auto_approve=True)
+    root = _run(tmp_path, state='running', auto_approve=True, to_stage=end)
     calls = []
 
     def execute(**kwargs):
         calls.append(kwargs)
-        return [StageResult(stage=Stage.CITATION_VERIFY, status=StageStatus.DONE, artifacts=())]
+        return [StageResult(stage=kwargs["to_stage"] or Stage.CITATION_VERIFY, status=StageStatus.DONE, artifacts=())]
 
     class Cfg:
         knowledge_base = type('KB', (), {'root': ''})()
@@ -128,7 +129,7 @@ def test_child_executes_job_and_writes_final_state(tmp_path, monkeypatch):
     monkeypatch.setattr(execution, 'load_job_config', lambda job: Cfg())
     assert child.main([str(root)]) == 0
     job = jobs.read_job(root)
-    assert job['state'] == 'completed' and job['pid'] is None and job['materialized'] is True
+    assert job['state'] == status and job['pid'] is None and job['materialized'] is True
     assert calls[0]['from_stage'] == Stage.CODE_GENERATION
 
 
@@ -159,7 +160,7 @@ async def test_worker_mode_route_only_queues(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, '_active_run', None)
     config = RCConfig.from_dict({'project': {'name': 'f'}, 'research': {'topic': 'placeholder'},
         'runtime': {'timezone': 'UTC'}, 'notifications': {'channel': 'console'},
-        'knowledge_base': {'root': str(tmp_path / 'kb')}, 'server': {'executor': 'worker'},
+        'knowledge_base': {'root': str(tmp_path / 'kb')}, 'server': {'executor': 'worker', 'results_first': True},
         'llm': {'base_url': 'https://example.org', 'api_key_env': 'TEST'}}, check_paths=False)
     assert config.server.executor == 'worker'
     app = create_app(config)
@@ -182,4 +183,22 @@ async def test_worker_mode_route_only_queues(tmp_path, monkeypatch):
         assert project['status'] == 'queued'
         stop = await client.post('/api/pipeline/stop')
         assert stop.status_code == 200 and jobs.read_job(root)['state'] == 'stopped'
+        new = await client.post('/api/pipeline/start', json={
+            'from_stage': '9', 'idempotency_key': 'is-' + 'b' * 20 + ':1:r1-spark-1'})
+        assert new.status_code == 200
+        selected = tmp_path / new.json()['output_dir']
+        assert jobs.read_job(selected)['to_stage'] == 14
+        assert not jobs.read_job(selected)['auto_approve']
+        (selected / 'checkpoint.json').write_text(json.dumps({'last_completed_stage': 14}))
+        evidence = selected / 'experiment_summary_best.json'
+        evidence.write_text('{"metric": 1}')
+        jobs.update_job(selected, state='results_ready')
+        projects = (await client.get('/api/projects')).json()['projects']
+        assert next(p for p in projects if p['id'] == selected.name)['status'] == 'results_ready'
+        writing = {'resume_run_id': selected.name, 'from_stage': '15', 'write_from_results': True}
+        assert (await client.post('/api/pipeline/start', json=writing)).status_code == 200
+        assert jobs.read_job(selected)['from_stage'] == 15 and not jobs.read_job(selected).get('to_stage')
+        assert evidence.is_file() and not (selected / 'recovery_history').exists()
+        jobs.update_job(selected, state='completed')
+        assert (await client.post('/api/pipeline/start', json=writing)).status_code == 409
     _app_state.pop('config_path', None)

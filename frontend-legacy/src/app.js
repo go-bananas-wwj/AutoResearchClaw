@@ -1,8 +1,4 @@
-/**
- * ResearchClaw SPA — 项目中心壳（概念图 A）。
- * 状态：{currentProject, currentTab, view('home'|'settings'), newMode(未绑定新研究)}。
- * 左侧项目列表 10s 轮询 /api/projects；主区渲染 ProjectHome / SettingsView / 欢迎页。
- */
+/** 项目列表与文献调研共用的工作台入口。 */
 (function () {
   'use strict';
 
@@ -13,8 +9,7 @@
     totalStages: 23,
     currentProject: null,      // runId | null
     currentTab: 'overview',    // 'overview' | 'interact' | 'manage'
-    view: 'home',              // 'home' | 'settings'
-    newMode: false,            // 「+ New Research」未绑定对话
+    view: 'ideation',              // 'ideation' | 'home' | 'settings'
     _pollTimer: null,
     _active: null,             // 当前主区组件（destroy 钩子）
     _health: null,
@@ -36,11 +31,7 @@
       // 当前项目被删/外部变化时同步头部
       if (this.currentProject && this._active === ProjectHome) {
         const p = this.projects.find(x => x.id === this.currentProject);
-        if (p) ProjectHome.project = p;
-      }
-      // 欢迎页可见时随数据刷新
-      if (this.view === 'home' && !this.currentProject && !this.newMode) {
-        this._renderWelcome();
+        if (p) { ProjectHome.project = p; ProjectHome._updateBanner(); }
       }
     },
 
@@ -92,16 +83,16 @@
 
     openIdeation(sessionId) {
       this.currentIdeation = sessionId;
-      this.view = 'ideation'; this.newMode = false; this.currentProject = null;
+      this.view = 'ideation'; this.currentProject = null;
       history.replaceState(null, '', '#ideation/' + sessionId);
       this._renderMain(); this._loadIdeations(); this._renderSidebar();
     },
 
     openProject(runId) {
+      this.currentTab = 'overview';
       history.replaceState(null, '', '#project/' + runId + '/' + this.currentTab);
       this.view = 'home';
-      this.newMode = false;
-      this.currentProject = runId;   // currentTab 保留（跨项目记住用户所在 tab）
+      this.currentProject = runId;
       this._renderMain();
       this._renderSidebar();
     },
@@ -110,14 +101,9 @@
       this.currentIdeation = null;
       history.replaceState(null, '', location.pathname + location.search);
       this.view = 'ideation';
-      this.newMode = false;
       this.currentProject = null;
       this._renderMain();
       this._renderSidebar();
-    },
-
-    startNewResearchChat() {
-      this.startNewResearch();
     },
 
     navigateTo(view) {
@@ -128,14 +114,9 @@
     },
 
     goHome() {
-      this.view = 'home';
+      this.view = this.currentProject ? 'home' : 'ideation';
       this._renderMain();
       this._renderSidebar();
-    },
-
-    showAbout() {
-      const v = (this._health && this._health.version) || '?';
-      alert(`ResearchClaw v${v}\n${I18N.t('Autonomous Research Pipeline — 23-stage co-pilot.')}`);
     },
 
     /* ---------- 主区渲染 ---------- */
@@ -163,12 +144,6 @@
         return;
       }
 
-      if (this.newMode) {
-        ProjectHome.render(main, { runId: null, tab: 'interact', project: null });
-        this._active = ProjectHome;
-        return;
-      }
-
       if (this.currentProject) {
         const p = this.projects.find(x => x.id === this.currentProject) || null;
         ProjectHome.render(main, { runId: this.currentProject, tab: this.currentTab, project: p });
@@ -176,45 +151,7 @@
         return;
       }
 
-      this._renderWelcome();
-    },
-
-    _renderWelcome() {
-      const main = document.getElementById('main-content');
-      if (!main) return;
-      const cards = this.projects.map(p => {
-        const stage = p.current_stage || 0;
-        const st = this._statusOf(p);
-        const pct = Math.max(0, Math.min(100, Math.round(100 * stage / this.totalStages)));
-        const badge = p.waiting
-          ? `<span class="proj-badge waiting">● ${I18N.t('Waiting')}</span>`
-          : st === 'completed'
-            ? `<span class="proj-badge done">● ${I18N.t('Done')}</span>`
-            : st === 'running'
-              ? `<span class="proj-badge running">● ${I18N.t('Running')}</span>`
-              : `<span class="proj-badge">● ${this._esc(I18N.t(st))}</span>`;
-        const barCls = p.waiting ? 'waiting' : (st === 'completed' ? 'done' : '');
-        return `
-          <button type="button" class="proj-big-card" onclick="App.openProject('${this._escAttr(p.id)}')">
-            <span class="proj-big-card-title" data-no-i18n>${this._esc(p.topic || p.id)}</span>
-            <span class="proj-card-row">${badge}<span>${p.research_entry_stage === 9 ? this._esc(this._researchPhase(p)) : `Stage ${stage}/${this.totalStages}`}</span></span>
-            ${p.research_entry_stage === 9 ? '' : `<span class="proj-pbar ${barCls}"><span style="width:${pct}%"></span></span>`}
-          </button>`;
-      }).join('');
-      main.innerHTML = `
-        <div class="proj-welcome">
-          <h2>Your Projects</h2>
-          <p class="proj-welcome-sub">From an idea to experiments and a finished paper.</p>
-          ${this.projects.length ? '' : `<p class="proj-welcome-sub">No projects yet.</p>`}
-          <div class="proj-grid">
-            ${cards}
-            <button type="button" class="proj-big-card new" onclick="App.startNewResearch()">
-              <span class="plus" aria-hidden="true">＋</span>
-              <span>New Research</span>
-              <span class="hint">Start your first research project from here.</span>
-            </button>
-          </div>
-        </div>`;
+      this.startNewResearch();
     },
 
     /* ---------- WS 事件 ---------- */
@@ -224,11 +161,6 @@
       if (['run_discovered', 'stage_complete', 'stage_start', 'run_status_changed',
            'pipeline_started', 'pipeline_completed', 'stage_fail'].includes(data.type)) {
         this._loadProjects();
-      }
-      // 未绑定新研究对话孵化出了 run → 自动绑定到该项目
-      if (this.newMode && data.type === 'run_discovered' && data.data && data.data.run_id) {
-        this.openProject(data.data.run_id);
-        return;
       }
       if (this._active && this._active.onEvent) this._active.onEvent(data);
 
@@ -289,11 +221,6 @@
       e.preventDefault();
       if (App.view === 'settings') App.goHome(); else App.navigateTo('settings');
     });
-    document.getElementById('nav-about').addEventListener('click', (e) => {
-      e.preventDefault();
-      App.showAbout();
-    });
-
     eventsWS.on('open', () => {
       const badge = document.getElementById('connection-badge');
       if (badge) { badge.textContent = 'Connected'; badge.className = 'status-badge running'; }

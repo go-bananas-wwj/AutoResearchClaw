@@ -112,7 +112,7 @@ class Supervisor:
             return
         from researchclaw.pipeline.stages import Stage
 
-        next_stage = min(int(next_stage), int(max(Stage)))
+        next_stage = min(int(next_stage), int(job.get("to_stage") or max(Stage)))
         archived = jobs.archive_resume_outputs(run_dir, next_stage)
         with (run_dir / "resume_history.jsonl").open("a") as history:
             history.write(json.dumps({"at": jobs.now(), "from_stage": Stage(next_stage).name,

@@ -1,6 +1,6 @@
 # AutoResearchClaw 本地 Docker 部署（V100 单机版）
 
-三个镜像、分工明确：**control**（研究流水线本体）只吃 API；**experiment / sandbox-rs** 是实验沙箱（前者通用，后者预装遥感库），由流水线在 `experiment.mode: docker` 下动态 `docker run` 到 V100 上。控制面不跑任何本地大模型，agent 推理全部走百炼 API（`config.arc.yaml`→`config.template.yaml` 通用模板已配好 OpenAI 兼容端点）。
+当前网页使用 `config.rc-remote-sensing.yaml`。Dashboard 接收方向和选题，worker 执行项目，DeepSeek Flash 通过外部 API 规划和写代码，实验在本机 Docker 沙箱运行。构建脚本提供控制面、基础 GPU、遥感沙箱和 LaTeX 四个镜像。
 
 ## 一次性准备
 
@@ -10,9 +10,9 @@ sudo bash scripts/docker-setup.sh
 newgrp docker                     # 让 docker 组生效（或注销重登）
 
 # 2. API key
-cp .env.example .env              # 填入百炼 DASHSCOPE_API_KEY
+cp .env.example .env              # 仅首次部署时创建，填写 DEEPSEEK_API_KEY 和 RC_HOST_REPO 等本地配置
 
-# 3. 构建三个镜像（首次约 20-40 分钟，实验镜像 ~12GB）
+# 3. 构建四个镜像（首次约 20-40 分钟，实验镜像 ~12GB）
 bash scripts/build-images.sh
 ```
 
@@ -43,16 +43,16 @@ docker compose run --rm control guide   artifacts/rc-xxxx --stage 9 --message "�
 ## Web 仪表盘
 
 ```bash
-docker compose up -d dashboard      # 常驻，改代码/配置后 docker compose build control 再 up
+docker compose up -d dashboard worker
 ```
 
-浏览器打开 **http://localhost:8088**（若你是 SSH 远程连这台机器：`ssh -L 8088:localhost:8088 用户@这台机器` 后本地开同款地址）。可看各 run 的 23 阶段进度、实验曲线/图表、论文预览与成本；面板内含 ChatPanel，可在关键节点与流水线对话协作。终端仍是主交互面（co-pilot 提示与 approve/reject/guide）。**右上角"中文/EN"按钮切换界面语言**（默认跟随浏览器，AI 对话内容不翻译）。
+打开 [本机工作台](http://localhost:8088)，输入方向。默认最多展示 10 篇通过全文核验的文献，确认方向后生成最多 3 个候选问题，并比较相近研究。选题后在项目主页确认计划，查看实验执行和证据。
 
-🛠 **Settings 页**：在浏览器里直接编辑 `config*.yaml`（保存前 YAML 校验、自动 .bak 备份），并查看各 API key 环境变量是否就绪（只显示有/无，不回显值）。服务运行于完整 `serve` 模式，`/api/pipeline/start|stop` 亦已开放（前端启动按钮暂未接，可直接调 API）。
+遥感预设开启 `server.results_first`。从调研创建的新 worker 任务到阶段 14 完成结果分析后结束，状态为 `results_ready`。可以随时回来点“继续撰稿”，从同一项目的研究决策阶段继续，沿用实验结果和质量检查。等待撰稿期间不占用 worker。导师循环默认关闭。历史调研及项目可从侧栏打开。实验记录在 `artifacts/<run_id>/`，数据清单与准备好的输入在 `/home/wwj/rc-data/runs/<run_id>/`。
 
-## 论文自动同步 Overleaf
+## 可选的 Overleaf 同步
 
-`overleaf.enabled: true`（两份配置模板均已开）时，每条 run 在收尾（deliverables 打包后）自动把 `paper.tex + references.bib + figures/` 推到共享 Overleaf 项目的 `runs/<run_id>/` 文件夹，全程走 Overleaf Git 集成；也可随时在对话里说「同步到 Overleaf」手动触发。
+遥感工作台默认本地保存。需要使用共享 Overleaf 项目时，可显式配置 `overleaf.enabled` 及对应凭据。
 
 - 共享克隆在 `.overleaf/papers/`（已 gitignore）；token 走 `.env` 的 `OVERLEAF_TOKEN`，不落配置文件
 - 在 Overleaf 打开对应 run 文件夹，把 `paper.tex` 设为 Main document 即可编译
@@ -67,7 +67,7 @@ docker compose up -d dashboard      # 常驻，改代码/配置后 docker compos
 | `researchclaw/docker/Dockerfile.remote-sensing` | 遥感实验沙箱：官方 GPU 镜像之上加 rasterio/geopandas/torchgeo/segmentation_models_pytorch |
 | `docker-compose.yml` | 控制面编排（源码热挂载 + artifacts 落宿主 + docker.sock 调度沙箱） |
 | `config.template.yaml` | **通用配置模板（领域无关）**：`config.arc.yaml` 默认指向它；改 topic 即跑 |
-| `config.rc-remote-sensing.yaml` | 遥感领域预设：百炼端点、900s 实验预算、val_miou 指标、V100 显存限额、HITL+成本护栏全开（可复制此文件改成其他领域预设） |
+| `config.rc-remote-sensing.yaml` | 当前本地网页预设，包含 Flash、worker、实验沙箱和数据挂载设置 |
 | `.env.example` | key 模板 |
 | `scripts/docker-setup.sh` / `scripts/build-images.sh` | 安装与构建 |
 

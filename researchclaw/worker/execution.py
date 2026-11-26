@@ -82,6 +82,9 @@ def execute_job(run_dir: Path, job: dict[str, Any], config: Any, cancel_event: t
         from_stage = _materialize_brief(run_dir, job, config)
     if job.get("from_stage"):
         from_stage = Stage(int(job["from_stage"]))
+    end = Stage(job["to_stage"]) if job.get("to_stage") else None
+    if end and from_stage > end:
+        raise ValueError("任务起始阶段超过了交付阶段")
     if on_start:
         on_start(int(from_stage))
 
@@ -99,20 +102,26 @@ def execute_job(run_dir: Path, job: dict[str, Any], config: Any, cancel_event: t
 
             adapters.hitl = HITLSession(run_id=run_dir.name, config=hitl_cfg, run_dir=run_dir)
         except Exception as exc:  # noqa: BLE001
+            if end or job.get("write_from_results"):
+                raise RuntimeError("无法初始化项目的人工确认环节") from exc
             logger.warning("HITL session setup failed: %s", exc)
 
+    endpoint = end or Stage.CITATION_VERIFY
     results = execute_pipeline(
         run_dir=run_dir, run_id=run_dir.name, config=config, adapters=adapters,
-        from_stage=from_stage, auto_approve_gates=bool(job.get("auto_approve")),
+        from_stage=from_stage, to_stage=end, auto_approve_gates=bool(job.get("auto_approve")),
+        stop_on_gate=bool(end or job.get("write_from_results")),
         skip_noncritical=True, kb_root=kb_root, cancel_event=cancel_event,
     )
     done = sum(1 for r in results if r.status.value == "done")
     failed = sum(1 for r in results if r.status.value == "failed")
     # A paused quality/data gate or a partial run is never a completed paper.
-    complete = any(r.stage == Stage.CITATION_VERIFY and r.status.value == "done" for r in results)
+    complete = bool(results and results[-1].stage == endpoint and results[-1].status.value == "done"
+                    and results[-1].decision != "abort")
+    success = "results_ready" if endpoint == Stage.RESULT_ANALYSIS else "completed"
     status = "stopped" if cancel_event.is_set() else (
-        "completed" if complete and failed == 0 else "failed" if failed else "blocked")
+        success if complete and failed == 0 else "failed" if failed else "blocked")
     outcome: dict[str, Any] = {"status": status, "stages_done": done, "stages_failed": failed}
     if results and not complete:
-        outcome["reason"] = getattr(results[-1], "error", "") or "流水线未到达论文交付阶段，请检查阶段产物。"
+        outcome["reason"] = getattr(results[-1], "error", "") or "流水线未完成本次任务，请检查阶段产物。"
     return outcome

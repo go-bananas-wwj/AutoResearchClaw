@@ -348,7 +348,7 @@ async def test_api_handoff_and_legacy_bypass(engine,tmp_path,monkeypatch):
         b=await client.post(f'/api/ideation/sessions/{sid}/confirm',json=payload)
         assert a.json()['run_id']==b.json()['run_id']
         assert len(calls)==1 and calls[0]['from_stage']==Stage.EXPERIMENT_DESIGN
-        assert calls[0]['auto_approve_gates'] is True and 'to_stage' not in calls[0]
+        assert calls[0]['auto_approve_gates'] is True and calls[0].get('to_stage') is None
         assert pipeline._active_run['status']=='completed'
         run=tmp_path/'artifacts'/a.json()['run_id']
         assert (run/'ideation_evidence/manifest.json').exists()

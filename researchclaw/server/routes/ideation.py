@@ -51,7 +51,7 @@ def public(data):
 
 class IdeationStartRequest(BaseModel):
     direction: str = Field(min_length=4, max_length=4000)
-    paper_limit: int = Field(default=20, ge=3, le=30)
+    paper_limit: int = Field(default=10, ge=3, le=30)
 
 
 class IdeationStartResponse(BaseModel):

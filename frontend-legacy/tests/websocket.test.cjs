@@ -13,7 +13,7 @@ test('retries continue past ten failures with capped delays and recover',()=>{
   const s=setup();s.client.connect();
   for(let i=0;i<13;i++){s.sockets.at(-1).close();assert.equal(s.timers.size,1);const [id,t]=[...s.timers][0];assert.ok(t.delay<=30000);s.timers.delete(id);t.f();}
   assert.equal(s.sockets.length,14);s.sockets.at(-1).open();assert.equal(s.client._reconnects,0);
-  [...s.beats.values()][0]();assert.deepEqual(s.sockets.at(-1).sent,['ping']);
+  [...s.beats.values()][0]();assert.deepEqual(s.sockets.at(-1).sent,[JSON.stringify({type:'ping'})]);
   s.client.close();assert.equal(s.timers.size,0);assert.equal(s.beats.size,0);assert.equal(s.events.size,0);
 });
 test('wake reconnects promptly without duplicate sockets or orphan retries',()=>{

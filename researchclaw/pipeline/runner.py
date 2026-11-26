@@ -796,12 +796,6 @@ def execute_pipeline(
         if result.status == StageStatus.DONE:
             _write_checkpoint(run_dir, stage, run_id, adapters=adapters)
 
-        # ── Stop after to_stage if specified ──
-        if to_stage is not None and stage == to_stage:
-            logger.info("[%s] Reached --to-stage %s, stopping.", run_id, stage.name)
-            print(f"[{run_id}] Reached --to-stage {stage.name}, stopping pipeline.")
-            break
-
         # --- Experiment diagnosis + repair after Stage 14 (result_analysis) ---
         if (
             stage == Stage.RESULT_ANALYSIS
@@ -831,6 +825,12 @@ def execute_pipeline(
         # --- Heartbeat for sentinel watchdog ---
         if result.status == StageStatus.DONE:
             _write_heartbeat(run_dir, stage, run_id)
+
+        # ── Stop after to_stage if specified ──
+        if to_stage is not None and stage == to_stage:
+            logger.info("[%s] Reached --to-stage %s, stopping.", run_id, stage.name)
+            print(f"[{run_id}] Reached --to-stage {stage.name}, stopping pipeline.")
+            break
 
         # --- PIVOT/REFINE decision handling ---
         if (
